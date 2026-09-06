@@ -122,7 +122,8 @@ export class DbQueue implements QueueAdapter {
       const err = e as Error;
       const exhausted = job.attempts >= job.maxAttempts;
       const backoff = Math.min(3600, 30 * 2 ** (job.attempts - 1));
-      await finish({ status: exhausted ? 'failed' : 'pending', error: (err.stack || err.message || String(e)).slice(0, 4000), locked_until: null, finished_at: exhausted ? nowSql() : null, scheduled_for: exhausted ? undefined as never : nowSql(new Date(Date.now() + backoff * 1000)) });
+      const retry: Record<string, unknown> = exhausted ? { finished_at: nowSql() } : { scheduled_for: nowSql(new Date(Date.now() + backoff * 1000)) };
+      await finish({ status: exhausted ? 'failed' : 'pending', error: (err.stack || err.message || String(e)).slice(0, 4000), locked_until: null, ...retry });
       log?.error(`job ${job.name}#${job.id} attempt ${job.attempts} failed: ${err.message}`);
       if (exhausted && this.opts.onFailed) { try { await this.opts.onFailed(job, err); } catch (e2) { log?.error('onFailed hook', e2); } }
       return false;
