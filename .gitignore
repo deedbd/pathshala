@@ -11,7 +11,8 @@ Thumbs.db
 .turbo/
 coverage/
 release/
-storage/
+/storage/
+release/storage/
 *.tsbuildinfo
 .react-router/
 apps/web/build/
