@@ -19,12 +19,14 @@ export function openPostgres(cfg: DbConfig): Db {
 
 function makeDb(pool: pg.Pool, client: pg.PoolClient | null): Db {
   const ex = client ?? pool;
+  // Without parameters use the simple protocol so multi-statement strings (e.g. "DROP SCHEMA …; CREATE SCHEMA …") work.
+  const send = (sql: string, params: unknown[]) => params.length ? ex.query(toPgPlaceholders(sql), params.map(p => bind(p as never, 'postgres'))) : ex.query(sql);
   const query = async <T = Row>(sql: string, params: unknown[] = []) => {
-    const r = await ex.query(toPgPlaceholders(sql), params.map(p => bind(p as never, 'postgres')));
+    const r = await send(sql, params);
     return r.rows as T[];
   };
   const execute = async (sql: string, params: unknown[] = []) => {
-    const r = await ex.query(toPgPlaceholders(sql), params.map(p => bind(p as never, 'postgres')));
+    const r = await send(sql, params);
     return { affectedRows: r.rowCount ?? 0 };
   };
   const base = crud('postgres', query, execute);

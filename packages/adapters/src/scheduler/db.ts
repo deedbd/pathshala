@@ -60,13 +60,13 @@ export class DbScheduler implements SchedulerAdapter {
     try {
       const now = nowSql();
       // rows never scheduled get a next_run_at first (idempotent, cheap)
-      const fresh = await db.query<Record<string, unknown>>(`SELECT id, cron_expr, timezone FROM scheduled_jobs WHERE is_active = 1 AND next_run_at IS NULL LIMIT 200`);
+      const fresh = await db.query<Record<string, unknown>>(`SELECT id, cron_expr, timezone FROM scheduled_jobs WHERE is_active = TRUE AND next_run_at IS NULL LIMIT 200`);
       for (const r of fresh) {
         const n = safeNext(String(r.cron_expr), String(r.timezone || 'Asia/Dhaka'));
         await db.update('scheduled_jobs', { next_run_at: n ? nowSql(n) : null, updated_at: now }, { id: r.id as string });
       }
       const due = await db.query<Record<string, unknown>>(
-        `SELECT * FROM scheduled_jobs WHERE is_active = 1 AND next_run_at <= ? AND (locked_until IS NULL OR locked_until < ?) ORDER BY next_run_at ASC LIMIT 50`, [now, now]);
+        `SELECT * FROM scheduled_jobs WHERE is_active = TRUE AND next_run_at <= ? AND (locked_until IS NULL OR locked_until < ?) ORDER BY next_run_at ASC LIMIT 50`, [now, now]);
       for (const row of due) {
         const id = String(row.id), key = String(row.job_key), tz = String(row.timezone || 'Asia/Dhaka');
         const lock = nowSql(new Date(Date.now() + this.opts.lockSeconds * 1000));

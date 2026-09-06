@@ -26,7 +26,7 @@ export class RuleEngine {
 
   async handle(event: EventEnvelope): Promise<number> {
     const rules = await this.db.query<RuleRow>(
-      `SELECT * FROM automation_rules WHERE school_id = ? AND is_active = 1 AND trigger_kind = 'event' AND event_type = ? ORDER BY priority ASC, code ASC`, [event.schoolId, event.type]);
+      `SELECT * FROM automation_rules WHERE school_id = ? AND is_active = TRUE AND trigger_kind = 'event' AND event_type = ? ORDER BY priority ASC, code ASC`, [event.schoolId, event.type]);
     let ran = 0;
     for (const rule of rules) { if (await this.runRule(rule, event)) ran++; }
     return ran;

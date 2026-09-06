@@ -70,7 +70,7 @@ export class NotificationService {
   /** Sends admins of a school something (rule failures, installer results, provider alerts). */
   async notifyRole(schoolId: string, role: string, input: Omit<NotifyInput, 'schoolId' | 'userId'>) {
     const slugs = role === 'admin' ? ['admin', 'super_admin'] : [role]; // "admins" always includes the owner
-    const users = await this.db.query<{ id: string }>(`SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE u.school_id = ? AND r.slug IN (${slugs.map(() => '?').join(',')}) AND u.is_active = 1`, [schoolId, ...slugs]);
+    const users = await this.db.query<{ id: string }>(`SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE u.school_id = ? AND r.slug IN (${slugs.map(() => '?').join(',')}) AND u.is_active = TRUE`, [schoolId, ...slugs]);
     const ids: string[] = [];
     for (const u of users) ids.push(...await this.notify({ ...input, schoolId, userId: u.id }));
     return ids;
