@@ -4,7 +4,7 @@ import type { OutboxService } from '../automation/outbox.js';
 import { badRequest, notFound } from '../context.js';
 import { normalizeBdPhone, slugify } from '../util.js';
 
-export interface PageBlock { type: 'hero' | 'text' | 'notices' | 'admission_cta' | 'gallery' | 'contact' | 'stats' | 'results_lookup'; title?: string; titleBn?: string; body?: string; bodyBn?: string; image?: string | null; cta?: { label: string; href: string } | null; limit?: number }
+export interface PageBlock { type: 'hero' | 'text' | 'notices' | 'admission_cta' | 'gallery' | 'contact' | 'stats' | 'results_lookup'; title?: string; titleBn?: string; body?: string; bodyBn?: string; image?: string | null; cta?: { label: string; labelBn?: string; href: string } | null; limit?: number }
 export interface PageInput { title: string; slug?: string; locale?: 'bn' | 'en'; blocks: PageBlock[]; seo?: { description?: string; image?: string } | null; isHome?: boolean; status?: 'draft' | 'published' }
 export interface EnquiryInput { studentName: string; guardianName: string; phone: string; email?: string | null; classId?: string | null; notes?: string | null; source?: string }
 
@@ -43,9 +43,10 @@ export class CmsService {
   async ensureDefaultSite(schoolId: string) {
     if (await this.db.findOne('cms_pages', { school_id: schoolId, is_home: true })) return false;
     const school = await this.db.findOne<Row>('schools', { id: schoolId });
-    const name = String(school?.name ?? 'Our School'); const nameBn = String(school?.name_bn ?? name);
+    const name = String(school?.name ?? 'Our School');
+    // The hero title is left empty on purpose: the site renders the school's current name, so a rename shows up everywhere.
     await this.savePage(schoolId, { title: name, slug: 'home', locale: 'bn', isHome: true, status: 'published', blocks: [
-      { type: 'hero', title: name, titleBn: nameBn, body: 'Quality education, every child seen.', bodyBn: 'মানসম্মত শিক্ষা, প্রতিটি শিশুর প্রতি যত্ন।', cta: { label: 'Apply for admission', href: '/site/admission' } },
+      { type: 'hero', body: 'Quality education, every child seen.', bodyBn: 'মানসম্মত শিক্ষা, প্রতিটি শিশুর প্রতি যত্ন।', cta: { label: 'Apply for admission', labelBn: 'ভর্তির আবেদন', href: '/site/admission' } },
       { type: 'stats' }, { type: 'notices', title: 'Notices', titleBn: 'নোটিশ', limit: 5 }, { type: 'admission_cta', title: 'Admission open', titleBn: 'ভর্তি চলছে', body: 'Fill the form and we will call you back.', bodyBn: 'ফর্ম পূরণ করুন, আমরা আপনাকে ফোন করব।' }, { type: 'contact' },
     ] });
     await this.savePage(schoolId, { title: 'Admission', slug: 'admission', locale: 'bn', status: 'published', blocks: [{ type: 'admission_cta', title: 'Admission enquiry', titleBn: 'ভর্তির খোঁজ', body: 'Tell us about the student; our admissions desk will contact you within a day.', bodyBn: 'শিক্ষার্থীর তথ্য দিন, ভর্তি ডেস্ক ২৪ ঘণ্টার মধ্যে যোগাযোগ করবে।' }] });

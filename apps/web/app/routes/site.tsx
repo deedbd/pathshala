@@ -3,7 +3,7 @@ import type { Route } from './+types/site';
 import { formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
 import { assertSameOrigin, formString } from '~/lib';
 
-type Block = { type: string; title?: string; titleBn?: string; body?: string; bodyBn?: string; cta?: { label: string; href: string } | null; limit?: number };
+type Block = { type: string; title?: string; titleBn?: string; body?: string; bodyBn?: string; cta?: { label: string; labelBn?: string; href: string } | null; limit?: number };
 
 export async function loader({ context, request, params }: Route.LoaderArgs) {
   const school = await context.app.cms.resolveSchool(request.headers.get('host'));
@@ -50,7 +50,7 @@ export default function Site() {
         {result?.ok && <div className="banner banner-ok mb-4">{tr('site.sent')}</div>}
         {d.page.blocks.map((b, i) => {
           switch (b.type) {
-            case 'hero': return <section key={i} className="card p-8 sm:p-12" style={{ background: 'var(--accent-soft)' }}><h1 className="text-3xl sm:text-4xl">{pick(b.title, b.titleBn) || name}</h1><p className="mt-2 max-w-xl text-base" style={{ color: 'var(--muted)' }}>{pick(b.body, b.bodyBn)}</p>{b.cta && <a href={b.cta.href} className="btn btn-primary mt-6">{b.cta.label}</a>}</section>;
+            case 'hero': return <section key={i} className="card p-8 sm:p-12" style={{ background: 'var(--accent-soft)' }}><h1 className="text-3xl sm:text-4xl">{pick(b.title, b.titleBn) || name}</h1><p className="mt-2 max-w-xl text-base" style={{ color: 'var(--muted)' }}>{pick(b.body, b.bodyBn)}</p>{b.cta && <a href={b.cta.href} className="btn btn-primary mt-6">{pick(b.cta.label, b.cta.labelBn)}</a>}</section>;
             case 'stats': return <section key={i} className="mt-6 grid grid-cols-3 gap-3">{([['dash.students', d.stats.students], ['staff.title', d.stats.teachers], ['acad.classes', d.stats.classes]] as const).map(([k, v]) => <div key={k} className="kpi"><div className="kpi-label">{tr(k)}</div><div className="kpi-value num">{formatNumber(v, L)}</div></div>)}</section>;
             case 'text': return <section key={i} className="card mt-6 p-6"><h2 className="text-xl">{pick(b.title, b.titleBn)}</h2><div className="prose mt-2 whitespace-pre-wrap text-sm">{pick(b.body, b.bodyBn)}</div></section>;
             case 'notices': return <section key={i} id="notices" className="card mt-6 p-6"><h2 className="text-xl">{pick(b.title, b.titleBn) || tr('web.notices')}</h2><ul className="mt-3 divide-y" style={{ borderColor: 'var(--line)' }}>{d.notices.slice(0, b.limit ?? 5).map(n => <li key={String(n.id)} className="py-3"><div className="flex items-center gap-2">{Number(n.is_pinned) ? <span className="chip chip-accent">pin</span> : null}<span className="font-medium">{String(n.title)}</span><span className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>{formatDate(String(n.publish_at), L)}</span></div><p className="mt-1 whitespace-pre-wrap text-sm" style={{ color: 'var(--muted)' }}>{String(n.body).slice(0, 300)}</p></li>)}{d.notices.length === 0 && <li className="py-3 text-sm" style={{ color: 'var(--muted)' }}>—</li>}</ul></section>;

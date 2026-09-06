@@ -36,6 +36,7 @@ describe('phase 1', () => {
     await app.settings.set(schoolId, 'notifications.quiet_hours', null);
     const { server } = await serverMod.createServer(app);
     await new Promise(res => { http = server.listen(0, '127.0.0.1', res); });
+    serverMod.tuneKeepAlive(http);
     baseUrl = `http://127.0.0.1:${http.address().port}`;
     const login = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: 'admin@p1.test', password: 'secret-pass-1' }) });
     cookie = login.headers.get('set-cookie').split(';')[0];

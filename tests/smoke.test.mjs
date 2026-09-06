@@ -178,6 +178,7 @@ test('installer: self-test + finish (steps 9–10)', async () => {
 test('http: /_health, login cookie, /api/auth/me, automation activity, /cron/tick', async () => {
   const { server } = await serverMod.createServer(app);
   await new Promise(resolve => { http = server.listen(0, '127.0.0.1', resolve); });
+  serverMod.tuneKeepAlive(http);
   baseUrl = `http://127.0.0.1:${http.address().port}`;
   const health = await (await fetch(`${baseUrl}/_health`)).json();
   assert.equal(health.ok, true); assert.equal(health.installed, true);

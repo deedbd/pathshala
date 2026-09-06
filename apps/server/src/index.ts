@@ -214,9 +214,21 @@ export async function main() {
   await app.start();
   const port = process.env.PORT ? Number(process.env.PORT) : app.config.port;
   const listener = server.listen(port, () => app.log.info(`listening on :${port} (${app.config.appUrl})`));
+  tuneKeepAlive(listener);
   const shutdown = async () => { app.log.info('shutting down'); listener.close(); await app.stop(); process.exit(0); };
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
   return { app, server, listener };
+}
+
+/**
+ * Node closes idle keep-alive sockets after 5 s, which races clients that are about to reuse one
+ * (Passenger, Cloudflare and undici all pool connections) and surfaces as a random "fetch failed".
+ * 65 s sits above the usual 60 s proxy idle timeout, so the proxy always closes first.
+ */
+export function tuneKeepAlive(listener: { keepAliveTimeout: number; headersTimeout: number }) {
+  listener.keepAliveTimeout = 65_000;
+  listener.headersTimeout = 66_000;
+  return listener;
 }
 
 function resolveWebBuild(envDir?: string): string | null {
