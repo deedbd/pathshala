@@ -29,3 +29,5 @@ export { TimetableService, type SlotInput, type GenerateOptions, type Clash } fr
 export { CurriculumService, type SyllabusInput, type LessonPlanInput } from './modules/curriculum.js';
 export { CmsService, type PageBlock, type PageInput, type EnquiryInput } from './modules/cms.js';
 export { PortalService } from './modules/portal.js';
+export { AttendanceService, type MarkInput, type PolicyInput, type LeaveInput, type StudentStatus, type RegisterRow } from './modules/attendance.js';
+export { CommunicationService, type MessageInput } from './modules/communication.js';

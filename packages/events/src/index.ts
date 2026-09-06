@@ -50,10 +50,15 @@ export interface EventPayloads {
   'applicant.enrolled': Record<string, unknown>;
   'academic_year.created': { academicYearId: string; previousYearId?: string | null };
   'calendar.holiday_added': { eventId: string; startDate: string; endDate: string };
-  'leave.approved': Record<string, unknown>;
-  'leave.rejected': Record<string, unknown>;
-  'attendance.marked': Record<string, unknown>;
+  'leave.approved': { leaveId: string; applicantType: string; staffId: string | null; studentId: string | null; fromDate: string; toDate: string; dates: string[] };
+  'leave.rejected': { leaveId: string };
+  'substitution.approved': { substitutionId: string };
+  'attendance.marked': { sectionId?: string; onDate: string; counts: Record<string, number>; source?: string };
   'attendance.absent': { studentId: string; date: string; sectionId: string };
+  'leave.applied': { leaveId: string; applicantType: string; days: number };
+  'punches.ingested': { deviceId: string; stored: number; resolved: number; unknown: number };
+  'ptm.booked': { bookingId: string; slotId: string; studentId: string };
+  'diary.published': { entryId: string; sectionId: string; entryType: string };
   'marks.locked': Record<string, unknown>;
   'result.published': Record<string, unknown>;
   'invoice.created': { invoiceId: string; studentId: string; total: number; dueDate: string };
@@ -71,7 +76,7 @@ export const EVENT_TYPES = Object.freeze([
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
   'enquiry.created', 'application.submitted', 'applicant.enrolled', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
-  'attendance.marked', 'attendance.absent', 'marks.locked', 'result.published', 'invoice.created', 'payment.received', 'payroll.approved', 'notice.published', 'message.sent', 'test.ping',
+  'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'invoice.created', 'payment.received', 'payroll.approved', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 
 export function isEventType(v: string): v is EventType {

@@ -24,6 +24,13 @@ const dict = {
     'portal.children': 'My children', 'portal.notices': 'Notices', 'portal.timetable': 'Timetable', 'portal.events': 'Upcoming', 'portal.classTeacher': 'Class teacher', 'portal.today': 'Today',
     'site.admission': 'Admission enquiry', 'site.studentName': 'Student name', 'site.guardianName': 'Guardian name', 'site.send': 'Send', 'site.sent': 'Thank you — the admissions desk will call you.', 'site.contact': 'Contact', 'site.message': 'Message', 'site.classApplying': 'Class applying for',
     'day.0': 'Sun', 'day.1': 'Mon', 'day.2': 'Tue', 'day.3': 'Wed', 'day.4': 'Thu', 'day.5': 'Fri', 'day.6': 'Sat',
+    'nav.attendance': 'Attendance', 'nav.leave': 'Leave', 'nav.chat': 'Messages', 'nav.diary': 'Diary', 'nav.teach': 'My classes',
+    'att.title': 'Attendance', 'att.purpose': 'Mark a section in seconds; guardians of absent students get an SMS at the cut-off.', 'att.present': 'Present', 'att.absent': 'Absent', 'att.late': 'Late', 'att.halfDay': 'Half day', 'att.excused': 'Excused', 'att.allPresent': 'All present', 'att.save': 'Save attendance', 'att.saved': 'Attendance saved', 'att.holiday': 'That day is a holiday', 'att.onLeave': 'on leave', 'att.devices': 'Devices', 'att.policies': 'Policies', 'att.cutoff': 'Auto-absent at', 'att.deviceKey': 'Device key (shown once)', 'att.autoAbsent': 'Run auto-absent now', 'att.pct': 'Attendance %', 'att.staff': 'Staff attendance', 'att.summary': 'Summary',
+    'lv.title': 'Leave', 'lv.apply': 'Apply for leave', 'lv.type': 'Leave type', 'lv.from': 'From', 'lv.to': 'To', 'lv.reason': 'Reason', 'lv.approve': 'Approve', 'lv.reject': 'Reject', 'lv.days': 'Days', 'lv.applicant': 'Applicant',
+    'chat.title': 'Messages', 'chat.send': 'Send', 'chat.write': 'Write a message…', 'chat.section': 'Section channel', 'chat.empty': 'No conversations yet', 'chat.direct': 'New message',
+    'dia.title': 'Diary', 'dia.homework': 'Homework', 'dia.note': 'Note', 'dia.new': 'Add entry', 'dia.due': 'Due', 'dia.report': 'Daily report', 'dia.mood': 'Mood', 'dia.nap': 'Nap (minutes)', 'dia.meals': 'Meals', 'dia.notes': 'Notes', 'dia.send': 'Send to guardians', 'dia.remark': 'Teacher remark',
+    'ptm.title': 'Parent–teacher meetings', 'ptm.slots': 'Slots', 'ptm.book': 'Book', 'ptm.booked': 'Booked', 'ptm.create': 'Open slots',
+    'teach.title': 'My classes', 'teach.today': "Today's classes", 'teach.markNow': 'Mark attendance', 'teach.week': 'This week', 'teach.mySections': 'My sections', 'teach.subs': 'Substitutions for me',
   },
   bn: {
     'app.name': 'পাঠশালা',
@@ -48,6 +55,13 @@ const dict = {
     'portal.children': 'আমার সন্তান', 'portal.notices': 'নোটিশ', 'portal.timetable': 'রুটিন', 'portal.events': 'আসছে', 'portal.classTeacher': 'শ্রেণি শিক্ষক', 'portal.today': 'আজ',
     'site.admission': 'ভর্তির খোঁজ', 'site.studentName': 'শিক্ষার্থীর নাম', 'site.guardianName': 'অভিভাবকের নাম', 'site.send': 'পাঠান', 'site.sent': 'ধন্যবাদ — ভর্তি ডেস্ক আপনাকে ফোন করবে।', 'site.contact': 'যোগাযোগ', 'site.message': 'বার্তা', 'site.classApplying': 'কোন শ্রেণিতে',
     'day.0': 'রবি', 'day.1': 'সোম', 'day.2': 'মঙ্গল', 'day.3': 'বুধ', 'day.4': 'বৃহঃ', 'day.5': 'শুক্র', 'day.6': 'শনি',
+    'nav.attendance': 'উপস্থিতি', 'nav.leave': 'ছুটি', 'nav.chat': 'বার্তা', 'nav.diary': 'ডায়েরি', 'nav.teach': 'আমার ক্লাস',
+    'att.title': 'উপস্থিতি', 'att.purpose': 'কয়েক সেকেন্ডে শাখার হাজিরা নিন; কাট-অফে অনুপস্থিতদের অভিভাবক এসএমএস পাবেন।', 'att.present': 'উপস্থিত', 'att.absent': 'অনুপস্থিত', 'att.late': 'দেরি', 'att.halfDay': 'অর্ধদিবস', 'att.excused': 'ছুটি', 'att.allPresent': 'সবাই উপস্থিত', 'att.save': 'হাজিরা সংরক্ষণ', 'att.saved': 'হাজিরা সংরক্ষিত', 'att.holiday': 'ঐ দিন ছুটি', 'att.onLeave': 'ছুটিতে', 'att.devices': 'ডিভাইস', 'att.policies': 'নীতি', 'att.cutoff': 'অটো-অনুপস্থিত সময়', 'att.deviceKey': 'ডিভাইস কী (একবারই দেখানো হবে)', 'att.autoAbsent': 'এখনই অটো-অনুপস্থিত চালান', 'att.pct': 'উপস্থিতি %', 'att.staff': 'স্টাফ হাজিরা', 'att.summary': 'সারসংক্ষেপ',
+    'lv.title': 'ছুটি', 'lv.apply': 'ছুটির আবেদন', 'lv.type': 'ছুটির ধরন', 'lv.from': 'শুরু', 'lv.to': 'শেষ', 'lv.reason': 'কারণ', 'lv.approve': 'অনুমোদন', 'lv.reject': 'প্রত্যাখ্যান', 'lv.days': 'দিন', 'lv.applicant': 'আবেদনকারী',
+    'chat.title': 'বার্তা', 'chat.send': 'পাঠান', 'chat.write': 'বার্তা লিখুন…', 'chat.section': 'শাখা চ্যানেল', 'chat.empty': 'কোনো কথোপকথন নেই', 'chat.direct': 'নতুন বার্তা',
+    'dia.title': 'ডায়েরি', 'dia.homework': 'বাড়ির কাজ', 'dia.note': 'নোট', 'dia.new': 'এন্ট্রি যোগ', 'dia.due': 'জমার তারিখ', 'dia.report': 'দৈনিক রিপোর্ট', 'dia.mood': 'মেজাজ', 'dia.nap': 'ঘুম (মিনিট)', 'dia.meals': 'খাবার', 'dia.notes': 'নোট', 'dia.send': 'অভিভাবককে পাঠান', 'dia.remark': 'শিক্ষকের মন্তব্য',
+    'ptm.title': 'অভিভাবক–শিক্ষক সভা', 'ptm.slots': 'স্লট', 'ptm.book': 'বুক করুন', 'ptm.booked': 'বুকড', 'ptm.create': 'স্লট খুলুন',
+    'teach.title': 'আমার ক্লাস', 'teach.today': 'আজকের ক্লাস', 'teach.markNow': 'হাজিরা নিন', 'teach.week': 'এই সপ্তাহ', 'teach.mySections': 'আমার শাখা', 'teach.subs': 'আমার বদলি ক্লাস',
   },
 } as const;
 

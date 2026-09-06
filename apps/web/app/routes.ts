@@ -16,7 +16,11 @@ export default [
     route('syllabus', 'routes/syllabus.tsx'),
     route('calendar', 'routes/calendar.tsx'),
     route('website', 'routes/website.tsx'),
+    route('attendance', 'routes/attendance.tsx'),
+    route('diary', 'routes/diary.tsx'),
+    route('chat', 'routes/chat.tsx'),
   ]),
+  route('teach', 'routes/teach.tsx'),
   ...prefix('site', [
     index('routes/site.tsx', { id: 'site-home' }),
     route(':slug', 'routes/site.tsx', { id: 'site-page' }),

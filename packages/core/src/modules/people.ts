@@ -80,7 +80,12 @@ export class PeopleService {
       let guardian = await t.findOne<Row>('guardians', { school_id: schoolId, phone });
       if (!guardian) {
         const id = ulid();
-        await t.insert('guardians', { id, school_id: schoolId, full_name: g.fullName.trim(), phone, alt_phone: g.altPhone ?? null, email: g.email?.toLowerCase() ?? null, occupation: g.occupation ?? null, nid_no: g.nidNo ?? null, is_staff: false });
+        // Every guardian gets a portal account straight away (no password; they sign in by OTP).
+        // Chat membership, push and the guardian portal all key off users.id, so creating it later
+        // would leave the first guardians of a school invisible to those features.
+        const existingUser = await this.auth.findByIdentifier(phone, schoolId);
+        const userId = existingUser?.id ?? await this.auth.createUser({ schoolId, userType: 'guardian', displayName: g.fullName.trim(), phone, email: g.email?.toLowerCase() ?? null, roles: ['guardian'] }, t).catch(() => null);
+        await t.insert('guardians', { id, school_id: schoolId, user_id: userId, full_name: g.fullName.trim(), phone, alt_phone: g.altPhone ?? null, email: g.email?.toLowerCase() ?? null, occupation: g.occupation ?? null, nid_no: g.nidNo ?? null, is_staff: false });
         guardian = { id };
       }
       const gid = String(guardian.id);

@@ -26,6 +26,8 @@ import { TimetableService } from './modules/timetable.js';
 import { CurriculumService } from './modules/curriculum.js';
 import { CmsService } from './modules/cms.js';
 import { PortalService } from './modules/portal.js';
+import { AttendanceService } from './modules/attendance.js';
+import { CommunicationService } from './modules/communication.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -33,6 +35,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
+  attendance: AttendanceService; communication: CommunicationService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -79,6 +82,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const curriculum = new CurriculumService(db, outbox, notifications);
   const cms = new CmsService(db, outbox);
   const portal = new PortalService(db, timetable, cms);
+  const attendance = new AttendanceService(db, outbox, notifications, academic, approvals, adapters);
+  const communication = new CommunicationService(db, outbox, notifications, adapters);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -91,18 +96,21 @@ export function createApp(opts: CreateAppOptions = {}): App {
       const campus = await academic.mainCampus(schoolId);
       if (campus && !(await db.count('rooms', { school_id: schoolId }))) for (let i = 1; i <= 6; i++) await academic.createRoom(schoolId, { campusId: String(campus.id), name: `Room ${100 + i}`, capacity: 40 });
       await cms.ensureDefaultSite(schoolId);
+      await attendance.ensureDefaultPolicy(schoolId);
     },
   });
 
   registerPlatformJobs({ db, adapters, notifications, outbox, log });
   adapters.queue.register('people.import_students', (payload, ctx) => importer.runJob(payload, ctx));
+  adapters.queue.register('attendance.notify_absent', (payload, ctx) => attendance.notifyAbsentBatch(payload, ctx as never) as never);
   adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
-  registerSystemHandlers(handlers, { notifications, tasks, log, db });
+  for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -129,7 +137,19 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService }) {
+  // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
+  h.on('leave.approved', 'suggest-substitutes', async e => {
+    if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
+    const year = await d.academic.currentYear(e.schoolId); if (!year) return;
+    const v = await d.timetable.publishedVersion(e.schoolId, String(year.id)); if (!v) return;
+    for (const day of e.payload.dates) await d.timetable.suggestSubstitutes(e.schoolId, String(v.id), e.payload.staffId, day, e.payload.leaveId);
+  });
+  // a published timetable gives every section a chat channel teachers and guardians share
+  h.on('timetable.published', 'section-channels', async e => {
+    const secs = await d.db.query<{ id: string }>(`SELECT DISTINCT section_id AS id FROM timetable_slots WHERE version_id = ?`, [e.payload.versionId]);
+    for (const s of secs) await d.communication.ensureSectionChannel(e.schoolId, s.id).catch(() => undefined);
+  });
   h.on('rule.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['push', 'in_app', 'email'], eventKey: 'automation.rule_failed', data: { rule: e.payload.ruleCode, attempts: e.payload.attempts, error: e.payload.error }, entityType: 'platform.rule', entityId: e.payload.ruleId }); });
   h.on('job.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'automation.job_failed', title: 'Background job failed', body: `${e.payload.jobName} failed after ${e.payload.attempts} attempts: ${e.payload.error}`, entityType: 'platform.job', entityId: e.payload.jobId }); });
   h.on('notification.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['in_app'], eventKey: 'comms.delivery_failed', title: 'Message could not be delivered', body: `${e.payload.channel}: ${e.payload.error}`, entityType: 'communication.notification', entityId: e.payload.notificationId }); });

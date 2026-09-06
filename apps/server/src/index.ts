@@ -8,6 +8,7 @@ import { createApp, runWithContext, normalizeBdPhone, HttpError, type App, type 
 import { LocalStorage, SseRealtime } from '@pathshala/adapters';
 import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, settingWriteSchema, z } from '@pathshala/schemas';
 import { mountPhase1, mountPublic } from './routes/phase1.js';
+import { mountPhase2 } from './routes/phase2.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -79,7 +80,17 @@ export async function createServer(app: App = createApp()) {
   const api = express.Router();
   const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => fn(req, res).then(r => { if (r !== undefined && !res.headersSent) res.json(r); }).catch(next);
   const requireUser = (req: Request) => { if (!req.ps.user) throw new HttpError(401, 'sign in required', 'unauthorized'); return req.ps.user; };
-  const requirePerm = (req: Request, perm: string) => { const u = requireUser(req); app.rbac.require(perm); return u; };
+  /**
+   * Console endpoints. Portal accounts (guardian, student, alumni) never reach them even when their
+   * role carries the permission — a guardian reads their child's data through /api/portal/*, which
+   * checks the parent-child link instead of a role.
+   */
+  const requirePerm = (req: Request, perm: string) => {
+    const u = requireUser(req);
+    if (['guardian', 'student', 'alumni'].includes(u.user_type)) throw new HttpError(403, 'this is a school-staff endpoint', 'forbidden');
+    app.rbac.require(perm);
+    return u;
+  };
   const setSessionCookie = (req: Request, res: Response, token: string, expiresAt: string) => {
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Expires=${new Date(expiresAt.replace(' ', 'T') + 'Z').toUTCString()}${req.secure || config.appUrl.startsWith('https') ? '; Secure' : ''}`);
   };
@@ -168,6 +179,7 @@ export async function createServer(app: App = createApp()) {
   }));
   api.get('/push/public-key', (_req, res) => res.json({ publicKey: app.adapters.push.publicKey() }));
   mountPhase1(api, app, wrap, requirePerm, requireUser);
+  mountPhase2(api, app, wrap, requirePerm, requireUser);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   api.use('/public', pub);

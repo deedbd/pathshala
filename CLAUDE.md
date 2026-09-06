@@ -37,8 +37,11 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Phase 1 modules live in `packages/core/src/modules/` (academic, people, importer, timetable, curriculum, cms, portal, numbering) and are wired in `app.ts`; their API is `apps/server/src/routes/phase1.ts`; console pages are `apps/web/app/routes/*.tsx` (loaders call `context.app.*` directly, mutations go through `/api/*` with the `api()` helper from `@pathshala/ui`). Public site: `/site`, guardian PWA: `/portal`. `tests/phase1.test.mjs` is the Phase 1 exit criterion (runs with `pnpm smoke`).
 - New module checklist: service in `modules/`, register in `app.ts` (queue/scheduled handlers + system handlers), Zod input in `packages/schemas`, routes in `routes/phase1.ts` (or a new file), console page, i18n keys in `packages/ui/src/i18n.ts`, a test in `tests/`.
 
+- Console API endpoints go through `requirePerm`, which refuses portal accounts (guardian/student/alumni) outright; portal data is served by `/api/portal/*` and `/api/teach/*`, which check the parent-child or staff link instead of a role.
+- Timestamps are second-precision on every engine (MySQL DATETIME(0)), so "most recent" ordering must tie-break — see the conversation list query. Postgres sorts NULLs first on DESC; MySQL 8 rejects `CAST(x AS INTEGER)`; `SELECT DISTINCT` + `ORDER BY` needs the sort column in the select list.
+
 ## Next step
-Phase 2 (`docs/PLAN.md`, weeks 8–10): attendance (device ingestion ZKTeco/Hikvision push, RFID, QR/app marking, policies, auto-absent job C4 with SMS within 5 minutes of cut-off, leave workflow → substitutions from leave), communication (chat & section channels, PTM slots), homework diary, KG daily report, teacher PWA v0. Exit: absent SMS within 5 minutes for every section; a teacher marks a class in 30 s on a phone.
+Phase 3 (`docs/PLAN.md`, weeks 11–14) → **pilot go-live**: fee heads/structures/overrides/discounts, monthly invoice batch with pro-rata, bKash/Nagad/SSLCommerz IPN, counter cash sessions, allocation & ledger, reminder ladder, fines, refunds, instalments; GL seed already exists, add auto-journals, expenses & approvals, bank reconciliation, budgets, statements; guardian PWA pay flow. Exit: a month closes with a balanced trial balance and zero manual fee journals.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.
