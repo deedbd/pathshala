@@ -10,6 +10,7 @@ import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, se
 import { mountPhase1, mountPublic } from './routes/phase1.js';
 import { mountPhase2 } from './routes/phase2.js';
 import { mountPhase3 } from './routes/phase3.js';
+import { mountPhase4 } from './routes/phase4.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -182,6 +183,7 @@ export async function createServer(app: App = createApp()) {
   mountPhase1(api, app, wrap, requirePerm, requireUser);
   mountPhase2(api, app, wrap, requirePerm, requireUser);
   mountPhase3(api, app, wrap, requirePerm, requireUser);
+  mountPhase4(api, app, wrap, requirePerm, requireUser);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   api.use('/public', pub);

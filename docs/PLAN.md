@@ -35,6 +35,8 @@ Device ingestion (ZKTeco/Hikvision push, RFID), QR/app marking, policies, auto-a
 
 **Exit:** absent SMS within 5 minutes of cut-off for every section; teacher marks a class in 30 s on a phone.
 
+> **Status (7 Sep 2026): implemented.** `attendance` (policies per class with cut-off and grace, QR/app/manual marking with a whole-section default, device ingestion for ZKTeco and Hikvision push and RFID with replay protection, the auto-absent sweep that queues one guardian SMS per absentee, monthly summaries, leave types, leave requests with approval and balance, substitutions raised from an approved leave) and `communication` (direct chat, automatic section channels created when a timetable is published, broadcast with role and section targeting, PTM slots with capacity, homework diary with per-section publication, KG daily report). Console pages: attendance, diary, chat, plus the teacher PWA at `/teach`. `tests/phase2.test.mjs` proves the exit criterion — the cut-off sweep marks and notifies every absentee of 40 sections inside the 5-minute window, and a phone-sized section marking round-trip stays under a second. Green on SQLite, MySQL and Postgres. Not yet: OMR-free bulk attendance import, biometric device enrolment UI, chat file attachments.
+
 ## Phase 3 · Fees, payments, accounting (weeks 11–14) → **pilot go-live**
 
 Fee heads/structures/overrides/discounts, monthly batch with pro-rata, bKash/Nagad/SSLCommerz IPN, counter cash sessions, allocation & ledger, reminder ladder, fines, refunds, instalment plans; GL seed for BD schools, auto-journals, expenses & approvals, bank reconciliation, budgets, statements; guardian PWA pay flow.
@@ -48,6 +50,8 @@ Fee heads/structures/overrides/discounts, monthly batch with pro-rata, bKash/Nag
 Grading scales, exams, schedules, seat plans & admit cards with eligibility, marks entry (web grid + Excel + OMR v1), verification/lock, result engine (weights, ties, F→0), report cards (bn/en, pdfmake), publish scheduling, promotion, question bank & paper generator, online exams, competency assessment v1.
 
 **Exit:** annual results for 1,500 students published with PDFs in < 10 min on shared hosting (chunked job).
+
+> **Status (7 Sep 2026): implemented.** `assessment`: grading scales (the Bangladesh GPA 5.0 bands are seeded, `fail_gpa_zero` zeroes the GPA of anyone who fails a subject), exam types, exams with one schedule per class subject, seat plans that record *why* a student is ineligible (fees due, attendance below the exam's floor), the marks grid with theory/practical/continuous-assessment columns and an absent flag, verification then lock (a locked paper refuses further edits until it is unlocked), the result engine (per-subject grade and grade point, weighted GPA, ranks in section and class with `share_rank`/`dense`/`by_total` ties), report cards rendered in Bangla and English by pdfmake, publishing as a chunked background job that notifies each guardian, annual aggregation and promotion into the next year's enrolments, the question bank with blueprint-driven paper generation, auto-graded online exams, and the guardian result view. Console page: exams. `tests/phase4.test.mjs` proves the exit criterion on SQLite, MySQL and Postgres — 1,500 report cards render in roughly 40 s, far inside the 10-minute budget, in chunks of 25 so no single request outlives shared hosting's limit. Not yet: OMR marks capture, Excel marks import, admit-card PDFs, competency assessment.
 
 ## Phase 5 · HR & payroll (weeks 20–23)
 

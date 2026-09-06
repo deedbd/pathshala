@@ -2393,7 +2393,7 @@ CREATE TABLE `exam_seat_plans` (
   `school_id` CHAR(26) NOT NULL COMMENT 'Tenant',
   `exam_id` CHAR(26) NOT NULL,
   `student_id` CHAR(26) NOT NULL,
-  `room_id` CHAR(26) NOT NULL,
+  `room_id` CHAR(26) NULL,
   `seat_no` VARCHAR(10) NOT NULL,
   `admit_card_file_id` CHAR(26) NULL,
   `is_eligible` TINYINT(1) NOT NULL DEFAULT 1,
@@ -7396,7 +7396,7 @@ ALTER TABLE `exam_invigilators` ADD CONSTRAINT `fk_exam_invigilators_staff_id` F
 ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_school_id` FOREIGN KEY (`school_id`) REFERENCES `schools` (`id`) ON DELETE CASCADE;
 ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_exam_id` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`id`) ON DELETE CASCADE;
 ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_student_id` FOREIGN KEY (`student_id`) REFERENCES `students` (`id`) ON DELETE CASCADE;
-ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_room_id` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE CASCADE;
+ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_room_id` FOREIGN KEY (`room_id`) REFERENCES `rooms` (`id`) ON DELETE SET NULL;
 ALTER TABLE `exam_seat_plans` ADD CONSTRAINT `fk_exam_seat_plans_admit_card_file_id` FOREIGN KEY (`admit_card_file_id`) REFERENCES `files` (`id`) ON DELETE SET NULL;
 ALTER TABLE `marks` ADD CONSTRAINT `fk_marks_school_id` FOREIGN KEY (`school_id`) REFERENCES `schools` (`id`) ON DELETE CASCADE;
 ALTER TABLE `marks` ADD CONSTRAINT `fk_marks_schedule_id` FOREIGN KEY (`schedule_id`) REFERENCES `exam_schedules` (`id`) ON DELETE CASCADE;

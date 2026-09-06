@@ -2392,7 +2392,7 @@ CREATE TABLE `exam_seat_plans` (
   `school_id` TEXT NOT NULL REFERENCES `schools`(`id`) ON DELETE CASCADE,
   `exam_id` TEXT NOT NULL REFERENCES `exams`(`id`) ON DELETE CASCADE,
   `student_id` TEXT NOT NULL REFERENCES `students`(`id`) ON DELETE CASCADE,
-  `room_id` TEXT NOT NULL REFERENCES `rooms`(`id`) ON DELETE CASCADE,
+  `room_id` TEXT REFERENCES `rooms`(`id`) ON DELETE SET NULL,
   `seat_no` TEXT NOT NULL,
   `admit_card_file_id` TEXT REFERENCES `files`(`id`) ON DELETE SET NULL,
   `is_eligible` INTEGER NOT NULL DEFAULT 1,

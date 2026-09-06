@@ -19,6 +19,7 @@ export default [
     route('attendance', 'routes/attendance.tsx'),
     route('diary', 'routes/diary.tsx'),
     route('chat', 'routes/chat.tsx'),
+    route('exams', 'routes/exams.tsx'),
     route('fees', 'routes/fees.tsx'),
     route('accounts', 'routes/accounts.tsx'),
   ]),

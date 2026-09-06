@@ -42,9 +42,13 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 
 - Money: every movement goes through `AccountingService.post()`, which refuses an unbalanced entry. Fees, payments, refunds and expenses each post their own journal, so the trial balance comes from the same rows the modules wrote. Amounts are rounded with `round()` (2 dp) everywhere.
 - JSON columns must hold valid JSON on MySQL/Postgres (SQLite is lax): an encrypted secret is stored as `{ enc: "v1..." }`, never as a bare string.
+- Express matches routes in order, so a literal path that shares a shape with a parameterised one must be registered first — `/exams/annual/compute` before `/exams/:id/compute`, or `annual` is read as an exam id.
+- Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
 ## Next step
-Phase 4 (`docs/PLAN.md`, weeks 15–19): grading scales, exams, schedules, seat plans and admit cards with eligibility, marks entry (web grid + Excel + OMR v1), verification/lock, the result engine (weights, ties, F→0), report cards in bn/en with pdfmake, publish scheduling, promotion, question bank and paper generator, online exams, competency assessment v1. Exit: annual results for 1,500 students published with PDFs in under 10 minutes on shared hosting (chunked job).
+Phase 5 (`docs/PLAN.md`, weeks 20–23): recruitment, onboarding, contracts, shifts, salary components and structures, loans, provident fund, tax slabs, payroll built from attendance and leave, payslips, bank file, MPO split, appraisals, exits. Exit: payroll for 150 staff drafted, approved, paid and journaled in one pass.
+
+Phases 0–4 are implemented; each phase's status paragraph in `docs/PLAN.md` says what is done and what was left out. `pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres); `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion instead of the 120-student default.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

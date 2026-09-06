@@ -2162,7 +2162,7 @@ Seat per student per exam; admit-card file; eligibility flag.
 | school_id | ulid | required · → schools · Tenant |
 | exam_id | ulid | required · → exams |
 | student_id | ulid | required · → students |
-| room_id | ulid | required · → rooms |
+| room_id | ulid | → rooms |
 | seat_no | str(10) | required |
 | admit_card_file_id | ulid | → files |
 | is_eligible | bool | required · default true |

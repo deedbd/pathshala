@@ -30,6 +30,7 @@ import { AttendanceService } from './modules/attendance.js';
 import { CommunicationService } from './modules/communication.js';
 import { AccountingService } from './modules/accounting.js';
 import { FeesService } from './modules/fees.js';
+import { AssessmentService } from './modules/assessment.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -37,7 +38,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -88,6 +89,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const communication = new CommunicationService(db, outbox, notifications, adapters);
   const accounting = new AccountingService(db, outbox, numbering, approvals);
   const fees = new FeesService(db, outbox, notifications, numbering, academic, accounting, adapters, config.appKey);
+  const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -105,6 +107,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
       await accounting.ensureExpenseCategories(schoolId);
       await fees.ensureFineRule(schoolId);
       await fees.ensureDefaultStructures(schoolId, yearId);
+      await assessment.ensureExamTypes(schoolId);
     },
   });
 
@@ -112,15 +115,17 @@ export function createApp(opts: CreateAppOptions = {}): App {
   adapters.queue.register('people.import_students', (payload, ctx) => importer.runJob(payload, ctx));
   adapters.queue.register('attendance.notify_absent', (payload, ctx) => attendance.notifyAbsentBatch(payload, ctx as never) as never);
   adapters.queue.register('fees.generate_invoices', (payload, ctx) => fees.runBatch(payload, ctx));
+  adapters.queue.register('assessment.report_cards', (payload, ctx) => assessment.renderReportCards(payload, ctx));
   adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
   for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(fees.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(assessment.jobs())) adapters.scheduler.register(key, fn);
   registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };

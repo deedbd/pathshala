@@ -59,8 +59,10 @@ export interface EventPayloads {
   'punches.ingested': { deviceId: string; stored: number; resolved: number; unknown: number };
   'ptm.booked': { bookingId: string; slotId: string; studentId: string };
   'diary.published': { entryId: string; sectionId: string; entryType: string };
-  'marks.locked': Record<string, unknown>;
-  'result.published': Record<string, unknown>;
+  'marks.locked': { scheduleId: string; examId: string };
+  'result.published': { examId: string; name: string; students: number };
+  'exam.scheduled': { examId: string; seated: number; ineligible: number };
+  'promotion.applied': { fromYearId: string; toYearId: string; promoted: number; retained: number };
   'invoice.created': { invoiceId: string; studentId: string; total: number; dueDate: string };
   'invoice.batch_finished': { batchId: string; billingPeriod: string; invoices: number; total: number };
   'journal.posted': { entryId: string; entryNo: string; sourceType: string | null; total: number };
@@ -80,7 +82,7 @@ export const EVENT_TYPES = Object.freeze([
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
   'enquiry.created', 'application.submitted', 'applicant.enrolled', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
-  'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'payroll.approved', 'notice.published', 'message.sent', 'test.ping',
+  'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'payroll.approved', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 
 export function isEventType(v: string): v is EventType {

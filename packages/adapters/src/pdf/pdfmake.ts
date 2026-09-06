@@ -10,6 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 interface PdfmakeServer {
   addFonts(fonts: Record<string, Record<string, string>>): void;
   setLocalAccessPolicy(cb: (p: string) => boolean): void;
+  setUrlAccessPolicy?(cb: (url: string) => boolean): void;
   createPdf(doc: unknown): { getBuffer(): Promise<Buffer> };
   virtualfs: { writeFileSync(name: string, content: Buffer | string): void; existsSync(name: string): boolean };
 }
@@ -55,6 +56,7 @@ export class PdfmakePdf implements PdfAdapter {
     if (!fonts[this.defaultFont]) this.defaultFont = Object.keys(fonts)[0];
     pdfmake.addFonts(fonts);
     pdfmake.setLocalAccessPolicy(() => false); // fonts/images come from buffers, never from arbitrary paths
+    pdfmake.setUrlAccessPolicy?.(() => false); // a document must never fetch a remote asset while rendering
     this.lib = pdfmake;
     return pdfmake;
   }

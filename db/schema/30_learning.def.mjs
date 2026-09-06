@@ -194,7 +194,7 @@ export default [
   exam_seat_plans:{ desc:'Seat per student per exam; admit-card file; eligibility flag.', cols:`
     exam_id     ulid ! >exams
     student_id  ulid ! >students
-    room_id     ulid ! >rooms
+    room_id     ulid >rooms:null
     seat_no     str(10) !
     admit_card_file_id ulid >files:null
     is_eligible bool ! =true
