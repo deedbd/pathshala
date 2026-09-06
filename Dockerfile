@@ -3,7 +3,7 @@
 FROM node:22-alpine AS build
 RUN corepack disable && npm i -g pnpm@12.3.4
 WORKDIR /src
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc turbo.json tsconfig.base.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc turbo.json tsconfig.base.json .env.example ./
 COPY apps ./apps
 COPY packages ./packages
 COPY db ./db

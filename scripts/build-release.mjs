@@ -49,7 +49,7 @@ fs.copyFileSync(path.join(root, 'db', 'schema.json'), path.join(out, 'db', 'sche
 
 // 4. installer + env template + empty dirs
 for (const f of ['install.php', 'index.php']) fs.copyFileSync(path.join(root, 'apps', 'installer', f), path.join(out, f));
-fs.copyFileSync(path.join(root, '.env.example'), path.join(out, '.env.example'));
+if (fs.existsSync(path.join(root, '.env.example'))) fs.copyFileSync(path.join(root, '.env.example'), path.join(out, '.env.example'));
 for (const d of ['uploads/logs', 'uploads/installer', 'uploads/backups', 'storage/sqlite']) { fs.mkdirSync(path.join(out, d), { recursive: true }); fs.writeFileSync(path.join(out, d, '.gitkeep'), ''); }
 fs.writeFileSync(path.join(out, 'VERSION'), `${version}\n`);
 fs.writeFileSync(path.join(out, 'README.txt'), `Pathshala ${version}\n\nUpload this folder's contents to public_html on cPanel, then open your domain.\nThe installer configures Node (Passenger), the database, cron and the first school by itself.\nSee docs/HOSTING-CPANEL.md in the repository for the fallback matrix.\n`);
