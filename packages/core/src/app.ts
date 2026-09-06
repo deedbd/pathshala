@@ -28,6 +28,8 @@ import { CmsService } from './modules/cms.js';
 import { PortalService } from './modules/portal.js';
 import { AttendanceService } from './modules/attendance.js';
 import { CommunicationService } from './modules/communication.js';
+import { AccountingService } from './modules/accounting.js';
+import { FeesService } from './modules/fees.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -35,7 +37,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -84,6 +86,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const portal = new PortalService(db, timetable, cms);
   const attendance = new AttendanceService(db, outbox, notifications, academic, approvals, adapters);
   const communication = new CommunicationService(db, outbox, notifications, adapters);
+  const accounting = new AccountingService(db, outbox, numbering, approvals);
+  const fees = new FeesService(db, outbox, notifications, numbering, academic, accounting, adapters, config.appKey);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -97,20 +101,26 @@ export function createApp(opts: CreateAppOptions = {}): App {
       if (campus && !(await db.count('rooms', { school_id: schoolId }))) for (let i = 1; i <= 6; i++) await academic.createRoom(schoolId, { campusId: String(campus.id), name: `Room ${100 + i}`, capacity: 40 });
       await cms.ensureDefaultSite(schoolId);
       await attendance.ensureDefaultPolicy(schoolId);
+      await accounting.ensureBankAccounts(schoolId);
+      await accounting.ensureExpenseCategories(schoolId);
+      await fees.ensureFineRule(schoolId);
+      await fees.ensureDefaultStructures(schoolId, yearId);
     },
   });
 
   registerPlatformJobs({ db, adapters, notifications, outbox, log });
   adapters.queue.register('people.import_students', (payload, ctx) => importer.runJob(payload, ctx));
   adapters.queue.register('attendance.notify_absent', (payload, ctx) => attendance.notifyAbsentBatch(payload, ctx as never) as never);
+  adapters.queue.register('fees.generate_invoices', (payload, ctx) => fees.runBatch(payload, ctx));
   adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
   for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic });
+  for (const [key, fn] of Object.entries(fees.jobs())) adapters.scheduler.register(key, fn);
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -137,7 +147,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -171,6 +181,11 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
     if (!e.payload.substituteTeacherId) return;
     const st = await d.db.findOne<{ user_id: string | null }>('staff', { id: e.payload.substituteTeacherId });
     if (st?.user_id) await d.notifications.notify({ schoolId: e.schoolId, userId: st.user_id, channels: ['push', 'in_app'], eventKey: 'substitution.suggested', title: 'Substitution proposed', body: `You may be asked to cover a class on ${e.payload.onDate}. HOD will confirm.`, entityType: 'curriculum.substitution', entityId: e.payload.substitutionId });
+  });
+  // A9: a new student who shares a guardian phone with an active student gets a sibling discount proposed
+  h.on('student.enrolled', 'propose-sibling-discount', async e => {
+    const id = await d.fees.proposeSiblingDiscount(e.schoolId, e.payload.studentId, e.payload.academicYearId);
+    if (id) await d.notifications.notifyRole(e.schoolId, 'accountant', { channels: ['in_app'], eventKey: 'fees.discount_proposed', title: 'Sibling discount proposed', body: 'A newly enrolled student has a sibling already in school. Approve or reject the discount.', entityType: 'fees.discount', entityId: id });
   });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

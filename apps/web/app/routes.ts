@@ -19,6 +19,8 @@ export default [
     route('attendance', 'routes/attendance.tsx'),
     route('diary', 'routes/diary.tsx'),
     route('chat', 'routes/chat.tsx'),
+    route('fees', 'routes/fees.tsx'),
+    route('accounts', 'routes/accounts.tsx'),
   ]),
   route('teach', 'routes/teach.tsx'),
   ...prefix('site', [

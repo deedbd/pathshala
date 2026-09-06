@@ -31,3 +31,5 @@ export { CmsService, type PageBlock, type PageInput, type EnquiryInput } from '.
 export { PortalService } from './modules/portal.js';
 export { AttendanceService, type MarkInput, type PolicyInput, type LeaveInput, type StudentStatus, type RegisterRow } from './modules/attendance.js';
 export { CommunicationService, type MessageInput } from './modules/communication.js';
+export { AccountingService, round, type JournalInput, type JournalLine } from './modules/accounting.js';
+export { FeesService, type PaymentInput, type StructureItemInput, type Frequency } from './modules/fees.js';

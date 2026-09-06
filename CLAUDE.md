@@ -40,8 +40,11 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Console API endpoints go through `requirePerm`, which refuses portal accounts (guardian/student/alumni) outright; portal data is served by `/api/portal/*` and `/api/teach/*`, which check the parent-child or staff link instead of a role.
 - Timestamps are second-precision on every engine (MySQL DATETIME(0)), so "most recent" ordering must tie-break — see the conversation list query. Postgres sorts NULLs first on DESC; MySQL 8 rejects `CAST(x AS INTEGER)`; `SELECT DISTINCT` + `ORDER BY` needs the sort column in the select list.
 
+- Money: every movement goes through `AccountingService.post()`, which refuses an unbalanced entry. Fees, payments, refunds and expenses each post their own journal, so the trial balance comes from the same rows the modules wrote. Amounts are rounded with `round()` (2 dp) everywhere.
+- JSON columns must hold valid JSON on MySQL/Postgres (SQLite is lax): an encrypted secret is stored as `{ enc: "v1..." }`, never as a bare string.
+
 ## Next step
-Phase 3 (`docs/PLAN.md`, weeks 11–14) → **pilot go-live**: fee heads/structures/overrides/discounts, monthly invoice batch with pro-rata, bKash/Nagad/SSLCommerz IPN, counter cash sessions, allocation & ledger, reminder ladder, fines, refunds, instalments; GL seed already exists, add auto-journals, expenses & approvals, bank reconciliation, budgets, statements; guardian PWA pay flow. Exit: a month closes with a balanced trial balance and zero manual fee journals.
+Phase 4 (`docs/PLAN.md`, weeks 15–19): grading scales, exams, schedules, seat plans and admit cards with eligibility, marks entry (web grid + Excel + OMR v1), verification/lock, the result engine (weights, ties, F→0), report cards in bn/en with pdfmake, publish scheduling, promotion, question bank and paper generator, online exams, competency assessment v1. Exit: annual results for 1,500 students published with PDFs in under 10 minutes on shared hosting (chunked job).
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

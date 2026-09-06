@@ -41,6 +41,8 @@ Fee heads/structures/overrides/discounts, monthly batch with pro-rata, bKash/Nag
 
 **Exit:** a month closes with balanced trial balance and zero manual fee journals; pilot school collects online.
 
+> **Status (7 Sep 2026): implemented.** `fees` (heads, per-class structures with frequency and due day, discounts including the automatic sibling proposal A9, the chunked invoice batch with pro-rata for mid-month admissions, payments allocated oldest-first with advances kept visible, student ledger, the reminder ladder that survives a missed day, late fines, refunds, counter cash sessions with variance, signed and idempotent gateway IPN for bKash/Nagad/SSLCommerz, guardian pay flow) and `accounting` (double-entry GL where every fee, payment, refund and expense posts its own journal, trial balance, income statement, expenses with approval, bank import and reconciliation, budgets). Console pages: fees, accounts. `tests/phase3.test.mjs` proves the exit criterion — balanced trial balance, `is_auto` on every fee journal, and the receivable account agreeing with the fee module. Green on SQLite, MySQL and Postgres. Not yet: instalment plans UI, cheque clearing, MPO grant handling, PDF receipts.
+
 ## Phase 4 · Assessment (weeks 15–19)
 
 Grading scales, exams, schedules, seat plans & admit cards with eligibility, marks entry (web grid + Excel + OMR v1), verification/lock, result engine (weights, ties, F→0), report cards (bn/en, pdfmake), publish scheduling, promotion, question bank & paper generator, online exams, competency assessment v1.
