@@ -1,0 +1,37 @@
+# VPS shape of the same build: Postgres + the app container. `docker compose up -d` then open http://localhost:3000/install.
+# Redis/MinIO/Gotenberg arrive with the bullmq/s3/chromium adapters; until then ADAPTERS stays on the db/local/pdfmake set.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pathshala
+      POSTGRES_USER: pathshala
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-pathshala}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ['CMD-SHELL', 'pg_isready -U pathshala'], interval: 5s, timeout: 3s, retries: 20 }
+
+  app:
+    image: ${PATHSHALA_IMAGE:-pathshala:local}
+    build: .
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      APP_KEY: ${APP_KEY:-change-me-to-64-hex-chars-before-going-live-0000000000000000000000}
+      CRON_KEY: ${CRON_KEY:-change-me}
+      DB_URL: postgres://pathshala:${DB_PASSWORD:-pathshala}@db:5432/pathshala
+      ADAPTERS: db,inprocess,local,pdfmake,sse
+      CRON_MODE: inprocess
+      FONTS_DIR: app/node_modules/@pathshala/adapters/fonts
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-Pathshala <no-reply@localhost>}
+    ports: ['3000:3000']
+    volumes:
+      - uploads:/srv/pathshala/uploads
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:

@@ -1,0 +1,29 @@
+{
+  "name": "@pathshala/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hosting adapters: queue · scheduler · storage · pdf · realtime · mail · sms · push. Domain code imports only the interfaces.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "fonts"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput"
+  },
+  "dependencies": {
+    "@pathshala/db": "workspace:*",
+    "nodemailer": "10.0.0",
+    "pdfmake": "0.3.11",
+    "web-push": "3.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/nodemailer": "8.0.1",
+    "@types/pdfmake": "0.3.3",
+    "@types/web-push": "3.6.4",
+    "typescript": "5.9.3"
+  }
+}

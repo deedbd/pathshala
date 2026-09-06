@@ -26,9 +26,18 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - `db/mysql/schema.sql`, `db/sqlite/schema.sql`, `db/schema.json`, `db/SCHEMA.md` — generated
 - `db/postgres/` and `docs/v1/` — archived v1 (Postgres/NestJS)
 
+## Application code (Phase 0 shipped)
+- Monorepo: pnpm 12 + Turborepo. `apps/server` (Express 5, Passenger startup `server.js`), `apps/web` (React Router 7 SSR), `apps/installer` (`install.php`), `packages/db|core|adapters|events|schemas|ui`. See README.md for the layout.
+- `pnpm install && pnpm build && pnpm smoke` — the smoke test (`tests/smoke.test.mjs`) is the Phase 0 exit criterion: installer → school → rule → SMS + PDF → scheduler → HTTP API. CI runs it on SQLite, MySQL 8 and Postgres 16.
+- After editing `db/schema/*.def.mjs` run `pnpm db:generate` (SQL for 3 engines + schema.json + seeds JSON from docs/AUTOMATION.md + Drizzle tables). CI fails if generated files are stale.
+- Release: `pnpm release:cpanel` → `release/pathshala-<ver>-cpanel.zip` (uses `pnpm deploy --legacy`; `scripts/check-native.mjs` rejects native addons). `docker compose up` boots the same build on Postgres.
+- Rule of thumb in code: `Db` (packages/db) is dialect-agnostic — `?` placeholders, UTC `'YYYY-MM-DD HH:MM:SS'` strings, JSON columns always hold valid JSON (stringify scalars). Services take `schoolId` explicitly; the request context (`runWithContext`) carries actor/tenant for audit.
+- Web routes use typegen types (`import type { Route } from './+types/<name>'`); `context.app` is the `App` from `@pathshala/core`. Body parsers are mounted only under `/api` and `/cron` — React Router actions read the raw stream.
+
 ## Next step
-Phase 0 (`docs/PLAN.md`): pnpm + Turborepo monorepo, `apps/api`, `apps/web`, `apps/portal`, `packages/db|core|events|adapters|ui|api-client`, installer (`install.php` + `/install` wizard), auth/tenancy/RBAC/audit, automation core, notifications, release pipeline producing the cPanel zip and Docker images from one commit. Exit criterion: fresh cPanel account → dashboard in 5 minutes with no cPanel clicks.
+Phase 1 (`docs/PLAN.md`, weeks 4–7): academic structure (school/college/madrasa/coaching modes), students/guardians/staff, enrollments, Excel import with error file, timetable builder + auto-generator v1, substitutions, syllabus & lesson plans, calendar, CMS website with admission form and notices, guardian PWA v0, design-system components in `packages/ui`. Exit: 1,500 students imported in < 2 min; 40-section timetable with zero clashes; school website live.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.
-- XAMPP MariaDB at `C:\xampp\mysql\bin` can be started on a temp port for MySQL verification; `node:sqlite` is available in Node 25 for SQLite verification.
+- No MySQL/MariaDB or Docker on this machine (XAMPP is not installed here); MySQL/Postgres verification happens in GitHub Actions. `node:sqlite` works in Node 22.13+ (experimental warning is harmless).
+- pnpm 12: install-script approval lives in `pnpm-workspace.yaml` (`allowBuilds`); `pnpm deploy` needs `--legacy` with the shared lockfile, and it strips the workspace `.bin` shims (tsc disappears) — `scripts/build-release.mjs` runs `pnpm install` afterwards; do the same if you ever run deploy by hand.

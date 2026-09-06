@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Only build-time tooling may run install scripts. The server's production tree stays pure JS
+# (scripts/check-native.mjs enforces it); esbuild/rollup binaries are never shipped to cPanel.
+allowBuilds:
+  esbuild: true

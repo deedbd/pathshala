@@ -19,6 +19,8 @@ Target: first paying school live on Namecheap cPanel at **week 14**, general ava
 
 **Exit:** a fresh Namecheap account → upload zip → extract → open domain → dashboard in under 5 minutes with no cPanel clicks; rule → SMS + PDF end-to-end; same build boots in Docker with Postgres.
 
+> **Status (7 Sep 2026): implemented.** Monorepo (`apps/server`, `apps/web`, `apps/installer`, `packages/db|core|adapters|events|schemas|ui`), all adapters with cPanel implementations and VPS stubs, `install.php` + `/install` wizard, auth (password/OTP/TOTP/session epoch/JWT), tenancy context, RBAC, audit, files, settings, custom fields, automation core (outbox → relay → system handlers + JSONLogic rules → DB queue with chunked jobs, scheduler with DB lock and heartbeat, approvals, tasks), notifications (templates bn/en, quiet hours, sms/email/push/in-app), release pipeline (cPanel zip + Docker from one commit). `tests/smoke.test.mjs` covers the exit criterion on SQLite locally and on MySQL 8 / Postgres 16 in CI. Not yet done: Cloudflare Turnstile is wired on login but untested against a real site key; a real Namecheap account run is still to be performed.
+
 ## Phase 1 · Academic core, people, website (weeks 4–7)
 
 Academic structure (school/college/madrasa/coaching switches), students/guardians/staff, enrollments, Excel import with error file, timetable builder with clash rules + auto-generator v1, substitutions, syllabus & lesson plans, calendar, CMS website with admission form and notices, guardian PWA v0 (child card, notices, timetable), design system components.

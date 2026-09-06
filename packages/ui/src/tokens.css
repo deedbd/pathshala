@@ -1,0 +1,79 @@
+/* Pathshala design tokens — docs/DESIGN-SYSTEM.md (the exercise book: cool paper, ruled-line blue, margin red; teal = automation). */
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", "Noto Sans Bengali", system-ui, sans-serif;
+  --font-bn: "Noto Sans Bengali", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-auto: var(--auto);
+  --color-cron: var(--cron);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+
+  --radius-ctl: 6px;
+  --radius-card: 10px;
+  --shadow-float: 0 8px 24px rgb(23 32 42 / 0.12);
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #F2F4F7; --surface: #FFFFFF; --surface-2: #EAEEF2; --ink: #17202A; --muted: #5F6C79; --line: #D4DBE2;
+  --accent: #2B5FA8; --accent-soft: #E1EAF7; --auto: #147D6F; --cron: #8A5A1E; --ok: #1E7F4F; --warn: #A8651A; --bad: #B9352F;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1418; --surface: #161D24; --surface-2: #1F2831; --ink: #E5EAEF; --muted: #97A4B1; --line: #2B3641;
+    --accent: #86B4F2; --accent-soft: #1B2C44; --auto: #4FC4B0; --cron: #E0AE68; --ok: #4FC786; --warn: #E3A85A; --bad: #EF7C74;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1418; --surface: #161D24; --surface-2: #1F2831; --ink: #E5EAEF; --muted: #97A4B1; --line: #2B3641;
+  --accent: #86B4F2; --accent-soft: #1B2C44; --auto: #4FC4B0; --cron: #E0AE68; --ok: #4FC786; --warn: #E3A85A; --bad: #EF7C74;
+}
+
+html { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 14px; -webkit-text-size-adjust: 100%; }
+@media (max-width: 640px) { html { font-size: 15px; } }
+[lang="bn"] { font-family: var(--font-bn); line-height: 1.6; }
+h1, h2, h3, .display { font-family: var(--font-display); font-weight: 700; letter-spacing: -0.01em; text-wrap: balance; }
+.num, .money, code { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* components */
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-[var(--radius-ctl)] px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-secondary { background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+.btn-ghost { color: var(--accent); }
+.btn-danger { background: var(--bad); color: #fff; }
+.btn-sm { @apply px-3 py-1.5 text-xs; }
+.input { @apply w-full rounded-[var(--radius-ctl)] px-3 py-2 text-sm; background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+.input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.label { @apply block text-xs font-medium mb-1; color: var(--muted); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); }
+.chip { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium; background: var(--surface-2); color: var(--ink); }
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+.chip-ok { color: var(--ok); } .chip-warn { color: var(--warn); } .chip-bad { color: var(--bad); } .chip-auto { color: var(--auto); } .chip-cron { color: var(--cron); } .chip-accent { color: var(--accent); }
+.banner { @apply rounded-[var(--radius-card)] px-4 py-3 text-sm; border: 1px solid var(--line); background: var(--surface-2); }
+.banner-ok { border-color: var(--ok); } .banner-warn { border-color: var(--warn); } .banner-bad { border-color: var(--bad); } .banner-info { border-color: var(--accent); }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 1rem; }
+.kpi .kpi-label { @apply text-xs; color: var(--muted); }
+.kpi .kpi-value { font-family: var(--font-display); font-weight: 700; font-size: 1.5rem; line-height: 2rem; margin-top: 0.25rem; }
+.table { @apply w-full text-sm; }
+.table th { @apply text-left text-xs font-medium py-2 px-3; color: var(--muted); border-bottom: 1px solid var(--line); }
+.table td { @apply py-2 px-3 align-top; border-bottom: 1px solid var(--line); }
+.table tr:hover td { background: var(--surface-2); }
+.feed-item { @apply flex gap-3 py-3; border-bottom: 1px solid var(--line); }
+.feed-icon { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; font-size: 12px; flex: none; }
+.feed-system { background: var(--accent-soft); color: var(--accent); } .feed-rule { background: color-mix(in srgb, var(--auto) 15%, transparent); color: var(--auto); } .feed-cron { background: color-mix(in srgb, var(--cron) 15%, transparent); color: var(--cron); }

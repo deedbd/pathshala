@@ -1,0 +1,40 @@
+import { Form, NavLink, Outlet, useLoaderData } from 'react-router';
+import type { Route } from './+types/console';
+import { t, type Locale } from '@pathshala/ui';
+import { requireUser } from '~/lib';
+
+export async function loader({ context, request }: Route.LoaderArgs) {
+  const user = requireUser(context, request);
+  const school = await context.app.db.findOne<{ name: string; name_bn: string | null }>('schools', { id: user.school_id });
+  const access = await context.app.rbac.accessFor(user.id);
+  return { locale: (user.locale as Locale) || context.locale, user: { name: user.display_name, type: user.user_type }, school, roles: access.roles, canAutomation: access.roles.includes('super_admin') || access.permissions.has('platform.view'), mode: context.app.adapters.mode, engine: context.app.db.engine };
+}
+
+export default function Console() {
+  const d = useLoaderData<typeof loader>();
+  const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
+  const schoolName = d.locale === 'bn' && d.school?.name_bn ? d.school.name_bn : d.school?.name;
+  const link = ({ isActive }: { isActive: boolean }) => `block rounded-[var(--radius-ctl)] px-3 py-2 text-sm ${isActive ? 'font-medium' : ''}`;
+  const style = ({ isActive }: { isActive: boolean }) => (isActive ? { background: 'var(--accent-soft)', color: 'var(--accent)' } : { color: 'var(--ink)' });
+  return (
+    <div className="flex min-h-screen flex-col sm:flex-row" lang={d.locale}>
+      <aside className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:w-[236px] sm:flex-col sm:items-stretch sm:justify-start sm:border-b-0 sm:border-r" style={{ borderColor: 'var(--line)', background: 'var(--surface)' }}>
+        <div className="sm:mb-4">
+          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>{tr('app.name')}</div>
+          <div className="display truncate text-base">{schoolName}</div>
+        </div>
+        <nav className="flex gap-1 sm:flex-col">
+          <NavLink to="/dashboard" className={link} style={style}>{tr('nav.dashboard')}</NavLink>
+          {d.canAutomation && <NavLink to="/automation" className={link} style={style}>{tr('nav.automation')}</NavLink>}
+        </nav>
+        <div className="hidden sm:mt-auto sm:block">
+          <div className="text-xs" style={{ color: 'var(--muted)' }}>{d.user.name} · {d.roles[0] ?? d.user.type}</div>
+          <div className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{d.engine} · {d.mode}</div>
+          <Form method="post" action="/logout"><button className="btn btn-ghost btn-sm mt-2 px-0">{tr('nav.logout')}</button></Form>
+        </div>
+        <Form method="post" action="/logout" className="sm:hidden"><button className="btn btn-ghost btn-sm">{tr('nav.logout')}</button></Form>
+      </aside>
+      <main className="flex-1 p-4 sm:p-6"><Outlet /></main>
+    </div>
+  );
+}

@@ -1,0 +1,82 @@
+import type { Db } from '@pathshala/db';
+import { json, nowSql, ulid } from '@pathshala/db';
+import type { Logger } from '@pathshala/adapters';
+import type { EventEnvelope } from '@pathshala/events';
+import type { HandlerRegistry } from './handlers.js';
+import type { RuleEngine } from './rules.js';
+import { hmac } from '../util.js';
+
+/**
+ * Outbox relay: publishes unpublished `outbox_events` to consumers — system handlers, the rule engine,
+ * webhooks. At-least-once delivery + `event_consumptions` (consumer, event_uid) = effectively once.
+ * Runs every 500 ms in-process, and on every scheduler tick / request heartbeat as a fallback.
+ */
+export class Relay {
+  private timer: NodeJS.Timeout | null = null;
+  private busy = false;
+  private wanted = false;
+  constructor(private db: Db, private handlers: HandlerRegistry, private rules: RuleEngine, private log: Logger, private appKey: string) {}
+
+  private stopped = false;
+  start(intervalMs = 500) { this.stopped = false; if (this.timer) return; this.timer = setInterval(() => void this.run().catch(e => this.log.error('relay', e)), intervalMs); this.timer.unref?.(); }
+  async stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; while (this.busy) await new Promise(r => setTimeout(r, 20)); }
+  /** Called by the outbox after an emit so events publish without waiting for the next interval. */
+  nudge() { this.wanted = true; setImmediate(() => { if (this.wanted && !this.busy && !this.stopped) void this.run().catch(e => this.log.error('relay', e)); }); }
+
+  async run(max = 100): Promise<{ published: number; failed: number }> {
+    if (this.busy || this.stopped) return { published: 0, failed: 0 };
+    this.busy = true; this.wanted = false;
+    let published = 0, failed = 0;
+    try {
+      const rows = await this.db.query<Record<string, unknown>>(`SELECT * FROM outbox_events WHERE published_at IS NULL ORDER BY occurred_at ASC, id ASC LIMIT ${max}`);
+      for (const row of rows) {
+        const event: EventEnvelope = { uid: String(row.event_uid), type: row.event_type as EventEnvelope['type'], schoolId: String(row.school_id), aggregateType: String(row.aggregate_type), aggregateId: String(row.aggregate_id), payload: (json(row.payload) ?? {}) as never, actorUserId: row.actor_user_id as string | null, occurredAt: String(row.occurred_at), version: Number(row.version) };
+        let ok = true;
+        for (const h of this.handlers.for(event.type)) ok = (await this.once(`system:${h.name}`, event, () => h.fn(event))) && ok;
+        ok = (await this.once('rules', event, () => this.rules.handle(event))) && ok;
+        ok = (await this.once('webhooks', event, () => this.webhooks(event))) && ok;
+        if (ok) { await this.db.update('outbox_events', { published_at: nowSql() }, { id: row.id as string }); published++; }
+        else failed++;
+      }
+    } finally { this.busy = false; }
+    return { published, failed };
+  }
+
+  /** Runs `fn` once per (consumer, event); a thrown error leaves the event unpublished for a retry on the next pass. */
+  private async once(consumer: string, event: EventEnvelope, fn: () => Promise<unknown>): Promise<boolean> {
+    const done = await this.db.findOne('event_consumptions', { consumer, event_uid: event.uid });
+    if (done) return true;
+    try {
+      await fn();
+      await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, processed_at: nowSql() });
+      return true;
+    } catch (e) {
+      const attempts = Number(await this.db.count('event_consumptions', { consumer: `${consumer}:failed`, event_uid: event.uid }));
+      this.log.error(`consumer ${consumer} failed on ${event.type} ${event.uid} (attempt ${attempts + 1})`, e);
+      await this.db.insert('event_consumptions', { id: ulid(), consumer: `${consumer}:failed`, event_uid: event.uid, processed_at: nowSql() });
+      if (attempts + 1 >= 5) { // give up: record and let the event publish so the queue does not stall
+        await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, processed_at: nowSql() });
+        return true;
+      }
+      return false;
+    }
+  }
+
+  private async webhooks(event: EventEnvelope) {
+    const hooks = await this.db.findMany<Record<string, unknown>>('webhooks', { school_id: event.schoolId, is_active: true });
+    for (const h of hooks) {
+      const types = json<string[]>(h.event_types) ?? [];
+      if (types.length && !types.includes(event.type) && !types.includes('*')) continue;
+      const body = JSON.stringify(event);
+      const id = ulid();
+      try {
+        const res = await fetch(String(h.url), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Pathshala-Signature': hmac(String(h.secret || this.appKey), body) }, body, signal: AbortSignal.timeout(8000) });
+        await this.db.insert('webhook_deliveries', { id, school_id: event.schoolId, webhook_id: h.id as string, event_uid: event.uid, attempt: 1, response_code: res.status, response_body: (await res.text()).slice(0, 2000), delivered_at: res.ok ? nowSql() : null, next_retry_at: res.ok ? null : nowSql(new Date(Date.now() + 600_000)) });
+        if (!res.ok) await this.db.execute(`UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = ?`, [h.id]);
+      } catch (e) {
+        await this.db.insert('webhook_deliveries', { id, school_id: event.schoolId, webhook_id: h.id as string, event_uid: event.uid, attempt: 1, response_code: null, response_body: (e as Error).message.slice(0, 2000), delivered_at: null, next_retry_at: nowSql(new Date(Date.now() + 600_000)) });
+        await this.db.execute(`UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = ?`, [h.id]);
+      }
+    }
+  }
+}

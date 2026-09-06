@@ -10,3 +10,11 @@ uploads/
 Thumbs.db
 .turbo/
 coverage/
+release/
+storage/
+*.tsbuildinfo
+.react-router/
+apps/web/build/
+packages/*/dist/
+apps/*/dist/
+tests/.tmp/

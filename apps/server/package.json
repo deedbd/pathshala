@@ -1,0 +1,35 @@
+{
+  "name": "@pathshala/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Express 5 host for Passenger: React Router SSR, /api, /install, /cron/tick, scheduler + queue worker",
+  "main": "./server.js",
+  "files": ["dist", "server.js"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@pathshala/adapters": "workspace:*",
+    "@pathshala/core": "workspace:*",
+    "@pathshala/db": "workspace:*",
+    "@pathshala/events": "workspace:*",
+    "@pathshala/schemas": "workspace:*",
+    "@pathshala/web": "workspace:*",
+    "@react-router/express": "7.18.3",
+    "@react-router/node": "7.18.3",
+    "express": "5.2.1",
+    "isbot": "5.2.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router": "7.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  }
+}

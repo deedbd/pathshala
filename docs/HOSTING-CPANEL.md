@@ -11,12 +11,16 @@ cannot be automated, the app falls back to a mode that needs no configuration.
 ```
 public_html/
   .htaccess                 → Passenger directives written by install.php (Node app root, startup file)
-  install.php               → PHP bootstrap (PHP is always present on cPanel)
-  app/                      → server.js (Express 5 + React Router SSR handler), build/ (client + server), node_modules/ (pure JS, prebuilt)
-  uploads/                  → files (never in the DB), generated PDFs, backups/ staging, logs/
-  db/                       → migrations/ (Drizzle), seeds/, mysql/schema.sql, sqlite/schema.sql (fallback)
-  .env.example
+  index.php, install.php    → PHP bootstrap (PHP is always present on cPanel); both deleted when setup completes
+  app/                      → server.js (Passenger startup), dist/ (Express 5 + React Router SSR handler),
+                              web-build/ (client + server bundles), node_modules/ (pure JS, prebuilt, fonts included), tmp/restart.txt
+  uploads/                  → files (never in the DB), generated PDFs, backups/ staging, logs/, installer/state.json
+  storage/sqlite/           → the SQLite fallback database when no MySQL could be created
+  db/                       → mysql/ sqlite/ postgres/ schema.sql, migrations/<engine>/, seeds/*.json, schema.json
+  .env (written by install.php) · .env.example · VERSION · README.txt
 ```
+Built by `pnpm release:cpanel` (`scripts/build-release.mjs`), which runs `pnpm deploy` for the server so the
+workspace packages are real directories, copies the web build, `db/` and the installer, then zips.
 The release pipeline builds the zip with `node_modules` already installed for Linux x64 and
 Node 22 (`/opt/alt/alt-nodejs22`). Only pure-JS packages (bcryptjs, jimp, pdf-lib, mysql2,
 xlsx) — no compiler, no npm on the server. Migrations run automatically when the app boots.

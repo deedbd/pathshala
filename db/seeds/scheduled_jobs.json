@@ -1,0 +1,142 @@
+[
+  {
+    "job_key": "attendance.auto_absent",
+    "cron_expr": "30 10 * * 0-4",
+    "rows": "C4"
+  },
+  {
+    "job_key": "attendance.refresh_summary",
+    "cron_expr": "0 1 * * *",
+    "rows": "C11"
+  },
+  {
+    "job_key": "attendance.monthly_threshold",
+    "cron_expr": "0 7 1 * *",
+    "rows": "C6"
+  },
+  {
+    "job_key": "leave.accrue",
+    "cron_expr": "5 0 1 * *",
+    "rows": "C10"
+  },
+  {
+    "job_key": "fees.generate_invoices",
+    "cron_expr": "0 6 1 * *",
+    "rows": "F1"
+  },
+  {
+    "job_key": "fees.reminders",
+    "cron_expr": "0 8 * * *",
+    "rows": "F3"
+  },
+  {
+    "job_key": "fees.overdue_and_fines",
+    "cron_expr": "30 0 * * *",
+    "rows": "F4"
+  },
+  {
+    "job_key": "fees.day_end_summary",
+    "cron_expr": "0 18 * * *",
+    "rows": "F10"
+  },
+  {
+    "job_key": "payroll.draft_run",
+    "cron_expr": "0 9 25 * *",
+    "rows": "H1"
+  },
+  {
+    "job_key": "hr.expiry_alerts",
+    "cron_expr": "0 8 * * *",
+    "rows": "H3, H4"
+  },
+  {
+    "job_key": "exams.pre_exam_prep",
+    "cron_expr": "0 7 * * *",
+    "rows": "D2"
+  },
+  {
+    "job_key": "exams.marks_deadline_reminders",
+    "cron_expr": "0 9 * * *",
+    "rows": "D3"
+  },
+  {
+    "job_key": "lms.assignment_reminders",
+    "cron_expr": "0 * * * *",
+    "rows": "E2"
+  },
+  {
+    "job_key": "library.due_and_fines",
+    "cron_expr": "0 7 * * *",
+    "rows": "I2, I3"
+  },
+  {
+    "job_key": "transport.create_trips",
+    "cron_expr": "0 5 * * 0-4",
+    "rows": "J1"
+  },
+  {
+    "job_key": "transport.delay_watch",
+    "cron_expr": "*/5 * * * *",
+    "rows": "J4"
+  },
+  {
+    "job_key": "transport.document_expiry",
+    "cron_expr": "0 8 * * *",
+    "rows": "J7"
+  },
+  {
+    "job_key": "hostel.curfew_watch",
+    "cron_expr": "*/15 * * * *",
+    "rows": "K3"
+  },
+  {
+    "job_key": "inventory.maintenance_due",
+    "cron_expr": "0 8 * * *",
+    "rows": "L4"
+  },
+  {
+    "job_key": "comms.publish_scheduled_notices",
+    "cron_expr": "*/10 * * * *",
+    "rows": "M2"
+  },
+  {
+    "job_key": "comms.provider_balance",
+    "cron_expr": "0 * * * *",
+    "rows": "M3"
+  },
+  {
+    "job_key": "comms.weekly_digest",
+    "cron_expr": "0 18 * * 6",
+    "rows": "M5"
+  },
+  {
+    "job_key": "welfare.behaviour_rules",
+    "cron_expr": "0 2 * * *",
+    "rows": "N2"
+  },
+  {
+    "job_key": "platform.kpi_snapshot",
+    "cron_expr": "0 0 * * *",
+    "rows": "N9"
+  },
+  {
+    "job_key": "platform.housekeeping",
+    "cron_expr": "0 3 * * *",
+    "rows": "N10"
+  },
+  {
+    "job_key": "academic.syllabus_lag",
+    "cron_expr": "0 8 * * 0",
+    "rows": "B6"
+  },
+  {
+    "job_key": "admissions.offer_expiry",
+    "cron_expr": "0 * * * *",
+    "rows": "A7"
+  },
+  {
+    "job_key": "admissions.followup_reminders",
+    "cron_expr": "0 9 * * *",
+    "rows": "A2"
+  }
+]

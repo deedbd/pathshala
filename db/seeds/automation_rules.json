@@ -1,0 +1,452 @@
+[
+  {
+    "code": "A1",
+    "module": "admissions",
+    "name": "Assign counsellor round-robin",
+    "description": "⚙️ enquiry.created · — → Assign counsellor round-robin; send acknowledgement SMS; create follow-up task due +48h",
+    "trigger_kind": "event",
+    "event_type": "enquiry.created",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Assign counsellor round-robin; send acknowledgement SMS; create follow-up task due +48h"
+      }
+    ]
+  },
+  {
+    "code": "A5",
+    "module": "admissions",
+    "name": "Compute merit list (score desc, sibling priority, DOB tie-break)",
+    "description": "⚙️ test.results_entered · all results in for class → Compute merit list (score desc, sibling priority, DOB tie-break); shortlist top-N by seats; waitlist rest; notify all",
+    "trigger_kind": "event",
+    "event_type": "test.results_entered",
+    "condition_text": "all results in for class",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Compute merit list (score desc, sibling priority, DOB tie-break); shortlist top-N by seats; waitlist rest; notify all"
+      }
+    ]
+  },
+  {
+    "code": "A9",
+    "module": "admissions",
+    "name": "Propose sibling discount for approval",
+    "description": "⚙️ applicant.enrolled · shared guardian phone with active student → Propose sibling discount for approval",
+    "trigger_kind": "event",
+    "event_type": "applicant.enrolled",
+    "condition_text": "shared guardian phone with active student",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Propose sibling discount for approval"
+      }
+    ]
+  },
+  {
+    "code": "B1",
+    "module": "academic",
+    "name": "Clone class-subjects, fee structures, grading scale, leave types, section templates from previous year",
+    "description": "⚙️ academic_year.created · — → Clone class-subjects, fee structures, grading scale, leave types, section templates from previous year",
+    "trigger_kind": "event",
+    "event_type": "academic_year.created",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Clone class-subjects, fee structures, grading scale, leave types, section templates from previous year"
+      }
+    ]
+  },
+  {
+    "code": "B4",
+    "module": "academic",
+    "name": "Notify substitute + section students",
+    "description": "⚙️ substitution.approved · — → Notify substitute + section students; update period attendance owner",
+    "trigger_kind": "event",
+    "event_type": "substitution.approved",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Notify substitute + section students; update period attendance owner"
+      }
+    ]
+  },
+  {
+    "code": "B5",
+    "module": "academic",
+    "name": "Mark attendance holiday for range",
+    "description": "⚙️ calendar.holiday_added · — → Mark attendance holiday for range; skip reminders/notifications on those days; cancel online classes",
+    "trigger_kind": "event",
+    "event_type": "calendar.holiday_added",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Mark attendance holiday for range; skip reminders/notifications on those days; cancel online classes"
+      }
+    ]
+  },
+  {
+    "code": "B7",
+    "module": "academic",
+    "name": "Create online_classes from slots for remote days",
+    "description": "⚙️ timetable published · school enables auto online class → Create online_classes from slots for remote days",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "school enables auto online class",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Create online_classes from slots for remote days"
+      }
+    ]
+  },
+  {
+    "code": "C2",
+    "module": "attendance",
+    "name": "SMS/push to guardians: \"arrived 08:47, 17 min late\"",
+    "description": "⚙️ attendance.marked · status late, notify_on_late → SMS/push to guardians: \"arrived 08:47, 17 min late\"",
+    "trigger_kind": "event",
+    "event_type": "attendance.marked",
+    "condition_text": "status late, notify_on_late",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "SMS/push to guardians: \"arrived 08:47, 17 min late\""
+      }
+    ]
+  },
+  {
+    "code": "C3",
+    "module": "attendance",
+    "name": "Arrival push (SMS optional)",
+    "description": "⚙️ attendance.marked · status present, notify_on_arrival → Arrival push (SMS optional)",
+    "trigger_kind": "event",
+    "event_type": "attendance.marked",
+    "condition_text": "status present, notify_on_arrival",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Arrival push (SMS optional)"
+      }
+    ]
+  },
+  {
+    "code": "C5",
+    "module": "attendance",
+    "name": "Task to class teacher",
+    "description": "⚙️ attendance.absent · 3rd consecutive absent → Task to class teacher; call-log task for front office",
+    "trigger_kind": "event",
+    "event_type": "attendance.absent",
+    "condition_text": "3rd consecutive absent",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Task to class teacher; call-log task for front office"
+      }
+    ]
+  },
+  {
+    "code": "D2",
+    "module": "assessment",
+    "name": "Seat plan (room capacity, alternate sections), invigilator roster (load-balanced), admit cards only if fees clear & attendance OK",
+    "description": "⚙️ 7 days before exam · — → Seat plan (room capacity, alternate sections), invigilator roster (load-balanced), admit cards only if fees clear & attendance OK; list ineligible to accounts",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Seat plan (room capacity, alternate sections), invigilator roster (load-balanced), admit cards only if fees clear & attendance OK; list ineligible to accounts"
+      }
+    ]
+  },
+  {
+    "code": "D3",
+    "module": "assessment",
+    "name": "Reminder to subject teachers",
+    "description": "⚙️ marks entry deadline −2d · schedules with missing marks → Reminder to subject teachers; escalation to exam controller at deadline",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "schedules with missing marks",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Reminder to subject teachers; escalation to exam controller at deadline"
+      }
+    ]
+  },
+  {
+    "code": "D6",
+    "module": "assessment",
+    "name": "Publish",
+    "description": "⚙️ result.computed · exams.publish_at reached or auto_publish → Publish; report card PDF per student; SMS \"GPA 4.83, rank 5\" + app link; teacher remark placeholder tasks before publish",
+    "trigger_kind": "event",
+    "event_type": "result.computed",
+    "condition_text": "exams.publish_at reached or auto_publish",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Publish; report card PDF per student; SMS \"GPA 4.83, rank 5\" + app link; teacher remark placeholder tasks before publish"
+      }
+    ]
+  },
+  {
+    "code": "D7",
+    "module": "assessment",
+    "name": "Refer to counsellor",
+    "description": "⚙️ result.published · GPA drop ≥ 1.0 vs previous exam → Refer to counsellor; notify class teacher",
+    "trigger_kind": "event",
+    "event_type": "result.published",
+    "condition_text": "GPA drop ≥ 1.0 vs previous exam",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Refer to counsellor; notify class teacher"
+      }
+    ]
+  },
+  {
+    "code": "D8",
+    "module": "assessment",
+    "name": "Propose merit scholarship discount",
+    "description": "⚙️ result.published · GPA ≥ scheme auto_rule.min_gpa → Propose merit scholarship discount",
+    "trigger_kind": "event",
+    "event_type": "result.published",
+    "condition_text": "GPA ≥ scheme auto_rule.min_gpa",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Propose merit scholarship discount"
+      }
+    ]
+  },
+  {
+    "code": "E1",
+    "module": "lms",
+    "name": "Push to students & guardians of the section",
+    "description": "⚙️ assignment.published · — → Push to students & guardians of the section",
+    "trigger_kind": "event",
+    "event_type": "assignment.published",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Push to students & guardians of the section"
+      }
+    ]
+  },
+  {
+    "code": "E4",
+    "module": "lms",
+    "name": "Push with join link",
+    "description": "⚙️ online_class.starting (−15 min) · — → Push with join link; create meeting via Zoom/Meet API if missing",
+    "trigger_kind": "event",
+    "event_type": "online_class.starting",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Push with join link; create meeting via Zoom/Meet API if missing"
+      }
+    ]
+  },
+  {
+    "code": "F6",
+    "module": "fees",
+    "name": "Lift admit-card / document blocks",
+    "description": "⚙️ payment.received · no overdue remains → Lift admit-card / document blocks",
+    "trigger_kind": "event",
+    "event_type": "payment.received",
+    "condition_text": "no overdue remains",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Lift admit-card / document blocks"
+      }
+    ]
+  },
+  {
+    "code": "F7",
+    "module": "fees",
+    "name": "Notify payer with retry link",
+    "description": "⚙️ payment.failed · — → Notify payer with retry link; accounts sees failed list",
+    "trigger_kind": "event",
+    "event_type": "payment.failed",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Notify payer with retry link; accounts sees failed list"
+      }
+    ]
+  },
+  {
+    "code": "F11",
+    "module": "fees",
+    "name": "Route approval (principal)",
+    "description": "⚙️ discount.proposed · — → Route approval (principal); on approve, re-rate current-month open invoices",
+    "trigger_kind": "event",
+    "event_type": "discount.proposed",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Route approval (principal); on approve, re-rate current-month open invoices"
+      }
+    ]
+  },
+  {
+    "code": "F12",
+    "module": "fees",
+    "name": "Stop future invoices",
+    "description": "⚙️ student.status_changed → transferred/dropped · — → Stop future invoices; final settlement statement; refund proposal for refundable heads",
+    "trigger_kind": "event",
+    "event_type": "student.status_changed",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Stop future invoices; final settlement statement; refund proposal for refundable heads"
+      }
+    ]
+  },
+  {
+    "code": "G3",
+    "module": "accounting",
+    "name": "Budget alert to principal/treasurer",
+    "description": "⚙️ journal.posted · spend ≥ budgets.alert_at_pct → Budget alert to principal/treasurer",
+    "trigger_kind": "event",
+    "event_type": "journal.posted",
+    "condition_text": "spend ≥ budgets.alert_at_pct",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Budget alert to principal/treasurer"
+      }
+    ]
+  },
+  {
+    "code": "H7",
+    "module": "hr",
+    "name": "Pre-fill auto_metrics (attendance %, syllabus completion, class result average)",
+    "description": "⚙️ appraisal cycle opens · — → Pre-fill auto_metrics (attendance %, syllabus completion, class result average)",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Pre-fill auto_metrics (attendance %, syllabus completion, class result average)"
+      }
+    ]
+  },
+  {
+    "code": "I5",
+    "module": "library",
+    "name": "Block TC eligibility",
+    "description": "⚙️ student.status_changed → leaving · open issues → Block TC eligibility; task to librarian",
+    "trigger_kind": "event",
+    "event_type": "student.status_changed",
+    "condition_text": "open issues",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Block TC eligibility; task to librarian"
+      }
+    ]
+  },
+  {
+    "code": "I6",
+    "module": "library",
+    "name": "Mark lost",
+    "description": "⚙️ issue > 60 days, no response · — → Mark lost; charge book price",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Mark lost; charge book price"
+      }
+    ]
+  },
+  {
+    "code": "K5",
+    "module": "hostel",
+    "name": "Task to maintenance",
+    "description": "⚙️ complaint logged · category maintenance → Task to maintenance; SLA 48h",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "category maintenance",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Task to maintenance; SLA 48h"
+      }
+    ]
+  },
+  {
+    "code": "M4",
+    "module": "communication",
+    "name": "Reminders to guardian & teacher",
+    "description": "⚙️ PTM slot booked · −1 day, −1 hour → Reminders to guardian & teacher",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "−1 day, −1 hour",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Reminders to guardian & teacher"
+      }
+    ]
+  },
+  {
+    "code": "M6",
+    "module": "communication",
+    "name": "Push to participants, respecting mute",
+    "description": "⚙️ message sent in section channel · — → Push to participants, respecting mute",
+    "trigger_kind": "threshold",
+    "event_type": null,
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Push to participants, respecting mute"
+      }
+    ]
+  },
+  {
+    "code": "N1",
+    "module": "frontoffice",
+    "name": "Guardian notified with description",
+    "description": "⚙️ incident.reported · category notify_guardian → Guardian notified with description; class teacher copied",
+    "trigger_kind": "event",
+    "event_type": "incident.reported",
+    "condition_text": "category notify_guardian",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Guardian notified with description; class teacher copied"
+      }
+    ]
+  },
+  {
+    "code": "N11",
+    "module": "frontoffice",
+    "name": "Alert school admin + platform ops",
+    "description": "⚙️ rule.failed ×3 · — → Alert school admin + platform ops",
+    "trigger_kind": "event",
+    "event_type": "rule.failed",
+    "condition_text": "",
+    "actions": [
+      {
+        "type": "notify",
+        "note": "Alert school admin + platform ops"
+      }
+    ]
+  }
+]
