@@ -110,8 +110,8 @@ test('automation: rule → SMS + PDF end-to-end through outbox → relay → rul
   await app.outbox.emitNow({ type: 'test.ping', schoolId, aggregateType: 'platform.selftest', aggregateId: 'A', payload: { at: 'x', note: 'stop' } });
   // condition true → run
   const ev = await app.outbox.emitNow({ type: 'test.ping', schoolId, aggregateType: 'platform.selftest', aggregateId: 'B', payload: { at: 'x', note: 'go' } });
-  const rel = await app.relay.run();
-  assert.ok(rel.published >= 2, JSON.stringify(rel));
+  await app.relay.run(); // the in-process relay may already have published some of them; run() waits for it either way
+  assert.equal(await app.db.count('outbox_events', { school_id: schoolId, published_at: null }), 0, 'outbox drained');
   const runs = await app.db.query(`SELECT r.status, r.error FROM automation_runs r JOIN automation_rules a ON a.id = r.rule_id WHERE a.code = 'T1'`);
   assert.equal(runs.length, 1, JSON.stringify(runs));
   assert.equal(runs[0].status, 'success', runs[0].error);

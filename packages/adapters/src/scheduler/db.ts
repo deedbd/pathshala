@@ -45,9 +45,16 @@ export class DbScheduler implements SchedulerAdapter {
 
   async stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
 
+  private inflight: Promise<{ ran: string[]; skipped: number; errors: string[] }> | null = null;
+  /** Runs overdue jobs. A caller arriving mid-tick waits for that tick and then runs its own. */
   async tick() {
+    while (this.inflight) { try { await this.inflight; } catch { /* logged */ } }
+    this.inflight = this.tickOnce();
+    try { return await this.inflight; } finally { this.inflight = null; }
+  }
+
+  private async tickOnce() {
     const ran: string[] = []; const errors: string[] = []; let skipped = 0;
-    if (this.ticking) return { ran, skipped, errors };
     this.ticking = true;
     const { db, log } = this.opts;
     try {

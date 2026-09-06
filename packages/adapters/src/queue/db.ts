@@ -52,8 +52,15 @@ export class DbQueue implements QueueAdapter {
 
   async stop() { if (this.timer) clearInterval(this.timer); this.timer = null; while (this.running > 0) await new Promise(r => setTimeout(r, 50)); }
 
+  private inflight: Promise<{ ran: number; failed: number }> | null = null;
+  /** Runs due jobs. A caller arriving while a drain is in progress waits for it and then drains again. */
   async drain(max = this.opts.concurrency): Promise<{ ran: number; failed: number }> {
-    if (this.draining) return { ran: 0, failed: 0 };
+    while (this.inflight) { try { await this.inflight; } catch { /* logged */ } }
+    this.inflight = this.drainOnce(max);
+    try { return await this.inflight; } finally { this.inflight = null; }
+  }
+
+  private async drainOnce(max: number): Promise<{ ran: number; failed: number }> {
     this.draining = true;
     let ran = 0, failed = 0;
     try {

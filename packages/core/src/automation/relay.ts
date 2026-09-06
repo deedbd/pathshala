@@ -23,8 +23,25 @@ export class Relay {
   /** Called by the outbox after an emit so events publish without waiting for the next interval. */
   nudge() { this.wanted = true; setImmediate(() => { if (this.wanted && !this.busy && !this.stopped) void this.run().catch(e => this.log.error('relay', e)); }); }
 
+  private inflight: Promise<{ published: number; failed: number }> | null = null;
+  /** Publishes pending events. A caller that arrives while a pass is running waits for it, then runs its own pass. */
   async run(max = 100): Promise<{ published: number; failed: number }> {
-    if (this.busy || this.stopped) return { published: 0, failed: 0 };
+    if (this.stopped) return { published: 0, failed: 0 };
+    while (this.inflight) { try { await this.inflight; } catch { /* logged by the pass itself */ } }
+    // consumers emit follow-up events (task.created, approval.requested…); keep passing until nothing new is pending
+    this.inflight = (async () => {
+      const total = { published: 0, failed: 0 };
+      for (let i = 0; i < 8; i++) {
+        const r = await this.pass(max);
+        total.published += r.published; total.failed += r.failed;
+        if (r.published === 0) break;
+      }
+      return total;
+    })();
+    try { return await this.inflight; } finally { this.inflight = null; }
+  }
+
+  private async pass(max: number): Promise<{ published: number; failed: number }> {
     this.busy = true; this.wanted = false;
     let published = 0, failed = 0;
     try {
