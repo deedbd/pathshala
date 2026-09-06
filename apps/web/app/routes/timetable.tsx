@@ -30,7 +30,8 @@ export default function Timetable() {
   const generate = () => run(async () => setLast(await api('/api/timetable/generate', { method: 'POST', json: {} })));
   const publish = () => d.version && run(() => api(`/api/timetable/versions/${d.version!.id}/publish`, { method: 'POST', json: {} }));
   const suggest = (e: React.FormEvent<HTMLFormElement>) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()); run(() => api('/api/timetable/substitutions/suggest', { method: 'POST', json: { teacherId: f.teacherId, onDate: f.onDate } }).then(() => { const n = new URLSearchParams(sp); n.set('date', String(f.onDate)); setSp(n); })); };
-  const periods = d.periods.filter(p => p.shift_id == null || !d.sections.find(s => s.id === d.sectionId)?.shift_id || p.shift_id === d.sections.find(s => s.id === d.sectionId)?.shift_id);
+  const secShift = d.sections.find(s => s.id === d.sectionId)?.shift_id ?? d.periods.find(p => p.shift_id)?.shift_id ?? null; // no shift on the section → first shift's periods
+  const periods = d.periods.filter(p => p.shift_id == null || p.shift_id === secShift);
   const cell = (day: number, periodId: string) => d.grid.find(g => Number(g.day_of_week) === day && g.period_id === periodId);
   const subj = (g: Record<string, unknown>) => d.locale === 'bn' && g.subject_name_bn ? String(g.subject_name_bn) : String(g.subject_name ?? '—');
 

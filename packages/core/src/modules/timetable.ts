@@ -133,8 +133,10 @@ export class TimetableService {
 
     const teacherBusy = new Set<string>(); const roomBusy = new Set<string>();
     const rows: Row[] = []; let unplaced = 0; let placed = 0; const maxSame = opts.maxSamePerDay ?? 1;
+    const firstShift = (await this.academic.shifts(schoolId))[0]?.id ?? null;
     for (const sec of sections) {
-      const periods = allPeriods.filter(p => !Number(p.is_break) && (p.shift_id == null || p.shift_id === sec.shift_id || sec.shift_id == null));
+      const shiftId = sec.shift_id ?? firstShift; // sections without a shift use the first shift's day
+      const periods = allPeriods.filter(p => !Number(p.is_break) && (p.shift_id == null || p.shift_id === shiftId));
       if (!periods.length) continue;
       const cells: { day: number; period: Row }[] = []; for (const d of days) for (const p of periods) cells.push({ day: d, period: p });
       const free = new Set(cells.map(c => `${c.day}:${c.period.id}`));
@@ -151,10 +153,12 @@ export class TimetableService {
           if (da !== dbb) return da - dbb;
           return rnd() - 0.5;
         });
-        for (const c of candidates) {
+        // pass 1 keeps one period of a subject per day; pass 2 allows a second one when teacher/room clashes left gaps
+        for (const lim of [limit, limit + 1]) for (const c of candidates) {
           if (got >= need) break;
           const key = `${c.day}:${c.period.id}`;
-          if ((perDay.get(`${sub.id}:${c.day}`) ?? 0) >= limit) continue;
+          if (!free.has(key)) continue;
+          if ((perDay.get(`${sub.id}:${c.day}`) ?? 0) >= lim) continue;
           if (teacher && teacherBusy.has(`${teacher}:${key}`)) continue;
           if (room && roomBusy.has(`${room}:${key}`)) continue;
           free.delete(key); if (teacher) teacherBusy.add(`${teacher}:${key}`); if (room) roomBusy.add(`${room}:${key}`);

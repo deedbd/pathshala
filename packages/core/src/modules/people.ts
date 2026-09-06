@@ -65,8 +65,9 @@ export class PeopleService {
     return String((free ?? ok[0] ?? secs[0])?.id ?? '') || null;
   }
   private async nextRoll(t: Db, sectionId: string) {
-    const r = await t.query<{ m: number | string | null }>(`SELECT MAX(CAST(roll_no AS INTEGER)) AS m FROM student_enrollments WHERE section_id = ? AND status = 'active'`, [sectionId]).catch(() => [{ m: 0 }]);
-    return (Number(r[0]?.m) || 0) + 1;
+    // LENGTH-then-value ordering is numeric for digit strings and works on SQLite, MySQL 8, MariaDB and Postgres (CAST syntax does not)
+    const r = await t.query<{ roll_no: string | null }>(`SELECT roll_no FROM student_enrollments WHERE section_id = ? AND status = 'active' AND roll_no IS NOT NULL ORDER BY LENGTH(roll_no) DESC, roll_no DESC LIMIT 1`, [sectionId]);
+    return (Number(r[0]?.roll_no) || 0) + 1;
   }
 
   /** Finds a guardian by phone (shared across siblings) or creates one, links to the student, optional portal account. */
@@ -110,7 +111,7 @@ export class PeopleService {
     const limit = Math.min(200, f.limit ?? 50); const offset = f.offset ?? 0;
     const rows = await this.db.query<Row>(`SELECT s.id, s.admission_no, s.first_name, s.last_name, s.name_bn, s.gender, s.date_of_birth, s.current_roll_no, s.status, s.admission_date, c.name AS class_name, sec.name AS section_name, s.current_class_id, s.current_section_id,
       (SELECT g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = s.id ORDER BY sg.is_primary DESC LIMIT 1) AS guardian_phone
-      FROM students s LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN sections sec ON sec.id = s.current_section_id WHERE ${where.join(' AND ')} ORDER BY c.numeric_level, sec.name, CAST(s.current_roll_no AS INTEGER), s.first_name LIMIT ${limit} OFFSET ${offset}`, params);
+      FROM students s LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN sections sec ON sec.id = s.current_section_id WHERE ${where.join(' AND ')} ORDER BY c.numeric_level, sec.name, LENGTH(s.current_roll_no), s.current_roll_no, s.first_name LIMIT ${limit} OFFSET ${offset}`, params);
     const total = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM students s WHERE ${where.join(' AND ')}`, params);
     return { rows, total: Number(total[0]?.n ?? 0), limit, offset };
   }

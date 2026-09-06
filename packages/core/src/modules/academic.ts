@@ -93,7 +93,8 @@ export class AcademicService {
   // ---------- sections ----------
   async createSection(schoolId: string, s: SectionInput) {
     const id = ulid();
-    await this.db.insert('sections', { id, school_id: schoolId, academic_year_id: s.academicYearId, class_id: s.classId, campus_id: s.campusId ?? null, shift_id: s.shiftId ?? null, name: s.name, capacity: s.capacity ?? 40, room_id: s.roomId ?? null, class_teacher_id: s.classTeacherId ?? null, gender_policy: s.genderPolicy ?? 'mixed', medium: s.medium ?? 'bangla', status: 'active' });
+    const shiftId = s.shiftId ?? (String((await this.shifts(schoolId))[0]?.id ?? '') || null); // a section always belongs to a shift so its periods are unambiguous
+    await this.db.insert('sections', { id, school_id: schoolId, academic_year_id: s.academicYearId, class_id: s.classId, campus_id: s.campusId ?? null, shift_id: shiftId, name: s.name, capacity: s.capacity ?? 40, room_id: s.roomId ?? null, class_teacher_id: s.classTeacherId ?? null, gender_policy: s.genderPolicy ?? 'mixed', medium: s.medium ?? 'bangla', status: 'active' });
     return id;
   }
   async sections(schoolId: string, yearId: string, classId?: string) {
