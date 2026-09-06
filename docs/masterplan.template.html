@@ -1,0 +1,380 @@
+<meta charset="utf-8">
+<title>Pathshala Master Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{--bg:#F2F4F7;--surface:#FFFFFF;--surface-2:#EAEEF2;--ink:#17202A;--muted:#5F6C79;--line:#D4DBE2;--accent:#2B5FA8;--accent-soft:#E1EAF7;--accent-ink:#1E4A87;--auto:#147D6F;--auto-soft:#DCEFEB;--cron:#8A5A1E;--cron-soft:#F4E8D6;--ok:#1E7F4F;--ok-soft:#DDF2E6;--warn:#A8651A;--warn-soft:#F7E9D2;--bad:#B9352F;--bad-soft:#F8E0DE;--shadow:0 1px 2px rgba(23,32,42,.06),0 8px 24px rgba(23,32,42,.07);--display:"Bricolage Grotesque","Segoe UI",Arial,sans-serif;--body:"IBM Plex Sans","Segoe UI",Arial,sans-serif;--mono:"IBM Plex Mono",Consolas,monospace;color-scheme:light}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0E1418;--surface:#161D24;--surface-2:#1F2831;--ink:#E5EAEF;--muted:#97A4B1;--line:#2B3641;--accent:#86B4F2;--accent-soft:#1B2C44;--accent-ink:#B7D2F7;--auto:#4FC4B0;--auto-soft:#143430;--cron:#E0AE68;--cron-soft:#3A2C16;--ok:#4FC786;--ok-soft:#143A26;--warn:#E3A85A;--warn-soft:#3A2A12;--bad:#EF7C74;--bad-soft:#42201D;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);color-scheme:dark}}
+  :root[data-theme="dark"]{--bg:#0E1418;--surface:#161D24;--surface-2:#1F2831;--ink:#E5EAEF;--muted:#97A4B1;--line:#2B3641;--accent:#86B4F2;--accent-soft:#1B2C44;--accent-ink:#B7D2F7;--auto:#4FC4B0;--auto-soft:#143430;--cron:#E0AE68;--cron-soft:#3A2C16;--ok:#4FC786;--ok-soft:#143A26;--warn:#E3A85A;--warn-soft:#3A2A12;--bad:#EF7C74;--bad-soft:#42201D;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55}
+  a{color:var(--accent)}
+  h1,h2,h3,h4{font-family:var(--display);margin:0;line-height:1.15;text-wrap:balance}
+  h1{font-size:clamp(2.1rem,4.5vw,3.2rem);font-weight:700;letter-spacing:-.02em}
+  h2{font-size:1.6rem;font-weight:700;letter-spacing:-.01em}
+  h3{font-size:1.1rem;font-weight:700}
+  p{margin:0;max-width:70ch}
+  code,.mono{font-family:var(--mono);font-size:.86em}
+  .num{font-variant-numeric:tabular-nums}
+  .muted{color:var(--muted)} .small{font-size:.84rem}
+  .eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .topnav{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--line)}
+  .topnav .in{max-width:1280px;margin:0 auto;padding:0 24px;display:flex;align-items:center;gap:18px;height:56px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:700}
+  .brand .mark{width:26px;height:26px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-family:var(--mono);font-size:.78rem}
+  .tabs{display:flex;gap:2px;overflow-x:auto;margin-left:auto}
+  .tabs a{padding:8px 12px;border-radius:7px;text-decoration:none;color:var(--muted);font-size:.88rem;white-space:nowrap}
+  .tabs a.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+  .wrap{max-width:1280px;margin:0 auto;padding:36px 24px 100px}
+  section.view{display:none;gap:36px}
+  section.view.on{display:grid}
+  .hero{display:grid;gap:16px;padding-bottom:28px;border-bottom:1px solid var(--line)}
+  .hero .lede{font-size:1.12rem;color:var(--muted);max-width:66ch}
+  .facts{display:flex;flex-wrap:wrap;gap:10px 24px;color:var(--muted);font-size:.92rem}
+  .facts b{color:var(--ink);font-weight:600}
+  .grid{display:grid;gap:16px}
+  .cols-2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+  .cols-3{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .cols-4{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;display:grid;gap:10px;align-content:start;min-width:0}
+  .card.pad0{padding:0;overflow:hidden}
+  .card .hd{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .sec-head{display:grid;gap:8px}
+  figure{margin:0;display:grid;gap:10px}
+  figure .frame{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;overflow-x:auto}
+  figure svg{display:block;min-width:720px;max-width:100%;height:auto;margin:0 auto}
+  figcaption{font-size:.86rem;color:var(--muted);max-width:80ch}
+  .dg{color:var(--ink);font-family:var(--body)}
+  .dg .box{fill:var(--surface);stroke:currentColor;stroke-width:1.1}.dg .box-soft{fill:var(--surface-2);stroke:currentColor;stroke-width:1.1}.dg .box-accent{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.4}.dg .box-auto{fill:var(--auto-soft);stroke:var(--auto);stroke-width:1.4}.dg .box-cron{fill:var(--cron-soft);stroke:var(--cron);stroke-width:1.2}
+  .dg .t{font-size:12px;fill:currentColor}.dg .tb{font-size:12.5px;font-weight:600;fill:currentColor}.dg .ts{font-size:10.5px;fill:var(--muted)}.dg .tl{font-size:10.5px;fill:var(--accent);font-family:var(--mono)}
+  .dg .ln{stroke:currentColor;stroke-width:1.1;fill:none}.dg .ln-acc{stroke:var(--accent);stroke-width:1.4;fill:none}.dg .ln-dash{stroke:currentColor;stroke-width:1;stroke-dasharray:4 3;fill:none}
+  table{border-collapse:collapse;width:100%;font-size:.88rem}
+  .tbl{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-weight:500;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);position:sticky;top:0;background:var(--surface)}
+  tr:last-child td{border-bottom:0}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:.72rem;font-weight:600;white-space:nowrap}
+  .chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .chip.ok{background:var(--ok-soft);color:var(--ok)}.chip.warn{background:var(--warn-soft);color:var(--warn)}.chip.bad{background:var(--bad-soft);color:var(--bad)}.chip.info{background:var(--accent-soft);color:var(--accent-ink)}.chip.mute{background:var(--surface-2);color:var(--muted)}.chip.auto{background:var(--auto-soft);color:var(--auto)}.chip.cron{background:var(--cron-soft);color:var(--cron)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:.7rem;padding:1px 6px;border-radius:4px;background:var(--surface-2);color:var(--muted)}
+  .steps{counter-reset:s;list-style:none;margin:0;padding:0;display:grid;gap:10px;max-width:78ch}
+  .steps li{position:relative;padding-left:40px}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:0;width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--mono);font-size:.78rem;display:grid;place-items:center}
+  .mods{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+  .mod{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:6px;border-left:4px solid var(--mc);cursor:pointer;text-align:left;font:inherit;color:inherit}
+  .mod:hover{border-color:var(--mc)}
+  .mod b{font-family:var(--display);font-size:1rem}
+  .mod .meta{display:flex;gap:8px;align-items:center;font-size:.76rem;color:var(--muted)}
+  .year{font-family:var(--mono);font-size:.68rem;padding:1px 6px;border-radius:3px;background:var(--surface-2)}
+  .year.y1{background:var(--ok-soft);color:var(--ok)}.year.y2{background:var(--accent-soft);color:var(--accent-ink)}.year.y3{background:var(--cron-soft);color:var(--cron)}
+  .roadmap{display:grid;grid-template-columns:repeat(5,minmax(200px,1fr));gap:12px;overflow-x:auto}
+  .roadmap .col{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;gap:8px;align-content:start}
+  .roadmap .col h3{display:flex;justify-content:space-between;align-items:baseline}
+  .roadmap li{font-size:.86rem}
+  .roadmap ul{margin:0;padding-left:18px;display:grid;gap:4px}
+  /* schema explorer */
+  .explorer{display:grid;grid-template-columns:260px 300px 1fr;gap:14px;min-height:640px}
+  .pane{background:var(--surface);border:1px solid var(--line);border-radius:10px;display:grid;grid-template-rows:auto 1fr;overflow:hidden;min-width:0}
+  .pane .ph{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  .pane .ph input{flex:1;padding:6px 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);font:inherit;color:inherit;min-width:0}
+  .pane .pb{overflow:auto;max-height:70vh}
+  .mi{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;font-size:.86rem;border-bottom:1px solid var(--line)}
+  .mi:hover{background:var(--surface-2)} .mi.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+  .mi .dot{width:10px;height:10px;border-radius:3px;flex:none}
+  .mi .cnt{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--muted)}
+  .ti{padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:.86rem}
+  .ti:hover{background:var(--surface-2)} .ti.on{background:var(--accent-soft)}
+  .ti .n{font-family:var(--mono);font-weight:500}
+  .ti .d{display:block;color:var(--muted);font-size:.76rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .detail{padding:16px;display:grid;gap:14px;align-content:start}
+  .detail h3{font-family:var(--mono);font-size:1.05rem}
+  .cols th,.cols td{padding:6px 10px;font-size:.82rem}
+  .cols td.n{font-family:var(--mono);white-space:nowrap}
+  .cols td.ty{font-family:var(--mono);color:var(--muted);white-space:nowrap}
+  .fk{color:var(--accent);cursor:pointer;text-decoration:underline dotted}
+  .rel{display:flex;flex-wrap:wrap;gap:6px}
+  .rel button{font:inherit;font-family:var(--mono);font-size:.74rem;padding:3px 8px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--accent);cursor:pointer}
+  .rel button:hover{background:var(--accent-soft)}
+  .stats{display:flex;gap:16px;flex-wrap:wrap;font-size:.84rem;color:var(--muted)}
+  .stats b{color:var(--ink)}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:4px}
+  .kpi .lbl{font-size:.78rem;color:var(--muted)}.kpi .val{font-family:var(--display);font-size:1.7rem;font-weight:700;letter-spacing:-.02em}
+  .sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .swatch{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface)}
+  .swatch i{display:block;height:54px}
+  .swatch div{padding:8px 10px;font-size:.76rem}
+  .swatch div b{display:block;font-family:var(--mono);font-weight:500}
+  .typo{display:grid;gap:8px}
+  .bar{height:12px;background:var(--surface-2);border-radius:3px;position:relative;min-width:200px}
+  .bar i{position:absolute;top:0;bottom:0;background:var(--accent);border-radius:3px}
+  .bar i.pilot{background:var(--auto)}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:7px;border:1px solid var(--line);background:var(--surface);font:inherit;font-size:.85rem;font-weight:500;color:inherit}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .iconbtn{width:32px;height:32px;border-radius:8px;border:0;background:none;color:var(--muted);cursor:pointer;display:grid;place-items:center}
+  .iconbtn:hover{background:var(--surface-2);color:var(--ink)}
+  @media (max-width:980px){.explorer{grid-template-columns:1fr}.pane .pb{max-height:40vh}.roadmap{grid-template-columns:repeat(5,240px)}}
+  @media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+
+<div class="topnav"><div class="in">
+  <div class="brand"><span class="mark">PS</span>Pathshala Master Plan</div>
+  <nav class="tabs" id="tabs">
+    <a href="#overview" data-v="overview">Overview</a><a href="#hosting" data-v="hosting">Hosting &amp; install</a><a href="#modules" data-v="modules">Modules &amp; roadmap</a><a href="#schema" data-v="schema">Schema explorer</a><a href="#automation" data-v="automation">Automation</a><a href="#design" data-v="design">Design system</a><a href="#platforms" data-v="platforms">Platforms</a><a href="#plan" data-v="plan">Build plan</a>
+  </nav>
+  <button class="iconbtn" id="themebtn" title="Toggle theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/></svg></button>
+</div></div>
+
+<div class="wrap">
+
+<!-- ================= OVERVIEW ================= -->
+<section class="view" id="v-overview">
+  <div class="hero">
+    <div class="eyebrow">Product blueprint · v2 · cPanel-first, portable</div>
+    <h1>One zip. Every part of a school, automated.</h1>
+    <p class="lede">Pathshala runs admissions, academics, attendance, assessment, fees and accounting, HR and payroll, transport, hostel, library, inventory, communication, welfare, documents, alumni, events, governance, compliance, analytics and an AI assistant — for desktop, tablet and the guardian, student, teacher and driver apps. It installs itself on Namecheap cPanel and moves to a VPS later without a rewrite.</p>
+    <div class="facts"><span><b id="f-tables">349</b> tables in <b>34</b> modules</span><span><b>115+</b> automations</span><span><b>5-year</b> roadmap already in the schema</span><span>Upload zip → dashboard in <b>~5 min</b>, zero cPanel clicks</span><span>React 19 · React Router SSR · Tailwind 4 · Node 22 + Express 5 · MySQL + Drizzle · Web Push · Cloudflare</span></div>
+  </div>
+
+  <div class="grid cols-3">
+    <div class="card"><h3>Why schools switch to it</h3><p class="small">Every routine job a school pays people to remember — absent SMS, fee invoices, reminders, fines, result cards, payroll, bus alerts, TC eligibility — happens on its own and is visible in one activity log. Staff handle exceptions, not routine.</p></div>
+    <div class="card"><h3>Why it runs on ৳3,000/year hosting</h3><p class="small">A single Node 22 process under Passenger serves the React Router SSR app, the API, the scheduler and the queue worker. Only pure-JS packages (bcryptjs, jimp, pdf-lib, SheetJS, mysql2), no cPanel cron needed, every long job chunked under 30 s, files in <code>uploads/</code>, nightly backups off-site, Cloudflare in front.</p></div>
+    <div class="card"><h3>Why it will not need a rewrite</h3><p class="small">Schema-first (one definition file generates SQL, types and docs), events between modules instead of calls, custom fields and form/workflow builders for per-school needs, and hosting-specific code isolated in adapters.</p></div>
+  </div>
+
+  <figure>
+    <div class="frame">
+      <svg class="dg" viewBox="0 0 1100 420" role="img" aria-label="Clients talk to a single Node process on cPanel; adapters route to MySQL or SQLite, database queue, in-process scheduler, local files and pure-JS PDF; the same adapters point to Postgres, Redis, cron, S3 and Chromium on a VPS.">
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker></defs>
+        <text x="105" y="26" class="ts" text-anchor="middle">CLIENTS</text><text x="375" y="26" class="ts" text-anchor="middle">ONE NODE PROCESS (PASSENGER)</text><text x="640" y="26" class="ts" text-anchor="middle">ADAPTERS</text><text x="850" y="26" class="ts" text-anchor="middle">cPANEL TODAY</text><text x="1010" y="26" class="ts" text-anchor="middle">VPS LATER</text>
+        <rect x="20" y="40" width="170" height="52" rx="4" class="box"/><text x="105" y="62" class="tb" text-anchor="middle">Admin console</text><text x="105" y="78" class="ts" text-anchor="middle">React · desktop &amp; tablet</text>
+        <rect x="20" y="104" width="170" height="52" rx="4" class="box"/><text x="105" y="126" class="tb" text-anchor="middle">Guardian · student · teacher</text><text x="105" y="142" class="ts" text-anchor="middle">PWA now · Expo later</text>
+        <rect x="20" y="168" width="170" height="52" rx="4" class="box"/><text x="105" y="190" class="tb" text-anchor="middle">Driver / helper app</text><text x="105" y="206" class="ts" text-anchor="middle">trip checklist · boarding taps</text>
+        <rect x="20" y="232" width="170" height="52" rx="4" class="box"/><text x="105" y="254" class="tb" text-anchor="middle">Devices &amp; gateways</text><text x="105" y="270" class="ts" text-anchor="middle">biometric · GPS · bKash IPN</text>
+        <rect x="20" y="296" width="170" height="52" rx="4" class="box"/><text x="105" y="318" class="tb" text-anchor="middle">School website</text><text x="105" y="334" class="ts" text-anchor="middle">CMS · admission form · verify</text>
+        <rect x="250" y="40" width="250" height="308" rx="4" class="box-accent"/>
+        <text x="375" y="66" class="tb" text-anchor="middle">Express API · 34 modules</text>
+        <text x="375" y="92" class="t" text-anchor="middle">tenant scope · RBAC · audit</text>
+        <text x="375" y="118" class="t" text-anchor="middle">domain change + outbox event</text><text x="375" y="134" class="t" text-anchor="middle">in one transaction</text>
+        <text x="375" y="166" class="tb" text-anchor="middle">Automation engine</text>
+        <text x="375" y="186" class="t" text-anchor="middle">relay · rule engine (JSONLogic)</text><text x="375" y="202" class="t" text-anchor="middle">scheduler (node-cron + DB lock)</text><text x="375" y="218" class="t" text-anchor="middle">queue worker · approvals · tasks</text>
+        <text x="375" y="250" class="tb" text-anchor="middle">Static web + portal bundles</text>
+        <text x="375" y="282" class="ts" text-anchor="middle">installer wizard at /install</text><text x="375" y="298" class="ts" text-anchor="middle">heartbeat: any request runs due jobs</text><text x="375" y="330" class="tl" text-anchor="middle">apps/api · apps/web · apps/portal</text>
+        <g>
+          <rect x="560" y="40" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="64" class="tb" text-anchor="middle">db</text>
+          <rect x="560" y="92" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="116" class="tb" text-anchor="middle">queue</text>
+          <rect x="560" y="144" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="168" class="tb" text-anchor="middle">scheduler</text>
+          <rect x="560" y="196" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="220" class="tb" text-anchor="middle">storage</text>
+          <rect x="560" y="248" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="272" class="tb" text-anchor="middle">pdf</text>
+          <rect x="560" y="300" width="160" height="40" rx="4" class="box-soft"/><text x="640" y="324" class="tb" text-anchor="middle">realtime · mail · sms · push</text>
+        </g>
+        <g>
+          <rect x="770" y="40" width="160" height="40" rx="4" class="box"/><text x="850" y="64" class="t" text-anchor="middle">MySQL · SQLite fallback</text>
+          <rect x="770" y="92" width="160" height="40" rx="4" class="box"/><text x="850" y="116" class="t" text-anchor="middle">database table</text>
+          <rect x="770" y="144" width="160" height="40" rx="4" class="box"/><text x="850" y="168" class="t" text-anchor="middle">in-process + heartbeat</text>
+          <rect x="770" y="196" width="160" height="40" rx="4" class="box"/><text x="850" y="220" class="t" text-anchor="middle">local disk</text>
+          <rect x="770" y="248" width="160" height="40" rx="4" class="box"/><text x="850" y="272" class="t" text-anchor="middle">pdfmake (pure JS)</text>
+          <rect x="770" y="300" width="160" height="40" rx="4" class="box"/><text x="850" y="324" class="t" text-anchor="middle">SSE · HTTPS providers</text>
+        </g>
+        <g>
+          <rect x="950" y="40" width="130" height="40" rx="4" class="box"/><text x="1015" y="64" class="t" text-anchor="middle">PostgreSQL</text>
+          <rect x="950" y="92" width="130" height="40" rx="4" class="box"/><text x="1015" y="116" class="t" text-anchor="middle">Redis · BullMQ</text>
+          <rect x="950" y="144" width="130" height="40" rx="4" class="box"/><text x="1015" y="168" class="t" text-anchor="middle">cron / K8s job</text>
+          <rect x="950" y="196" width="130" height="40" rx="4" class="box"/><text x="1015" y="220" class="t" text-anchor="middle">S3 / MinIO</text>
+          <rect x="950" y="248" width="130" height="40" rx="4" class="box"/><text x="1015" y="272" class="t" text-anchor="middle">Chromium</text>
+          <rect x="950" y="300" width="130" height="40" rx="4" class="box"/><text x="1015" y="324" class="t" text-anchor="middle">WebSocket</text>
+        </g>
+        <line x1="190" y1="66" x2="250" y2="66" class="ln" marker-end="url(#ar)"/><line x1="190" y1="130" x2="250" y2="130" class="ln" marker-end="url(#ar)"/><line x1="190" y1="194" x2="250" y2="194" class="ln" marker-end="url(#ar)"/><line x1="190" y1="258" x2="250" y2="258" class="ln" marker-end="url(#ar)"/><line x1="190" y1="322" x2="250" y2="322" class="ln" marker-end="url(#ar)"/>
+        <text x="220" y="58" class="ts" text-anchor="middle">HTTPS</text><text x="220" y="250" class="ts" text-anchor="middle">webhooks</text>
+        <line x1="500" y1="190" x2="560" y2="190" class="ln-acc" marker-end="url(#ar2)"/><text x="530" y="182" class="tl" text-anchor="middle">interfaces</text>
+        <line x1="720" y1="60" x2="770" y2="60" class="ln" marker-end="url(#ar)"/><line x1="720" y1="112" x2="770" y2="112" class="ln" marker-end="url(#ar)"/><line x1="720" y1="164" x2="770" y2="164" class="ln" marker-end="url(#ar)"/><line x1="720" y1="216" x2="770" y2="216" class="ln" marker-end="url(#ar)"/><line x1="720" y1="268" x2="770" y2="268" class="ln" marker-end="url(#ar)"/><line x1="720" y1="320" x2="770" y2="320" class="ln" marker-end="url(#ar)"/>
+        <line x1="930" y1="60" x2="950" y2="60" class="ln-dash"/><line x1="930" y1="112" x2="950" y2="112" class="ln-dash"/><line x1="930" y1="164" x2="950" y2="164" class="ln-dash"/><line x1="930" y1="216" x2="950" y2="216" class="ln-dash"/><line x1="930" y1="268" x2="950" y2="268" class="ln-dash"/><line x1="930" y1="320" x2="950" y2="320" class="ln-dash"/>
+        <text x="640" y="392" class="ts" text-anchor="middle">ADAPTERS=db,inprocess,local,pdfmake,sse  →  ADAPTERS=bullmq,cron,s3,chromium,websocket · same code, one environment variable</text>
+      </svg>
+    </div>
+    <figcaption>Domain code only sees the adapter interfaces. Changing hosting is an environment-variable change plus an export/import of data.</figcaption>
+  </figure>
+
+  <div class="grid cols-4">
+    <div class="kpi"><span class="lbl">Foundation</span><span class="val">4</span><span class="small muted">core · platform · saas · cms</span></div>
+    <div class="kpi"><span class="lbl">Academics</span><span class="val">10</span><span class="small muted">structure → library, incl. competency assessment</span></div>
+    <div class="kpi"><span class="lbl">Finance</span><span class="val">5</span><span class="small muted">fees · accounting · wallet/POS · HR · scholarships</span></div>
+    <div class="kpi"><span class="lbl">Operations · Engagement · Governance</span><span class="val">15</span><span class="small muted">transport … AI · marketplace</span></div>
+  </div>
+</section>
+
+<!-- ================= HOSTING ================= -->
+<section class="view" id="v-hosting">
+  <div class="sec-head"><div class="eyebrow">Zero-touch on cPanel</div><h2>Upload the zip, extract, open the domain. That is the whole install.</h2><p>PHP is always present on cPanel, so a tiny <code>install.php</code> bootstraps the Node app: detects Node, creates the database (or falls back to SQLite), writes the Passenger config and cron, then hands over to the Node installer wizard, which seeds everything and self-tests.</p></div>
+  <figure><div class="frame">
+    <svg class="dg" viewBox="0 0 1100 300" role="img" aria-label="Install flow: zip extracted, install.php detects Node and database, writes env and htaccess, adds cron or heartbeat, redirects to the Node installer which seeds and self-tests, then the dashboard opens.">
+      <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <g>
+        <rect x="20" y="60" width="150" height="70" rx="4" class="box"/><text x="95" y="86" class="tb" text-anchor="middle">1 · Extract zip</text><text x="95" y="104" class="ts" text-anchor="middle">public_html/</text><text x="95" y="118" class="ts" text-anchor="middle">node_modules prebuilt</text>
+        <rect x="200" y="60" width="170" height="70" rx="4" class="box-cron"/><text x="285" y="86" class="tb" text-anchor="middle">2 · install.php</text><text x="285" y="104" class="ts" text-anchor="middle">detect Node binary</text><text x="285" y="118" class="ts" text-anchor="middle">uapi MySQL → else SQLite</text>
+        <rect x="400" y="60" width="170" height="70" rx="4" class="box-cron"/><text x="485" y="86" class="tb" text-anchor="middle">3 · Write config</text><text x="485" y="104" class="ts" text-anchor="middle">.env (APP_KEY, DB, ADAPTERS)</text><text x="485" y="118" class="ts" text-anchor="middle">.htaccess (Passenger)</text>
+        <rect x="600" y="60" width="170" height="70" rx="4" class="box-cron"/><text x="685" y="86" class="tb" text-anchor="middle">4 · Cron</text><text x="685" y="104" class="ts" text-anchor="middle">uapi Cron add_line</text><text x="685" y="118" class="ts" text-anchor="middle">else heartbeat mode</text>
+        <rect x="800" y="60" width="130" height="70" rx="4" class="box-accent"/><text x="865" y="86" class="tb" text-anchor="middle">5 · /install</text><text x="865" y="104" class="ts" text-anchor="middle">Node wizard</text><text x="865" y="118" class="ts" text-anchor="middle">school + admin (OTP)</text>
+        <rect x="960" y="60" width="120" height="70" rx="4" class="box-auto"/><text x="1020" y="86" class="tb" text-anchor="middle">6 · Dashboard</text><text x="1020" y="104" class="ts" text-anchor="middle">install.php deleted</text><text x="1020" y="118" class="ts" text-anchor="middle">~5 minutes</text>
+        <line x1="170" y1="95" x2="200" y2="95" class="ln" marker-end="url(#ar3)"/><line x1="370" y1="95" x2="400" y2="95" class="ln" marker-end="url(#ar3)"/><line x1="570" y1="95" x2="600" y2="95" class="ln" marker-end="url(#ar3)"/><line x1="770" y1="95" x2="800" y2="95" class="ln" marker-end="url(#ar3)"/><line x1="930" y1="95" x2="960" y2="95" class="ln" marker-end="url(#ar3)"/>
+      </g>
+      <rect x="200" y="170" width="730" height="100" rx="4" class="box-soft"/>
+      <text x="565" y="194" class="tb" text-anchor="middle">Node installer seeds (step 5)</text>
+      <text x="565" y="216" class="t" text-anchor="middle">schema (349 tables, idempotent) · BD chart of accounts · GPA 5.0 scale · Fri–Sat weekend · leave types · fee heads</text>
+      <text x="565" y="234" class="t" text-anchor="middle">notification templates bn/en · 42 automation rules · 28 scheduled jobs · document templates · roles &amp; permissions</text>
+      <text x="565" y="256" class="ts" text-anchor="middle">self-test: write a file · run a scheduler tick · render a PDF · (SMS/email once keys are added) · every step recorded in installer_state, resumable</text>
+    </svg></div>
+    <figcaption>Where the host cannot be automated, the app falls back rather than asking: SQLite instead of MySQL, request heartbeat instead of cron. Both are upgradeable later from Settings → Hosting.</figcaption>
+  </figure>
+  <div class="grid cols-2">
+    <div class="card pad0"><div class="tbl"><table><thead><tr><th>Host capability</th><th>If missing, the app…</th></tr></thead><tbody>
+      <tr><td>Node.js via Passenger</td><td>Shows the single enabling step ("Setup Node.js App"); everything else stays automatic</td></tr>
+      <tr><td><code>exec()</code> / <code>uapi</code> from PHP</td><td>Uses SQLite and heartbeat cron; upgradeable from Settings</td></tr>
+      <tr><td>MySQL database</td><td>SQLite (WAL) up to ~3,000 students; one-click migrate to MySQL later</td></tr>
+      <tr><td>Cron</td><td>Heartbeat: any request runs due jobs behind a DB lock; the guardian PWA pings on open</td></tr>
+      <tr><td>Outbound HTTPS</td><td>Notifications queue with a visible health warning</td></tr>
+      <tr><td>Disk quota / memory</td><td>Warns at 80%, backups to Google Drive/Dropbox, batch jobs chunked</td></tr>
+    </tbody></table></div></div>
+    <div class="card"><h3>Moving to a VPS later</h3><ol class="steps"><li><code>docker compose up</code> (Postgres, Redis, MinIO, Chromium, api, web).</li><li>Settings → Hosting → Export: one archive of database + files.</li><li>Import on the VPS; change <code>DB_URL</code> and <code>ADAPTERS</code>.</li><li>Point DNS. The guardian PWA keeps working on the same domain.</li></ol><h3>Updates</h3><p class="small">Settings → Hosting → Update downloads the signed release zip, swaps <code>app/</code> atomically, runs migrations, restarts Passenger, keeps a 7-day rollback. Schools never open cPanel again.</p></div>
+  </div>
+</section>
+
+<!-- ================= MODULES ================= -->
+<section class="view" id="v-modules">
+  <div class="sec-head"><div class="eyebrow">34 modules · 349 tables</div><h2>Modules &amp; five-year roadmap</h2><p>Every module below already has its tables in the schema. Year badges show when the UI and logic ship; click a module to open it in the schema explorer.</p></div>
+  <div id="modgroups"></div>
+  <div class="sec-head"><h2>Roadmap</h2><p>Releases reach existing schools through Settings → Update.</p></div>
+  <div class="roadmap">
+    <div class="col"><h3>Year 1 <span class="year y1">launch</span></h3><ul><li>Core, automation platform, CMS website</li><li>Academics, people, timetable auto-gen, admissions</li><li>Attendance, leave, diary, KG daily report</li><li>Assessment: marks exams, results, promotion, question bank, online MCQ</li><li>Fees, gateways, accounting, HR &amp; payroll</li><li>Library, transport GPS, hostel, inventory, front office</li><li>Communication, welfare, documents with QR</li><li>PWAs: guardian, student, teacher, driver</li></ul></div>
+    <div class="col"><h3>Year 2 <span class="year y2">grow</span></h3><ul><li>SaaS billing, resellers, white-label</li><li>Wallet &amp; POS: cashless canteen, shop orders</li><li>Co-curricular, house points, portfolio</li><li>Scholarships, donors, fundraising</li><li>Events &amp; ticketing, alumni &amp; career</li><li>Facilities, governance, compliance (BANBEIS, MPO, stipends)</li><li>Analytics: dashboards, risk scores, anomalies</li><li>Competency assessment (NCTB 2023), OMR, board form fill-up</li></ul></div>
+    <div class="col"><h3>Year 3 <span class="year y3">platform</span></h3><ul><li>AI assistant (bn/en), remark &amp; question generation, OCR, WhatsApp bot</li><li>Marketplace: plugins, OAuth, public API, template packs</li><li>College &amp; coaching modes (semester/credit, course selling)</li><li>Advanced LMS, plagiarism, certificates</li><li>Native Expo apps from the PWA codebase</li></ul></div>
+    <div class="col"><h3>Year 4 <span class="year">scale</span></h3><ul><li>Database-per-tenant, replicas, regions</li><li>School groups: consolidated finance &amp; academics</li><li>Parent super-app across schools</li><li>Board/government API integrations</li><li>Multi-currency, VAT returns, auditor portal</li><li>Early-warning wellbeing system</li></ul></div>
+    <div class="col"><h3>Year 5 <span class="year">intelligence</span></h3><ul><li>Adaptive learning paths from competency data</li><li>Predictive staffing, fee forecasting, cash-flow</li><li>Voice-first guardian interactions</li><li>Third-party modules billed through the platform</li></ul></div>
+  </div>
+</section>
+
+<!-- ================= SCHEMA EXPLORER ================= -->
+<section class="view" id="v-schema">
+  <div class="sec-head"><div class="eyebrow">Interactive</div><h2>Schema explorer</h2><p>Generated from <code>db/schema/*.def.mjs</code>. Search any table or column, click a foreign key to jump, see what points at a table. Every table has an ULID id, <code>school_id</code> (tenant), timestamps; verified on MariaDB 10.4 and SQLite.</p></div>
+  <div class="stats" id="sstats"></div>
+  <div class="explorer">
+    <div class="pane"><div class="ph"><b class="small">Modules</b></div><div class="pb" id="modlist"></div></div>
+    <div class="pane"><div class="ph"><input id="tsearch" placeholder="Search tables & columns…"></div><div class="pb" id="tablist"></div></div>
+    <div class="pane"><div class="ph"><b class="small" id="dtitle">Select a table</b></div><div class="pb"><div class="detail" id="detail"><p class="muted">Pick a module on the left, then a table.</p></div></div></div>
+  </div>
+</section>
+
+<!-- ================= AUTOMATION ================= -->
+<section class="view" id="v-automation">
+  <div class="sec-head"><div class="eyebrow">Mechanism</div><h2>Every section automated, one engine</h2><p>Every write emits an event inside the same transaction. System handlers (always on), editable rules and scheduled jobs react. On shared hosting the engine lives inside the Passenger process with a request-driven heartbeat as the safety net.</p></div>
+  <figure><div class="frame">
+    <svg class="dg" viewBox="0 0 1000 300" role="img" aria-label="Domain service writes an outbox event; relay publishes; system handlers, rule engine and webhooks consume; rule actions run as jobs and are logged; the scheduler also emits events.">
+      <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--auto)"/></marker></defs>
+      <rect x="20" y="70" width="170" height="60" rx="4" class="box"/><text x="105" y="94" class="tb" text-anchor="middle">Domain service</text><text x="105" y="112" class="ts" text-anchor="middle">e.g. fees.recordPayment()</text>
+      <line x1="190" y1="100" x2="250" y2="100" class="ln" marker-end="url(#ar4)"/><text x="220" y="92" class="ts" text-anchor="middle">same TX</text>
+      <rect x="250" y="70" width="160" height="60" rx="4" class="box-accent"/><text x="330" y="94" class="tb" text-anchor="middle">outbox_events</text><text x="330" y="112" class="tl" text-anchor="middle">payment.received {…}</text>
+      <line x1="410" y1="100" x2="470" y2="100" class="ln" marker-end="url(#ar4)"/><text x="440" y="92" class="ts" text-anchor="middle">≤ 500 ms</text>
+      <rect x="470" y="70" width="100" height="60" rx="4" class="box"/><text x="520" y="94" class="tb" text-anchor="middle">Relay</text><text x="520" y="112" class="ts" text-anchor="middle">→ job queue</text><text x="520" y="150" class="ts" text-anchor="middle">event_consumptions</text><text x="520" y="164" class="ts" text-anchor="middle">= effectively once</text>
+      <path d="M570,100 L600,100 L600,45 L640,45" class="ln" marker-end="url(#ar4)"/><path d="M570,100 L600,100 L600,140 L640,140" class="ln-acc" marker-end="url(#ar4)"/><path d="M570,100 L600,100 L600,235 L640,235" class="ln" marker-end="url(#ar4)"/>
+      <rect x="640" y="20" width="160" height="50" rx="4" class="box-soft"/><text x="720" y="40" class="tb" text-anchor="middle">System handlers</text><text x="720" y="56" class="ts" text-anchor="middle">ledger · journal · counters</text>
+      <rect x="640" y="100" width="160" height="80" rx="4" class="box-auto"/><text x="720" y="122" class="tb" text-anchor="middle">Rule engine</text><text x="720" y="140" class="tl" text-anchor="middle">WHEN event_type</text><text x="720" y="154" class="tl" text-anchor="middle">IF conditions (JSONLogic)</text><text x="720" y="168" class="tl" text-anchor="middle">THEN actions[]</text>
+      <rect x="640" y="210" width="160" height="50" rx="4" class="box-soft"/><text x="720" y="230" class="tb" text-anchor="middle">Webhooks · KPI</text><text x="720" y="246" class="ts" text-anchor="middle">school ERP · kpi_daily</text>
+      <line x1="800" y1="140" x2="850" y2="140" class="ln-acc" marker-end="url(#ar5)"/>
+      <rect x="850" y="80" width="130" height="120" rx="4" class="box"/><text x="915" y="100" class="tb" text-anchor="middle">Actions</text><text x="915" y="118" class="ts" text-anchor="middle">notify · create_task</text><text x="915" y="132" class="ts" text-anchor="middle">add_invoice_item</text><text x="915" y="146" class="ts" text-anchor="middle">apply_discount · post_journal</text><text x="915" y="160" class="ts" text-anchor="middle">generate_document</text><text x="915" y="174" class="ts" text-anchor="middle">update_status · start_approval</text><text x="915" y="188" class="ts" text-anchor="middle">call_webhook · ai_generate</text>
+      <line x1="915" y1="200" x2="915" y2="240" class="ln" marker-end="url(#ar4)"/><rect x="850" y="240" width="130" height="50" rx="4" class="box-soft"/><text x="915" y="260" class="tb" text-anchor="middle">background_jobs</text><text x="915" y="276" class="ts" text-anchor="middle">retries · automation_runs</text>
+      <rect x="250" y="210" width="160" height="60" rx="4" class="box-cron"/><text x="330" y="234" class="tb" text-anchor="middle">Scheduler</text><text x="330" y="252" class="ts" text-anchor="middle">node-cron · DB lock · heartbeat</text><line x1="330" y1="210" x2="330" y2="130" class="ln" marker-end="url(#ar4)"/><text x="336" y="176" class="ts">emits billing.month_started,</text><text x="336" y="190" class="ts">attendance.cutoff_reached …</text>
+      <path d="M410,240 L620,240 L620,290 L850,290" class="ln-dash" marker-end="url(#ar4)"/><text x="500" y="232" class="ts" text-anchor="middle">batch jobs: invoices · payroll · reminders</text>
+    </svg></div>
+    <figcaption>Ledger and journal posting are system handlers so accounts always reconcile; whether a guardian gets an SMS or a push, after how many days, in which language — those are rules the school owns, with a 48-hour preview after edits.</figcaption>
+  </figure>
+  <div class="card pad0"><div class="tbl"><table><thead><tr><th>Module</th><th>Kind</th><th>Trigger</th><th>What happens without anyone clicking</th></tr></thead><tbody id="autorows"></tbody></table></div></div>
+  <p class="small muted">Full matrix with conditions, tables touched and the cron seed: <code>docs/AUTOMATION.md</code> (115+ rows).</p>
+</section>
+
+<!-- ================= DESIGN ================= -->
+<section class="view" id="v-design">
+  <div class="sec-head"><div class="eyebrow">Identity</div><h2>Design system · the exercise book</h2><p>Cool paper, ruled-line blue, margin red: the object every Bangladeshi student carries. One accent for actions, one red for problems, teal only for what the system did on its own. Every colour has a light and a dark value; schools may replace the accent with their brand.</p></div>
+  <div class="sw" id="swatches"></div>
+  <div class="grid cols-2">
+    <div class="card typo"><h3>Typography</h3><div style="font-family:var(--display);font-size:2rem;font-weight:700;letter-spacing:-.02em">Bricolage Grotesque — titles &amp; KPI numbers</div><div>IBM Plex Sans — body, labels, tables. 14 px on desktop, 15–16 px on phones.</div><div class="mono">IBM Plex Mono — IDs, amounts, codes · tabular-nums · ৳12,34,567</div><div style="font-size:1.05rem">Noto Sans Bengali — বাংলা ইউআই, লাইন-হাইট ১.৬; সংখ্যা ব্যবহারকারীর পছন্দে বাংলা বা ইংরেজি</div></div>
+    <div class="card"><h3>Components</h3><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary">Record payment</button><button class="btn">Secondary</button><span class="chip ok">paid</span><span class="chip warn">partially paid</span><span class="chip bad">overdue</span><span class="chip info">scheduled</span><span class="chip auto">rule</span><span class="chip cron">cron</span><span class="tag">INV-2026-01633</span></div><div class="kpi" style="max-width:240px"><span class="lbl">Collected this month</span><span class="val num">৳19,36,653</span><span class="small muted">41.0% of invoiced</span></div><p class="small muted">Every list: search, a filter, empty state, skeleton, error with retry, a "New" action. Every destructive action confirms and can be undone. Touch targets ≥ 44 px, focus rings visible, colour never the only signal, print styles for A4/A5/CR80.</p></div>
+  </div>
+  <div class="grid cols-3">
+    <div class="card"><h3>Layout · console</h3><p class="small">54 px top bar (search, year, role, bell, theme) · 236 px grouped sidebar with sub-pages · breadcrumbs → title + purpose line → actions. Tablet collapses the sidebar to icons.</p></div>
+    <div class="card"><h3>Layout · portals</h3><p class="small">Single column, bottom tab bar, sticky header, one child per card, pull-to-refresh, offline banner, skeleton loading. Works on a ৳8,000 Android in sunlight.</p></div>
+    <div class="card"><h3>Motion &amp; voice</h3><p class="small">Drawer 200 ms, toast 200 ms, nothing else; reduced-motion respected. Copy from the user’s side: "Mark attendance", "Payment recorded · receipt sent". Bangla copy natural, technical nouns stay Latin.</p></div>
+  </div>
+</section>
+
+<!-- ================= PLATFORMS ================= -->
+<section class="view" id="v-platforms">
+  <div class="sec-head"><div class="eyebrow">Six surfaces, one codebase</div><h2>Desktop, tablet, and four phone apps</h2><p>The console is one React app for desktop and tablet. The portal is one React PWA that switches by role; the same code later ships as Expo native apps.</p></div>
+  <div class="grid cols-3">
+    <div class="card"><h3>Desktop console</h3><span class="small muted">admin · accounts · HR · exam controller · librarian · transport manager</span><p class="small">Dense tables with bulk actions, keyboard shortcuts, print, imports/exports, automation activity, approvals inbox, settings, hosting &amp; updates.</p></div>
+    <div class="card"><h3>Tablet console</h3><span class="small muted">principal · coordinators · wardens</span><p class="small">Same app, collapsed navigation, touch rows, dashboards, approvals, roll call, PTM.</p></div>
+    <div class="card"><h3>Teacher app</h3><span class="small muted">PWA now · Expo later</span><p class="small">Attendance in 30 seconds, marks entry with live grades, homework &amp; diary, timetable and substitutions, lesson plans, behaviour points, chat, leave.</p></div>
+    <div class="card"><h3>Guardian app</h3><span class="small muted">phone-number OTP login</span><p class="small">Child card, today’s status, pay fees (bKash/Nagad/card), results &amp; report cards, homework, bus live map, notices, chat, leave request, PTM booking, consents, wallet top-up.</p></div>
+    <div class="card"><h3>Student app</h3><span class="small muted">Class 6 and up</span><p class="small">Timetable, homework &amp; submissions, materials and courses, online exams, results, library, wallet balance, clubs and events, achievements.</p></div>
+    <div class="card"><h3>Driver / helper app</h3><span class="small muted">transport staff</span><p class="small">Trip checklist, start/end trip, boarding taps (RFID or manual), route map with stops, incident report, fuel log.</p></div>
+  </div>
+</section>
+
+<!-- ================= PLAN ================= -->
+<section class="view" id="v-plan">
+  <div class="sec-head"><div class="eyebrow">40 weeks · 4 engineers + 1 designer/QA</div><h2>Build plan</h2><p>Pilot school live on cPanel at week 14, general availability at week 40. Order matters more than the week counts; each phase depends on the ones before it.</p></div>
+  <div class="card pad0"><div class="tbl"><table><thead><tr><th>Phase</th><th>Weeks</th><th>Timeline</th><th>Delivers</th><th>Exit criterion</th></tr></thead><tbody>
+    <tr><td>0 · Foundation &amp; installer</td><td class="mono">1–3</td><td><div class="bar"><i style="left:0;width:7.5%"></i></div></td><td>Monorepo, adapters, zero-touch installer, auth, tenancy, automation core, notifications, release pipeline (zip + Docker)</td><td>Fresh Namecheap account → dashboard in 5 min with no cPanel clicks; same build in Docker</td></tr>
+    <tr><td>1 · Academic core, people, website</td><td class="mono">4–7</td><td><div class="bar"><i style="left:7.5%;width:10%"></i></div></td><td>Structure, students/guardians/staff, import, timetable auto-gen, CMS site, guardian PWA v0, design system</td><td>1,500 students imported &lt; 2 min; 40 sections, zero clashes; website live</td></tr>
+    <tr><td>2 · Attendance, communication, diary</td><td class="mono">8–10</td><td><div class="bar"><i style="left:17.5%;width:7.5%"></i></div></td><td>Devices, policies, auto-absent, leave, chat, PTM, diary, KG report, teacher PWA</td><td>Absent SMS within 5 min of cut-off; class marked in 30 s</td></tr>
+    <tr><td>3 · Fees, payments, accounting</td><td class="mono">11–14</td><td><div class="bar"><i style="left:25%;width:10%"></i></div></td><td>Structures, batches, gateways, cash sessions, reminders, fines, refunds, GL, reconciliation, budgets</td><td>Month closes balanced with zero manual fee journals</td></tr>
+    <tr><td>Pilot go-live</td><td class="mono">14</td><td><div class="bar"><i class="pilot" style="left:35%;width:2.5%"></i></div></td><td>Phases 0–3 in one school on cPanel</td><td>Online collection running</td></tr>
+    <tr><td>4 · Assessment</td><td class="mono">15–19</td><td><div class="bar"><i style="left:35%;width:12.5%"></i></div></td><td>Exams, seat plans, admit cards, marks (grid/Excel/OMR), result engine, report cards, promotion, question papers, online exams, competency v1</td><td>1,500 results published &lt; 10 min on shared hosting</td></tr>
+    <tr><td>5 · HR &amp; payroll</td><td class="mono">20–23</td><td><div class="bar"><i style="left:47.5%;width:10%"></i></div></td><td>Recruitment, contracts, salary, loans, PF, tax, payroll, payslips, MPO split, appraisals, exits</td><td>150 staff paid and journaled in one pass</td></tr>
+    <tr><td>6 · Admissions &amp; documents</td><td class="mono">24–26</td><td><div class="bar"><i style="left:57.5%;width:7.5%"></i></div></td><td>Campaigns, CRM, public form, tests, merit/lottery, offers, enrolment; templates, eligibility, QR verify, ID cards</td><td>Form → enrolled student with no staff typing but marks</td></tr>
+    <tr><td>7 · Operations</td><td class="mono">27–31</td><td><div class="bar"><i style="left:65%;width:12.5%"></i></div></td><td>Library, transport GPS + driver PWA, hostel, procurement → stock ledger, assets, front office &amp; helpdesk</td><td>Each module’s automation rows fire in staging</td></tr>
+    <tr><td>8 · Welfare, LMS, engagement</td><td class="mono">32–36</td><td><div class="bar"><i style="left:77.5%;width:12.5%"></i></div></td><td>Behaviour, health, clinic, counselling, safeguarding; courses, materials, online classes; surveys, newsletters; student PWA; co-curricular v1</td><td>Guardian survey response &gt; 60% in pilot</td></tr>
+    <tr><td>9 · Hardening &amp; GA</td><td class="mono">37–40</td><td><div class="bar"><i style="left:90%;width:10%"></i></div></td><td>Load test on a real Stellar account, SQLite→MySQL tool, auto-update with rollback, off-site backups, security review, bn manual, Year-2 flags dark</td><td>5 schools onboarded; update applied remotely</td></tr>
+  </tbody></table></div></div>
+  <div class="grid cols-3">
+    <div class="card"><h3>Milestones</h3><ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px"><li>Wk 3 · zip → dashboard in 5 min</li><li>Wk 7 · pilot data, timetable, website</li><li>Wk 10 · attendance SMS live</li><li>Wk 14 · pilot collects online</li><li>Wk 19 · first result published</li><li>Wk 23 · first payroll</li><li>Wk 26 · admission season</li><li>Wk 31 · bus alerts live</li><li>Wk 40 · GA, 5 schools</li></ul></div>
+    <div class="card"><h3>Ownership</h3><ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px"><li>Backend A · installer, adapters, automation, fees/accounting, HR</li><li>Backend B · academics, attendance, assessment, admissions, operations</li><li>Web · console, design system, print templates</li><li>Portal · guardian/student/teacher/driver PWA, push, offline, Expo</li><li>Designer/QA · bn/en UX, test plans per automation row, pilot support</li></ul></div>
+    <div class="card"><h3>Definition of done</h3><p class="small">Schema in <code>def.mjs</code> · events documented · handler idempotent · visible in Automation → Activity · failure alerts admin · works on SQLite and MySQL · bn and en · phone and desktop · integration test for the happy path and one failure.</p></div>
+  </div>
+</section>
+
+</div>
+
+<script>
+const SCHEMA = /*__SCHEMA_JSON__*/null;
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* tabs */
+const views = ['overview','hosting','modules','schema','automation','design','platforms','plan'];
+function showView() { const h = (location.hash.replace('#','') || 'overview').split('/'); const v = views.includes(h[0]) ? h[0] : 'overview'; views.forEach(x => { $('#v-'+x).classList.toggle('on', x===v); }); document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.v===v)); if (v==='schema' && h[1]) { selectModule(h[1]); if (h[2]) selectTable(h[2]); } window.scrollTo({top:0}); }
+window.addEventListener('hashchange', showView);
+$('#themebtn').addEventListener('click', () => { const r = document.documentElement; const dark = r.dataset.theme==='dark' || (!r.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); r.dataset.theme = dark ? 'light' : 'dark'; });
+/* modules grid */
+const GROUPS = ['Foundation','Academics','Finance','Operations','Engagement','Governance'];
+const tablesByName = {}; SCHEMA.modules.forEach(m => m.tables.forEach(t => { t.module = m.key; t.color = m.color; tablesByName[t.name] = t; }));
+const inbound = {}; SCHEMA.modules.forEach(m => m.tables.forEach(t => t.cols.forEach(c => { if (c.fk) (inbound[c.fk] = inbound[c.fk] || []).push({ table:t.name, col:c.name }); })));
+$('#modgroups').innerHTML = GROUPS.map(g => { const ms = SCHEMA.modules.filter(m => m.group===g); return `<div class="sec-head" style="margin:18px 0 10px"><h3>${g}</h3></div><div class="mods">${ms.map(m => `<button class="mod" style="--mc:${m.color}" onclick="location.hash='#schema/${m.key}'"><b>${esc(m.title.split(' · ')[0])}</b><span class="small muted" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(m.desc)}</span><span class="meta"><span class="year y${m.year}">year ${m.year}</span><span class="mono">${m.tables.length} tables</span></span></button>`).join('')}</div>`; }).join('');
+/* explorer */
+let curMod = null, curTable = null, q = '';
+$('#sstats').innerHTML = `<span><b>${SCHEMA.modules.length}</b> modules</span><span><b>${SCHEMA.tables}</b> tables</span><span><b>${SCHEMA.columns.toLocaleString()}</b> columns</span><span><b>${Object.values(inbound).reduce((a,b)=>a+b.length,0).toLocaleString()}</b> foreign keys</span><span>generated ${new Date(SCHEMA.generated).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})}</span>`;
+function renderModList() { $('#modlist').innerHTML = `<div class="mi ${curMod===null?'on':''}" onclick="selectModule(null)"><span class="dot" style="background:var(--muted)"></span>All modules<span class="cnt">${SCHEMA.tables}</span></div>` + SCHEMA.modules.map(m => `<div class="mi ${curMod===m.key?'on':''}" onclick="selectModule('${m.key}')"><span class="dot" style="background:${m.color}"></span><span>${esc(m.title.split(' · ')[0])}</span><span class="cnt">${m.tables.length}</span></div>`).join(''); }
+function renderTabList() { const ql = q.toLowerCase(); let list = SCHEMA.modules.filter(m => !curMod || m.key===curMod).flatMap(m => m.tables); if (ql) list = list.filter(t => t.name.includes(ql) || t.desc.toLowerCase().includes(ql) || t.cols.some(c => c.name.includes(ql) || (c.desc||'').toLowerCase().includes(ql))); $('#tablist').innerHTML = list.length ? list.map(t => `<div class="ti ${curTable===t.name?'on':''}" onclick="selectTable('${t.name}')"><span class="n" style="border-left:3px solid ${t.color};padding-left:6px">${esc(t.name)}</span> <span class="tag">${t.cols.length}</span><span class="d">${esc(t.desc)}</span></div>`).join('') : '<div class="ti muted">No match</div>'; }
+function selectModule(k) { curMod = k; renderModList(); renderTabList(); }
+function selectTable(name) { const t = tablesByName[name]; if (!t) return; curTable = name; if (curMod && t.module !== curMod) { curMod = t.module; renderModList(); } renderTabList(); const m = SCHEMA.modules.find(x=>x.key===t.module); $('#dtitle').innerHTML = `<span class="mono">${esc(name)}</span> <span class="tag" style="margin-left:6px">${esc(m.title.split(' · ')[0])}</span>`;
+  const outs = t.cols.filter(c=>c.fk); const ins = inbound[name] || [];
+  $('#detail').innerHTML = `<p>${esc(t.desc)}</p>${relSvg(t, outs, ins)}<div class="tbl"><table class="cols"><thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead><tbody>${t.cols.map(c => `<tr><td class="n">${esc(c.name)}${c.name==='id'?' <span class="tag">PK</span>':''}</td><td class="ty">${esc(c.type)}${c.req?' <span class="tag">req</span>':''}${c.unique?' <span class="tag">unique</span>':''}</td><td class="small">${c.fk?`→ <span class="fk" onclick="selectTable('${c.fk}')">${c.fk}</span> `:''}${c.def!=null?`<span class="muted">default ${esc(c.def)}</span> `:''}${esc(c.desc||'')}</td></tr>`).join('')}</tbody></table></div>${t.unique.length?`<div class="small"><b>Unique:</b> ${t.unique.map(u=>`<span class="tag">${u.join(' + ')}</span>`).join(' ')}</div>`:''}${ins.length?`<div><b class="small">Referenced by</b><div class="rel" style="margin-top:6px">${ins.map(i=>`<button onclick="selectTable('${i.table}')">${i.table}.${i.col}</button>`).join('')}</div></div>`:''}`;
+  const el = $('#v-schema'); if (!el.classList.contains('on')) location.hash = '#schema/'+t.module+'/'+name; }
+function relSvg(t, outs, ins) { const L = [...new Set(outs.map(o=>o.fk))].slice(0,10), R = [...new Set(ins.map(i=>i.table))].slice(0,12); const h = Math.max(120, Math.max(L.length, R.length)*26 + 30); const cy = h/2; const node = (x,y,label,w=170,cls='box') => `<rect x="${x}" y="${y-11}" width="${w}" height="22" rx="4" class="${cls}"/><text x="${x+w/2}" y="${y+4}" class="ts" text-anchor="middle" style="font-family:var(--mono)">${esc(label.length>22?label.slice(0,21)+'…':label)}</text>`; return `<figure><div class="frame" style="padding:8px"><svg class="dg" viewBox="0 0 760 ${h}" style="min-width:0" role="img" aria-label="Relations of ${esc(t.name)}"><defs><marker id="rar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>${L.map((n,i)=>{ const y = cy - (L.length-1)*13 + i*26; return `<g style="cursor:pointer" onclick="selectTable('${n}')">${node(10,y,n)}</g><line x1="180" y1="${y}" x2="290" y2="${cy}" class="ln" marker-end="url(#rar)"/>`; }).join('')}${node(290,cy,t.name,180,'box-accent')}${R.map((n,i)=>{ const y = cy - (R.length-1)*13 + i*26; return `<line x1="580" y1="${y}" x2="470" y2="${cy}" class="ln" marker-end="url(#rar)"/><g style="cursor:pointer" onclick="selectTable('${n}')">${node(580,y,n)}</g>`; }).join('')}${L.length?`<text x="95" y="14" class="ts" text-anchor="middle">references →</text>`:''}${R.length?`<text x="665" y="14" class="ts" text-anchor="middle">← referenced by</text>`:''}</svg></div></figure>`; }
+$('#tsearch').addEventListener('input', e => { q = e.target.value.trim(); renderTabList(); });
+renderModList(); renderTabList();
+/* automation rows */
+const AUTO = [['Admissions','rule','Enquiry created','Counsellor assigned round-robin, acknowledgement SMS, follow-up task in 48 h'],['Admissions','sys','Admission fee paid','Student, enrollment, guardians, OTP accounts, section by capacity, ID &amp; library cards, welcome SMS'],['Admissions','cron','Offer expired unpaid','Offer revoked; next waitlisted applicant promoted and offered'],['Academic','sys','Teacher leave approved','Substitutes suggested: free that period, teaches the subject, lowest load'],['Attendance','cron','10:30 cut-off','Unmarked students become absent; guardian SMS; 3rd consecutive absence tasks the class teacher'],['Attendance','cron','1st of month','Below 75 %: warning letter + SMS; admit card blocked per policy'],['Assessment','sys','All papers locked','Grades from bands, credit-weighted GPA, ranks, tabulation sheet'],['Assessment','rule','Publish time reached','Report card PDFs; "GPA 4.83, rank 5" SMS with app link'],['Assessment','rule','GPA ≥ 5.0 · GPA drop ≥ 1.0','Merit scholarship proposed · counsellor referral'],['Assessment','sys','Competency term closed','NCTB-format competency report cards; guardians notified'],['Fees','cron','1st of month 06:00','Invoice batch: structure + transport + hostel + fines + previous due − discounts; PDF + pay link'],['Fees','cron','Daily 08:00','Reminders at −3, 0, +7, +15, +30 days; call task at +30'],['Fees','sys','Payment received','Oldest-first allocation, ledger, receipt PDF, thank-you message, balanced journal, blocks lifted'],['Accounting','sys','Any money movement','Journal posted; unbalanced entries refused'],['Wallet','sys','POS sale','Wallet debit, limit check, guardian push with balance, journal'],['HR','cron','25th of month','Payroll drafted from structures, attendance, leave, loans, tax, MPO split'],['HR','sys','Payroll approved','Payslips, bank file, salary journal, staff SMS'],['Library','cron','Daily 07:00','Due/overdue reminders; fine accrues daily and lands on the next invoice'],['Transport','sys','GPS in stop geofence','"Bus approaching" push to that stop’s guardians'],['Transport','sys','RFID tap','Boarded/alighted push; school check-in fed into attendance'],['Hostel','cron','Every 15 min','Out-pass overdue: warden and guardian alerted'],['Inventory','sys','Stock below reorder','PO drafted with preferred vendor; approval routed'],['Facilities','sys','Work order created','Auto-assign by category, SLA by priority, vendor notified'],['Communication','sys','Any notify action','Preferences, quiet hours, bn/en template, provider send with retries and cost, fallback provider on low balance'],['Welfare','cron','Nightly','Behaviour points crossing thresholds propose detention, counselling or merit certificate'],['Documents','sys','TC requested','Eligibility: dues, library, hostel, discipline → approval → PDF with QR'],['Front office','sys','Complaint created','Ticket, auto-assign, SLA, escalation, survey on close'],['Compliance','cron','Census window','BANBEIS / board / MPO exports generated; checklist tasks'],['Analytics','cron','Weekly','Dropout, fee-default and result-risk scores; tasks for high risk'],['AI','sys','Marks locked','Draft teacher remarks and principal narrative for review'],['Platform','cron','Nightly','KPI snapshot, anomaly alerts, backups to Drive/Dropbox, retention purge']];
+$('#autorows').innerHTML = AUTO.map(([m,k,t,a]) => `<tr><td><b>${m}</b></td><td><span class="chip ${k==='sys'?'info':k==='rule'?'auto':'cron'}">${k==='sys'?'system':k}</span></td><td>${t}</td><td>${a}</td></tr>`).join('');
+/* swatches */
+const SW = [['--bg','page ground'],['--surface','cards, tables'],['--surface-2','inputs, chips'],['--ink','text'],['--muted','secondary text'],['--line','borders'],['--accent','rule blue · actions'],['--accent-soft','selection'],['--auto','teal · automation'],['--cron','amber · scheduled'],['--ok','paid, present'],['--warn','pending, late'],['--bad','margin red · overdue']];
+$('#swatches').innerHTML = SW.map(([v,l]) => `<div class="swatch"><i style="background:var(${v})"></i><div><b>${v}</b>${l}</div></div>`).join('');
+showView();
+</script>

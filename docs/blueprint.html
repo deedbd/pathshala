@@ -1,0 +1,811 @@
+<meta charset="utf-8">
+<title>Pathshala Blueprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F3F5F7;
+    --surface: #FFFFFF;
+    --surface-2: #E9EDF1;
+    --ink: #17202A;
+    --muted: #5C6A77;
+    --line: #D3DAE1;
+    --accent: #2B5FA8;        /* exercise-book rule blue */
+    --accent-soft: #E1EAF7;
+    --auto: #147D6F;          /* automation teal */
+    --auto-soft: #DCEFEB;
+    --cron: #8A5A1E;          /* schedule amber */
+    --cron-soft: #F4E8D6;
+    --margin: #C2413B;        /* exercise-book margin red */
+    --shadow: 0 1px 2px rgba(23,32,42,.06), 0 8px 24px rgba(23,32,42,.06);
+    --display: "Bricolage Grotesque", "Segoe UI", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+    --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E1418; --surface: #161D24; --surface-2: #1F2831; --ink: #E5EAEF; --muted: #97A4B1;
+      --line: #2C3742; --accent: #86B4F2; --accent-soft: #1B2C44; --auto: #4FC4B0; --auto-soft: #143430;
+      --cron: #E0AE68; --cron-soft: #3A2C16; --margin: #E5736C;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1418; --surface: #161D24; --surface-2: #1F2831; --ink: #E5EAEF; --muted: #97A4B1;
+    --line: #2C3742; --accent: #86B4F2; --accent-soft: #1B2C44; --auto: #4FC4B0; --auto-soft: #143430;
+    --cron: #E0AE68; --cron-soft: #3A2C16; --margin: #E5736C;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+  a { color: var(--accent); }
+  h1, h2, h3, h4 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); font-weight: 700; letter-spacing: -.02em; }
+  h2 { font-size: 1.65rem; font-weight: 700; letter-spacing: -.01em; }
+  h3 { font-size: 1.15rem; font-weight: 700; }
+  h4 { font-size: 1rem; font-weight: 700; }
+  p { margin: 0; max-width: 68ch; }
+  code, .mono { font-family: var(--mono); font-size: .86em; }
+  .eyebrow { font-family: var(--mono); font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+
+  .shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 40px; max-width: 1240px; margin: 0 auto; padding: 32px 24px 96px; }
+  nav.toc { position: sticky; top: 24px; align-self: start; font-size: .84rem; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+  nav.toc li a { display: block; padding: 5px 0 5px 14px; color: var(--muted); text-decoration: none; margin-left: -2px; border-left: 2px solid transparent; }
+  nav.toc li a:hover, nav.toc li a:focus-visible { color: var(--ink); border-left-color: var(--accent); outline: none; }
+  main { min-width: 0; display: grid; gap: 64px; }
+  section { display: grid; gap: 20px; scroll-margin-top: 24px; }
+  .sec-head { display: grid; gap: 8px; }
+
+  header.hero { display: grid; gap: 18px; padding-bottom: 32px; border-bottom: 1px solid var(--line); }
+  .hero .lede { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: .9rem; color: var(--muted); }
+  .facts b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  figure { margin: 0; display: grid; gap: 10px; }
+  figure .frame { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px; overflow-x: auto; box-shadow: var(--shadow); }
+  figure svg { display: block; min-width: 720px; max-width: 100%; height: auto; margin: 0 auto; }
+  figcaption { font-size: .86rem; color: var(--muted); max-width: 80ch; }
+  .dg { color: var(--ink); font-family: var(--body); }
+  .dg .box { fill: var(--surface); stroke: currentColor; stroke-width: 1.1; }
+  .dg .box-soft { fill: var(--surface-2); stroke: currentColor; stroke-width: 1.1; }
+  .dg .box-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+  .dg .box-auto { fill: var(--auto-soft); stroke: var(--auto); stroke-width: 1.4; }
+  .dg .box-cron { fill: var(--cron-soft); stroke: var(--cron); stroke-width: 1.2; }
+  .dg .t { font-size: 12px; fill: currentColor; }
+  .dg .tb { font-size: 12.5px; font-weight: 600; fill: currentColor; }
+  .dg .ts { font-size: 10.5px; fill: var(--muted); }
+  .dg .tl { font-size: 10.5px; fill: var(--accent); font-family: var(--mono); }
+  .dg .ln { stroke: currentColor; stroke-width: 1.1; fill: none; }
+  .dg .ln-acc { stroke: var(--accent); stroke-width: 1.4; fill: none; }
+  .dg .ln-dash { stroke: currentColor; stroke-width: 1; stroke-dasharray: 4 3; fill: none; }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; display: grid; gap: 10px; align-content: start; }
+  .card h4 { display: flex; align-items: baseline; gap: 10px; }
+  .card h4 .num { font-family: var(--mono); font-weight: 500; font-size: .78rem; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-family: var(--mono); font-size: .74rem; padding: 2px 7px; border-radius: 3px; background: var(--surface-2); color: var(--ink); white-space: nowrap; }
+  .card p { font-size: .9rem; color: var(--muted); }
+
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  .tbl { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-weight: 500; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .kind { display: inline-block; font-family: var(--mono); font-size: .68rem; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+  .kind.sys { background: var(--accent-soft); color: var(--accent); }
+  .kind.rule { background: var(--auto-soft); color: var(--auto); }
+  .kind.cron { background: var(--cron-soft); color: var(--cron); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .84rem; color: var(--muted); align-items: center; }
+  td.mod { font-weight: 600; white-space: nowrap; }
+
+  .steps { counter-reset: step; list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; max-width: 76ch; }
+  .steps li { position: relative; padding-left: 40px; font-size: .95rem; }
+  .steps li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-family: var(--mono); font-size: .78rem; display: grid; place-items: center; }
+
+  .erd { display: grid; gap: 8px; }
+  .erd pre.mermaid { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; margin: 0; }
+
+  .roadmap .bar { position: relative; height: 12px; background: var(--surface-2); border-radius: 3px; min-width: 220px; }
+  .roadmap .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
+  .roadmap .bar i.pilot { background: var(--auto); }
+  .roadmap td.weeks { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+  .milestone { border-left: 3px solid var(--margin); padding-left: 12px; }
+
+  .footer-note { font-size: .86rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 20px; }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 64px; }
+    nav.toc { position: static; }
+    nav.toc ol { display: flex; flex-wrap: wrap; gap: 4px 10px; border-left: 0; }
+    nav.toc li a { padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; margin: 0; }
+  }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="shell">
+  <nav class="toc" aria-label="Sections">
+    <div class="eyebrow" style="margin-bottom:10px">Contents</div>
+    <ol>
+      <li><a href="#architecture">System architecture</a></li>
+      <li><a href="#automation">Automation engine</a></li>
+      <li><a href="#modules">Module map</a></li>
+      <li><a href="#schema">Schema by module</a></li>
+      <li><a href="#erd">Entity diagrams</a></li>
+      <li><a href="#matrix">What runs automatically</a></li>
+      <li><a href="#stack">Stack</a></li>
+      <li><a href="#roadmap">Build plan</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Design blueprint · school management platform</div>
+      <h1>Pathshala Blueprint</h1>
+      <p class="lede">An A-to-Z school management system where every section runs on the same event-and-rule engine: admissions, academics, attendance, exams, fees and accounting, HR and payroll, library, transport, hostel, inventory, communication, welfare, certificates and front office.</p>
+      <div class="facts">
+        <span><b>205</b> tables in 20 modules</span>
+        <span><b>90+</b> automations (system handlers, rules, cron)</span>
+        <span><b>36-week</b> build plan, pilot at week 16</span>
+        <span>Defaults: <b>BDT</b> · Asia/Dhaka · Fri–Sat weekend · GPA 5.0 · bKash / Nagad / SSLCommerz</span>
+      </div>
+    </header>
+
+    <!-- ================= ARCHITECTURE ================= -->
+    <section id="architecture">
+      <div class="sec-head">
+        <div class="eyebrow">01 · Runtime</div>
+        <h2>System architecture</h2>
+        <p>One deployable API, one worker process, one Postgres. Every write the API makes also writes an event row in the same transaction; the worker turns those events into everything that happens next.</p>
+      </div>
+      <figure>
+        <div class="frame">
+          <svg class="dg" viewBox="0 0 1100 400" role="img" aria-label="Clients call the API; the API writes to Postgres together with outbox events; workers relay events, run rules and call external services; payment gateways call back into the API.">
+            <defs>
+              <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+              <marker id="ar-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+            </defs>
+            <!-- column titles -->
+            <text x="105" y="28" class="ts" text-anchor="middle">CLIENTS</text>
+            <text x="335" y="28" class="ts" text-anchor="middle">API</text>
+            <text x="550" y="28" class="ts" text-anchor="middle">STATE</text>
+            <text x="765" y="28" class="ts" text-anchor="middle">WORKERS</text>
+            <text x="995" y="28" class="ts" text-anchor="middle">EXTERNAL</text>
+
+            <!-- clients -->
+            <rect x="20" y="40" width="170" height="60" rx="4" class="box"/>
+            <text x="105" y="64" class="tb" text-anchor="middle">Admin &amp; teacher web</text>
+            <text x="105" y="82" class="ts" text-anchor="middle">Next.js</text>
+            <rect x="20" y="120" width="170" height="60" rx="4" class="box"/>
+            <text x="105" y="142" class="tb" text-anchor="middle">Guardian · student</text>
+            <text x="105" y="158" class="tb" text-anchor="middle">teacher · bus-helper apps</text>
+            <text x="105" y="173" class="ts" text-anchor="middle">Expo / React Native</text>
+            <rect x="20" y="200" width="170" height="60" rx="4" class="box"/>
+            <text x="105" y="224" class="tb" text-anchor="middle">Devices</text>
+            <text x="105" y="242" class="ts" text-anchor="middle">biometric · RFID · bus GPS</text>
+            <rect x="20" y="280" width="170" height="60" rx="4" class="box"/>
+            <text x="105" y="304" class="tb" text-anchor="middle">Public pages</text>
+            <text x="105" y="322" class="ts" text-anchor="middle">admission form · certificate verify</text>
+
+            <!-- API -->
+            <rect x="250" y="40" width="170" height="320" rx="4" class="box-accent"/>
+            <text x="335" y="66" class="tb" text-anchor="middle">NestJS modular monolith</text>
+            <text x="335" y="92" class="t" text-anchor="middle">20 modules · REST / OpenAPI</text>
+            <text x="335" y="118" class="t" text-anchor="middle">JWT + OTP · RBAC guard</text>
+            <text x="335" y="150" class="t" text-anchor="middle">tenancy middleware</text>
+            <text x="335" y="166" class="tl" text-anchor="middle">SET LOCAL app.school_id</text>
+            <text x="335" y="200" class="t" text-anchor="middle">every write =</text>
+            <text x="335" y="216" class="t" text-anchor="middle">domain change + outbox event</text>
+            <text x="335" y="232" class="t" text-anchor="middle">in one transaction</text>
+            <text x="335" y="266" class="t" text-anchor="middle">gateway IPN handlers</text>
+            <text x="335" y="282" class="t" text-anchor="middle">device ingest endpoints</text>
+            <text x="335" y="316" class="ts" text-anchor="middle">stateless · N replicas</text>
+
+            <!-- state -->
+            <rect x="480" y="60" width="140" height="70" rx="4" class="box-soft"/>
+            <text x="550" y="84" class="tb" text-anchor="middle">PostgreSQL 16</text>
+            <text x="550" y="101" class="ts" text-anchor="middle">205 tables · RLS by school_id</text>
+            <text x="550" y="116" class="ts" text-anchor="middle">outbox_events lives here</text>
+            <rect x="480" y="170" width="140" height="70" rx="4" class="box-soft"/>
+            <text x="550" y="194" class="tb" text-anchor="middle">Redis 7 · BullMQ</text>
+            <text x="550" y="211" class="ts" text-anchor="middle">queues · cache · locks</text>
+            <text x="550" y="226" class="ts" text-anchor="middle">rate limits</text>
+            <rect x="480" y="280" width="140" height="70" rx="4" class="box-soft"/>
+            <text x="550" y="304" class="tb" text-anchor="middle">MinIO / S3</text>
+            <text x="550" y="321" class="ts" text-anchor="middle">photos · documents</text>
+            <text x="550" y="336" class="ts" text-anchor="middle">generated PDFs</text>
+
+            <!-- workers -->
+            <rect x="680" y="40" width="170" height="320" rx="4" class="box-auto"/>
+            <text x="765" y="66" class="tb" text-anchor="middle">Workers (same codebase)</text>
+            <text x="765" y="96" class="t" text-anchor="middle">outbox relay</text>
+            <text x="765" y="118" class="t" text-anchor="middle">rule engine · JSONLogic</text>
+            <text x="765" y="140" class="t" text-anchor="middle">scheduler · cron · leader lock</text>
+            <text x="765" y="170" class="t" text-anchor="middle">system handlers:</text>
+            <text x="765" y="186" class="ts" text-anchor="middle">ledger · journal · result engine</text>
+            <text x="765" y="202" class="ts" text-anchor="middle">invoice batch · payroll · enrolment</text>
+            <text x="765" y="234" class="t" text-anchor="middle">queues:</text>
+            <text x="765" y="250" class="ts" text-anchor="middle">notifications · billing · payroll</text>
+            <text x="765" y="266" class="ts" text-anchor="middle">pdf · sync · reports</text>
+            <text x="765" y="298" class="t" text-anchor="middle">logs every run to</text>
+            <text x="765" y="314" class="tl" text-anchor="middle">automation_runs · background_jobs</text>
+
+            <!-- external -->
+            <rect x="910" y="40" width="170" height="50" rx="4" class="box"/>
+            <text x="995" y="60" class="tb" text-anchor="middle">SMS gateways</text>
+            <text x="995" y="76" class="ts" text-anchor="middle">SSL Wireless · Robi · Banglalink</text>
+            <rect x="910" y="110" width="170" height="50" rx="4" class="box"/>
+            <text x="995" y="130" class="tb" text-anchor="middle">Payments</text>
+            <text x="995" y="146" class="ts" text-anchor="middle">bKash · Nagad · SSLCommerz</text>
+            <rect x="910" y="180" width="170" height="50" rx="4" class="box"/>
+            <text x="995" y="200" class="tb" text-anchor="middle">Push &amp; email</text>
+            <text x="995" y="216" class="ts" text-anchor="middle">FCM · SMTP / SES</text>
+            <rect x="910" y="250" width="170" height="50" rx="4" class="box"/>
+            <text x="995" y="270" class="tb" text-anchor="middle">Meetings</text>
+            <text x="995" y="286" class="ts" text-anchor="middle">Zoom · Google Meet</text>
+            <rect x="910" y="320" width="170" height="50" rx="4" class="box"/>
+            <text x="995" y="340" class="tb" text-anchor="middle">Gotenberg PDF</text>
+            <text x="995" y="356" class="ts" text-anchor="middle">HTML template → PDF</text>
+
+            <!-- arrows clients → api -->
+            <line x1="190" y1="70" x2="250" y2="70" class="ln" marker-end="url(#ar)"/>
+            <text x="220" y="62" class="ts" text-anchor="middle">HTTPS</text>
+            <line x1="190" y1="150" x2="250" y2="150" class="ln" marker-end="url(#ar)"/>
+            <line x1="190" y1="230" x2="250" y2="230" class="ln" marker-end="url(#ar)"/>
+            <text x="220" y="222" class="ts" text-anchor="middle">punches</text>
+            <line x1="190" y1="310" x2="250" y2="310" class="ln" marker-end="url(#ar)"/>
+
+            <!-- api → state -->
+            <line x1="420" y1="95" x2="480" y2="95" class="ln-acc" marker-end="url(#ar-acc)"/>
+            <text x="450" y="86" class="tl" text-anchor="middle">1 TX</text>
+            <line x1="420" y1="205" x2="480" y2="205" class="ln" marker-end="url(#ar)"/>
+            <line x1="420" y1="315" x2="480" y2="315" class="ln" marker-end="url(#ar)"/>
+            <text x="450" y="306" class="ts" text-anchor="middle">pre-signed</text>
+
+            <!-- state → workers -->
+            <line x1="620" y1="95" x2="680" y2="95" class="ln-acc" marker-end="url(#ar-acc)"/>
+            <text x="650" y="86" class="tl" text-anchor="middle">relay</text>
+            <text x="650" y="110" class="ts" text-anchor="middle">≤ 500 ms</text>
+            <line x1="620" y1="205" x2="680" y2="205" class="ln" marker-end="url(#ar)" marker-start="url(#ar)"/>
+            <text x="650" y="196" class="ts" text-anchor="middle">jobs</text>
+            <line x1="680" y1="315" x2="620" y2="315" class="ln" marker-end="url(#ar)"/>
+            <text x="650" y="306" class="ts" text-anchor="middle">PDFs</text>
+
+            <!-- workers → external -->
+            <line x1="850" y1="65" x2="910" y2="65" class="ln" marker-end="url(#ar)"/>
+            <line x1="850" y1="135" x2="910" y2="135" class="ln" marker-end="url(#ar)"/>
+            <text x="880" y="127" class="ts" text-anchor="middle">refund</text>
+            <line x1="850" y1="205" x2="910" y2="205" class="ln" marker-end="url(#ar)"/>
+            <line x1="850" y1="275" x2="910" y2="275" class="ln" marker-end="url(#ar)"/>
+            <line x1="850" y1="345" x2="910" y2="345" class="ln" marker-end="url(#ar)"/>
+
+            <!-- external payments → api (IPN) -->
+            <path d="M995,110 L995,14 L335,14 L335,40" class="ln-dash" marker-end="url(#ar)"/>
+            <text x="665" y="10" class="ts" text-anchor="middle">IPN / gateway webhooks · device pushes</text>
+          </svg>
+        </div>
+        <figcaption>The only path from a user action to an SMS, a PDF or a journal entry goes through the outbox row the API wrote. Nothing is sent from inside a request; workers do it, retry it and log it.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= AUTOMATION ================= -->
+    <section id="automation">
+      <div class="sec-head">
+        <div class="eyebrow">02 · Mechanism</div>
+        <h2>Automation engine</h2>
+        <p>Three ingredients make "every section automated" a property of the platform rather than a feature list: a transactional outbox, a rule table schools can edit, and a scheduler whose cron jobs also emit events so rules can chain.</p>
+      </div>
+      <figure>
+        <div class="frame">
+          <svg class="dg" viewBox="0 0 1000 330" role="img" aria-label="A domain service inserts an outbox event in the same transaction; a relay publishes it; system handlers, the rule engine and webhooks consume it; rule actions run as jobs and are logged; the scheduler emits events too.">
+            <defs>
+              <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+              <marker id="ar2-auto" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--auto)"/></marker>
+            </defs>
+            <rect x="20" y="70" width="170" height="60" rx="4" class="box"/>
+            <text x="105" y="94" class="tb" text-anchor="middle">Domain service</text>
+            <text x="105" y="112" class="ts" text-anchor="middle">any module, e.g. fees.recordPayment()</text>
+
+            <line x1="190" y1="100" x2="250" y2="100" class="ln" marker-end="url(#ar2)"/>
+            <text x="220" y="92" class="ts" text-anchor="middle">same TX</text>
+
+            <rect x="250" y="70" width="160" height="60" rx="4" class="box-accent"/>
+            <text x="330" y="94" class="tb" text-anchor="middle">outbox_events</text>
+            <text x="330" y="112" class="tl" text-anchor="middle">payment.received {…}</text>
+
+            <line x1="410" y1="100" x2="470" y2="100" class="ln" marker-end="url(#ar2)"/>
+            <text x="440" y="92" class="ts" text-anchor="middle">≤ 500 ms</text>
+
+            <rect x="470" y="70" width="100" height="60" rx="4" class="box"/>
+            <text x="520" y="94" class="tb" text-anchor="middle">Relay</text>
+            <text x="520" y="112" class="ts" text-anchor="middle">→ Redis stream</text>
+            <text x="520" y="150" class="ts" text-anchor="middle">event_consumptions</text>
+            <text x="520" y="164" class="ts" text-anchor="middle">= effectively once</text>
+
+            <!-- fan out -->
+            <path d="M570,100 L600,100 L600,45 L640,45" class="ln" marker-end="url(#ar2)"/>
+            <path d="M570,100 L600,100 L600,140 L640,140" class="ln-acc" marker-end="url(#ar2)"/>
+            <path d="M570,100 L600,100 L600,235 L640,235" class="ln" marker-end="url(#ar2)"/>
+
+            <rect x="640" y="20" width="160" height="50" rx="4" class="box-soft"/>
+            <text x="720" y="40" class="tb" text-anchor="middle">System handlers</text>
+            <text x="720" y="56" class="ts" text-anchor="middle">ledger · journal · counters · status</text>
+
+            <rect x="640" y="100" width="160" height="80" rx="4" class="box-auto"/>
+            <text x="720" y="122" class="tb" text-anchor="middle">Rule engine</text>
+            <text x="720" y="140" class="tl" text-anchor="middle">WHEN event_type</text>
+            <text x="720" y="154" class="tl" text-anchor="middle">IF conditions (JSONLogic)</text>
+            <text x="720" y="168" class="tl" text-anchor="middle">THEN actions[]</text>
+
+            <rect x="640" y="210" width="160" height="50" rx="4" class="box-soft"/>
+            <text x="720" y="230" class="tb" text-anchor="middle">Webhooks · KPI</text>
+            <text x="720" y="246" class="ts" text-anchor="middle">school ERP · kpi_daily · audit</text>
+
+            <line x1="800" y1="140" x2="850" y2="140" class="ln-acc" marker-end="url(#ar2-auto)"/>
+
+            <rect x="850" y="80" width="130" height="120" rx="4" class="box"/>
+            <text x="915" y="100" class="tb" text-anchor="middle">Actions</text>
+            <text x="915" y="118" class="ts" text-anchor="middle">notify · create_task</text>
+            <text x="915" y="132" class="ts" text-anchor="middle">add_invoice_item</text>
+            <text x="915" y="146" class="ts" text-anchor="middle">apply_discount · post_journal</text>
+            <text x="915" y="160" class="ts" text-anchor="middle">generate_document</text>
+            <text x="915" y="174" class="ts" text-anchor="middle">update_status · start_approval</text>
+            <text x="915" y="188" class="ts" text-anchor="middle">call_webhook · schedule_followup</text>
+
+            <line x1="915" y1="200" x2="915" y2="240" class="ln" marker-end="url(#ar2)"/>
+            <rect x="850" y="240" width="130" height="50" rx="4" class="box-soft"/>
+            <text x="915" y="260" class="tb" text-anchor="middle">background_jobs</text>
+            <text x="915" y="276" class="ts" text-anchor="middle">retries · automation_runs log</text>
+
+            <!-- scheduler -->
+            <rect x="250" y="210" width="160" height="60" rx="4" class="box-cron"/>
+            <text x="330" y="234" class="tb" text-anchor="middle">Scheduler</text>
+            <text x="330" y="252" class="ts" text-anchor="middle">scheduled_jobs · cron · leader lock</text>
+            <line x1="330" y1="210" x2="330" y2="130" class="ln" marker-end="url(#ar2)"/>
+            <text x="336" y="176" class="ts">emits billing.month_started,</text>
+            <text x="336" y="190" class="ts">attendance.cutoff_reached …</text>
+            <path d="M410,240 L620,240 L620,290 L850,290" class="ln-dash" marker-end="url(#ar2)"/>
+            <text x="500" y="232" class="ts" text-anchor="middle">batch jobs: invoices · payroll · reminders</text>
+
+            <text x="105" y="180" class="ts" text-anchor="middle">Two kinds of automation:</text>
+            <rect x="24" y="192" width="10" height="10" rx="2" class="box-soft"/>
+            <text x="40" y="201" class="ts">system handler · always on · in code</text>
+            <rect x="24" y="212" width="10" height="10" rx="2" class="box-auto"/>
+            <text x="40" y="221" class="ts">rule · seeded default · school can edit</text>
+            <rect x="24" y="232" width="10" height="10" rx="2" class="box-cron"/>
+            <text x="40" y="241" class="ts">scheduled job · cron in school timezone</text>
+            <text x="24" y="270" class="ts">Cooldown per rule per aggregate stops duplicate</text>
+            <text x="24" y="284" class="ts">firing; every failure notifies an admin.</text>
+          </svg>
+        </div>
+        <figcaption>Ledger and journal posting are system handlers so accounts always reconcile. Whether a guardian gets an SMS or a push, after how many overdue days, in which language: those are rules the school owns.</figcaption>
+      </figure>
+
+      <div class="card">
+        <h4>Worked example · a guardian pays tuition with bKash</h4>
+        <ol class="steps">
+          <li>The guardian app calls the payment endpoint. The API creates a pending payment and returns the bKash URL.</li>
+          <li>bKash calls the IPN endpoint. The API verifies the signature, then in one transaction marks the payment successful, allocates it to the oldest open invoices, appends the student ledger entry and inserts the <code>payment.received</code> outbox event.</li>
+          <li>The relay publishes the event. The system handler posts a balanced journal: debit bKash merchant account, credit tuition income, credit fine income, debit gateway-fee expense.</li>
+          <li>The "receipt" rule queues a PDF job. Gotenberg renders the receipt template and the file is attached to the payment.</li>
+          <li>The "payment thanks" rule sends a push and, if push is not delivered, an SMS in the guardian's language.</li>
+          <li>The "unblock" rule sees no overdue invoice remains and re-enables the admit card for the upcoming exam.</li>
+          <li>Each step is visible under Automation → Activity with its result or its retry state.</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ================= MODULE MAP ================= -->
+    <section id="modules">
+      <div class="sec-head">
+        <div class="eyebrow">03 · Structure</div>
+        <h2>Module map</h2>
+        <p>Modules read each other through services and never write each other's tables. Money is the one place everything converges: five modules feed billing, and billing, payroll and purchasing feed the ledger.</p>
+      </div>
+      <figure>
+        <div class="frame">
+          <svg class="dg" viewBox="0 0 1000 400" role="img" aria-label="Layered module map: platform on top, core and academic structure, people, twelve operational modules, and the money layer where fees, accounting and HR sit; arrows show which modules add charges to fees and which post journals to accounting.">
+            <defs>
+              <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+            </defs>
+            <rect x="20" y="16" width="960" height="40" rx="4" class="box-auto"/>
+            <text x="500" y="34" class="tb" text-anchor="middle">Automation platform</text>
+            <text x="500" y="49" class="ts" text-anchor="middle">events from every module in · actions into every module out · approvals · notifications · scheduler</text>
+
+            <rect x="20" y="86" width="460" height="40" rx="4" class="box"/>
+            <text x="250" y="104" class="tb" text-anchor="middle">Core</text>
+            <text x="250" y="119" class="ts" text-anchor="middle">tenancy · users · RBAC · files · settings · audit</text>
+            <rect x="520" y="86" width="460" height="40" rx="4" class="box"/>
+            <text x="750" y="104" class="tb" text-anchor="middle">Academic structure</text>
+            <text x="750" y="119" class="ts" text-anchor="middle">years · terms · classes · sections · subjects · calendar</text>
+
+            <line x1="250" y1="126" x2="250" y2="156" class="ln" marker-end="url(#ar3)"/>
+            <line x1="750" y1="126" x2="750" y2="156" class="ln" marker-end="url(#ar3)"/>
+
+            <rect x="20" y="156" width="960" height="40" rx="4" class="box-accent"/>
+            <text x="500" y="174" class="tb" text-anchor="middle">People</text>
+            <text x="500" y="189" class="ts" text-anchor="middle">students · enrollments (one per year) · guardians (phone-keyed) · staff</text>
+
+            <line x1="200" y1="196" x2="200" y2="226" class="ln" marker-end="url(#ar3)"/>
+            <line x1="500" y1="196" x2="500" y2="226" class="ln" marker-end="url(#ar3)"/>
+            <line x1="800" y1="196" x2="800" y2="226" class="ln" marker-end="url(#ar3)"/>
+
+            <!-- operational row: x = 20 + 80*i, w = 72 -->
+            <rect x="20" y="226" width="72" height="44" rx="4" class="box"/><text x="56" y="252" class="t" text-anchor="middle">Admissions</text>
+            <rect x="100" y="226" width="72" height="44" rx="4" class="box"/><text x="136" y="252" class="t" text-anchor="middle">Exams</text>
+            <rect x="180" y="226" width="72" height="44" rx="4" class="box"/><text x="216" y="252" class="t" text-anchor="middle">Library</text>
+            <rect x="260" y="226" width="72" height="44" rx="4" class="box"/><text x="296" y="252" class="t" text-anchor="middle">Transport</text>
+            <rect x="340" y="226" width="72" height="44" rx="4" class="box"/><text x="376" y="252" class="t" text-anchor="middle">Hostel</text>
+            <rect x="420" y="226" width="72" height="44" rx="4" class="box"/><text x="456" y="252" class="t" text-anchor="middle">LMS</text>
+            <rect x="500" y="226" width="72" height="44" rx="4" class="box"/><text x="536" y="252" class="t" text-anchor="middle">Timetable</text>
+            <rect x="580" y="226" width="72" height="44" rx="4" class="box"/><text x="616" y="252" class="t" text-anchor="middle">Inventory</text>
+            <rect x="660" y="226" width="72" height="44" rx="4" class="box"/><text x="696" y="252" class="t" text-anchor="middle">Attendance</text>
+            <rect x="740" y="226" width="72" height="44" rx="4" class="box"/><text x="776" y="252" class="t" text-anchor="middle">Welfare</text>
+            <rect x="820" y="226" width="72" height="44" rx="4" class="box"/><text x="856" y="252" class="t" text-anchor="middle">Documents</text>
+            <rect x="900" y="226" width="72" height="44" rx="4" class="box"/><text x="936" y="246" class="t" text-anchor="middle">Front</text><text x="936" y="260" class="t" text-anchor="middle">office</text>
+
+            <!-- into fees -->
+            <line x1="56" y1="270" x2="56" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="60" y="306" class="ts">adm. fee</text>
+            <line x1="136" y1="270" x2="136" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="140" y="306" class="ts">merit disc.</text>
+            <line x1="216" y1="270" x2="216" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="220" y="306" class="ts">fines</text>
+            <line x1="296" y1="270" x2="296" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="300" y="306" class="ts">route fee</text>
+            <line x1="376" y1="270" x2="376" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="380" y="306" class="ts">bed fee</text>
+            <!-- inventory → accounting, attendance → hr -->
+            <line x1="616" y1="270" x2="580" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="604" y="306" class="ts">PO journal</text>
+            <line x1="696" y1="270" x2="696" y2="330" class="ln" marker-end="url(#ar3)"/>
+            <text x="700" y="306" class="ts">LOP days</text>
+            <!-- documents eligibility -->
+            <path d="M856,270 L856,300 L420,300" class="ln-dash"/>
+            <text x="640" y="296" class="ts" text-anchor="middle">TC eligibility: dues, library, hostel clear</text>
+
+            <rect x="20" y="330" width="400" height="50" rx="4" class="box-accent"/>
+            <text x="220" y="350" class="tb" text-anchor="middle">Fees &amp; billing</text>
+            <text x="220" y="366" class="ts" text-anchor="middle">structures · invoices · payments · ledger · reminders</text>
+            <rect x="460" y="330" width="180" height="50" rx="4" class="box-accent"/>
+            <text x="550" y="350" class="tb" text-anchor="middle">Accounting</text>
+            <text x="550" y="366" class="ts" text-anchor="middle">double-entry GL · budgets</text>
+            <rect x="680" y="330" width="300" height="50" rx="4" class="box-accent"/>
+            <text x="830" y="350" class="tb" text-anchor="middle">HR &amp; payroll</text>
+            <text x="830" y="366" class="ts" text-anchor="middle">salary structures · payroll runs · payslips</text>
+
+            <line x1="420" y1="355" x2="460" y2="355" class="ln" marker-end="url(#ar3)"/>
+            <text x="440" y="393" class="ts" text-anchor="middle">auto journal</text>
+            <line x1="680" y1="355" x2="640" y2="355" class="ln" marker-end="url(#ar3)"/>
+            <text x="660" y="393" class="ts" text-anchor="middle">salary journal</text>
+          </svg>
+        </div>
+        <figcaption>Library never inserts an invoice item. It emits a fine event and the fees module's handler adds the line. That one rule keeps 20 modules from becoming one tangle.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= SCHEMA ================= -->
+    <section id="schema">
+      <div class="sec-head">
+        <div class="eyebrow">04 · Data</div>
+        <h2>Schema by module</h2>
+        <p>Real PostgreSQL 16 DDL lives in <code>db/schema/</code>, one numbered file per module. Conventions: UUID keys, <code>school_id</code> on every tenant table with row-level security, soft deletes, frozen JSON snapshots wherever a document is issued.</p>
+      </div>
+      <div class="grid-2">
+        <div class="card"><h4><span class="num">01</span>Core</h4><p>Tenancy, identity, RBAC, sessions, OTP, files, settings, immutable audit.</p><div class="chips"><span class="chip">schools</span><span class="chip">campuses</span><span class="chip">users</span><span class="chip">roles</span><span class="chip">permissions</span><span class="chip">role_permissions</span><span class="chip">user_roles</span><span class="chip">auth_sessions</span><span class="chip">otp_codes</span><span class="chip">files</span><span class="chip">settings</span><span class="chip">audit_logs</span><span class="chip">number_sequences</span></div></div>
+        <div class="card"><h4><span class="num">02</span>Academic structure</h4><p>Years, terms, shifts, classes with streams, sections with capacity and gender policy, subjects with board codes, periods, holidays, weekly offs.</p><div class="chips"><span class="chip">academic_years</span><span class="chip">terms</span><span class="chip">shifts</span><span class="chip">classes</span><span class="chip">sections</span><span class="chip">subjects</span><span class="chip">class_subjects</span><span class="chip">student_optional_subjects</span><span class="chip">periods</span><span class="chip">rooms</span><span class="chip">houses</span><span class="chip">calendar_events</span><span class="chip">weekly_offs</span></div></div>
+        <div class="card"><h4><span class="num">03</span>People</h4><p>Students with one enrollment row per year, guardians keyed by phone so siblings are derived, staff with departments and teachable subjects.</p><div class="chips"><span class="chip">students</span><span class="chip">student_enrollments</span><span class="chip">guardians</span><span class="chip">student_guardians</span><span class="chip">student_documents</span><span class="chip">staff</span><span class="chip">staff_subjects</span><span class="chip">staff_qualifications</span><span class="chip">staff_documents</span><span class="chip">departments</span><span class="chip">designations</span><span class="chip">v_student_siblings</span></div></div>
+        <div class="card"><h4><span class="num">04</span>Timetable &amp; curriculum</h4><p>Exclusion constraints reject a teacher or room in two places at once. Substitutions are suggested from free, qualified teachers.</p><div class="chips"><span class="chip">section_subject_teachers</span><span class="chip">timetable_slots</span><span class="chip">timetable_substitutions</span><span class="chip">syllabi</span><span class="chip">syllabus_units</span><span class="chip">lesson_plans</span><span class="chip">v_syllabus_progress</span></div></div>
+        <div class="card"><h4><span class="num">05</span>Admissions</h4><p>Campaign → enquiry → application → test → merit list → offer with expiry → enrolment, with seats per class and waitlist promotion.</p><div class="chips"><span class="chip">admission_campaigns</span><span class="chip">admission_campaign_classes</span><span class="chip">admission_enquiries</span><span class="chip">enquiry_followups</span><span class="chip">admission_applications</span><span class="chip">application_documents</span><span class="chip">admission_tests</span><span class="chip">admission_test_results</span><span class="chip">admission_offers</span></div></div>
+        <div class="card"><h4><span class="num">06</span>Attendance &amp; leave</h4><p>Raw device punches are stored as received and resolved by a worker. Policies hold cut-off time, late minutes, thresholds and escalation.</p><div class="chips"><span class="chip">attendance_devices</span><span class="chip">device_punch_logs</span><span class="chip">student_attendance</span><span class="chip">student_period_attendance</span><span class="chip">staff_attendance</span><span class="chip">attendance_policies</span><span class="chip">leave_types</span><span class="chip">leave_balances</span><span class="chip">leave_applications</span><span class="chip">mv_student_attendance_monthly</span></div></div>
+        <div class="card"><h4><span class="num">07</span>Examinations</h4><p>Grading bands (A+ 80–100 → 5.00 … F → 0), schedules per class-subject, marks with verification and lock, computed results frozen on publish, promotion rules, question bank, online exams.</p><div class="chips"><span class="chip">grading_scales</span><span class="chip">grading_bands</span><span class="chip">exam_types</span><span class="chip">exams</span><span class="chip">exam_schedules</span><span class="chip">exam_invigilators</span><span class="chip">exam_seat_plans</span><span class="chip">marks</span><span class="chip">exam_results</span><span class="chip">promotion_rules</span><span class="chip">promotions</span><span class="chip">questions</span><span class="chip">online_exams</span><span class="chip">online_exam_questions</span><span class="chip">online_exam_attempts</span></div></div>
+        <div class="card"><h4><span class="num">08</span>Learning</h4><p>Assignments with late penalties, submissions, materials by unit, online classes created from the timetable, attendance from platform webhooks.</p><div class="chips"><span class="chip">assignments</span><span class="chip">assignment_submissions</span><span class="chip">study_materials</span><span class="chip">online_classes</span><span class="chip">online_class_attendance</span></div></div>
+        <div class="card"><h4><span class="num">09</span>Accounting</h4><p>Chart of accounts, balanced journals enforced by a deferred trigger, expenses with threshold approvals, bank accounts and statement matching, budgets with alerts.</p><div class="chips"><span class="chip">fiscal_years</span><span class="chip">gl_accounts</span><span class="chip">cost_centers</span><span class="chip">bank_accounts</span><span class="chip">journal_entries</span><span class="chip">journal_lines</span><span class="chip">expense_categories</span><span class="chip">vendors</span><span class="chip">expenses</span><span class="chip">other_incomes</span><span class="chip">budgets</span><span class="chip">bank_statement_lines</span><span class="chip">v_trial_balance</span></div></div>
+        <div class="card"><h4><span class="num">10</span>Fees &amp; billing</h4><p>Class fee structures with per-student overrides and discount schemes, monthly invoice batches, gateway payments allocated oldest-first, an append-only student ledger, reminder stages, cash sessions.</p><div class="chips"><span class="chip">fee_heads</span><span class="chip">late_fine_rules</span><span class="chip">fee_structures</span><span class="chip">fee_structure_items</span><span class="chip">student_fee_overrides</span><span class="chip">discount_schemes</span><span class="chip">student_discounts</span><span class="chip">invoice_batches</span><span class="chip">invoices</span><span class="chip">invoice_items</span><span class="chip">payment_gateways</span><span class="chip">payments</span><span class="chip">payment_allocations</span><span class="chip">refunds</span><span class="chip">student_ledger_entries</span><span class="chip">fee_reminders</span><span class="chip">cash_sessions</span><span class="chip">v_student_dues</span></div></div>
+        <div class="card"><h4><span class="num">11</span>HR &amp; payroll</h4><p>Salary structures with non-overlapping effective ranges, components by formula, payroll runs computed from attendance, leave and loans, payslips as frozen snapshots.</p><div class="chips"><span class="chip">staff_contracts</span><span class="chip">salary_components</span><span class="chip">salary_structures</span><span class="chip">salary_structure_items</span><span class="chip">staff_loans</span><span class="chip">payroll_runs</span><span class="chip">payslips</span><span class="chip">appraisal_cycles</span><span class="chip">staff_appraisals</span><span class="chip">staff_trainings</span></div></div>
+        <div class="card"><h4><span class="num">12</span>Library</h4><p>Titles and physical copies with accession numbers, members from students or staff, issues with daily fines pushed to the student bill, reservations.</p><div class="chips"><span class="chip">library_categories</span><span class="chip">library_books</span><span class="chip">library_book_copies</span><span class="chip">library_members</span><span class="chip">library_issues</span><span class="chip">library_reservations</span></div></div>
+        <div class="card"><h4><span class="num">13</span>Transport</h4><p>Routes, geofenced stops, daily trips, GPS time series, RFID boardings that notify guardians, vehicle document expiry and maintenance.</p><div class="chips"><span class="chip">vehicles</span><span class="chip">transport_routes</span><span class="chip">route_stops</span><span class="chip">student_transport</span><span class="chip">vehicle_trips</span><span class="chip">vehicle_gps_logs</span><span class="chip">transport_boardings</span><span class="chip">stop_alerts</span><span class="chip">vehicle_maintenance</span><span class="chip">fuel_logs</span></div></div>
+        <div class="card"><h4><span class="num">14</span>Hostel</h4><p>Beds with overlap-free allocation, out-passes with guardian consent and curfew alerts, roll calls, visitors, mess menus.</p><div class="chips"><span class="chip">hostels</span><span class="chip">hostel_rooms</span><span class="chip">hostel_beds</span><span class="chip">hostel_allocations</span><span class="chip">hostel_outpasses</span><span class="chip">hostel_visitors</span><span class="chip">hostel_attendance</span><span class="chip">mess_menus</span><span class="chip">hostel_complaints</span></div></div>
+        <div class="card"><h4><span class="num">15</span>Inventory &amp; assets</h4><p>Append-only stock ledger with a trigger keeping levels current, reorder automation drafting purchase orders, tagged fixed assets with maintenance.</p><div class="chips"><span class="chip">inventory_categories</span><span class="chip">stores</span><span class="chip">inventory_items</span><span class="chip">stock_levels</span><span class="chip">purchase_orders</span><span class="chip">purchase_order_items</span><span class="chip">stock_movements</span><span class="chip">assets</span><span class="chip">asset_maintenance</span><span class="chip">issue_requests</span></div></div>
+        <div class="card"><h4><span class="num">16</span>Communication</h4><p>Providers per channel with balance tracking, event-keyed templates in Bangla and English, a notification log with delivery status and cost, notices, events, chat, PTM slots.</p><div class="chips"><span class="chip">messaging_providers</span><span class="chip">notification_templates</span><span class="chip">notifications</span><span class="chip">notification_preferences</span><span class="chip">notices</span><span class="chip">notice_reads</span><span class="chip">events</span><span class="chip">event_rsvps</span><span class="chip">conversations</span><span class="chip">conversation_participants</span><span class="chip">messages</span><span class="chip">ptm_slots</span><span class="chip">ptm_bookings</span></div></div>
+        <div class="card"><h4><span class="num">17</span>Welfare</h4><p>Signed behaviour points with threshold rules, disciplinary actions with approval, growth and health records, vaccinations, clinic visits, encrypted counselling notes.</p><div class="chips"><span class="chip">behaviour_categories</span><span class="chip">behaviour_incidents</span><span class="chip">disciplinary_actions</span><span class="chip">behaviour_rules</span><span class="chip">health_records</span><span class="chip">vaccinations</span><span class="chip">clinic_visits</span><span class="chip">counselling_sessions</span></div></div>
+        <div class="card"><h4><span class="num">18</span>Documents</h4><p>HTML templates rendered to PDF, requests checked for eligibility, issued documents with a QR verification code, ID cards.</p><div class="chips"><span class="chip">document_templates</span><span class="chip">document_requests</span><span class="chip">issued_documents</span><span class="chip">id_cards</span></div></div>
+        <div class="card"><h4><span class="num">19</span>Front office &amp; alumni</h4><p>Visitor log that notifies the host, call and postal logs, complaints with SLA and escalation, alumni directory fed by graduation.</p><div class="chips"><span class="chip">visitor_logs</span><span class="chip">call_logs</span><span class="chip">postal_records</span><span class="chip">complaints</span><span class="chip">complaint_updates</span><span class="chip">alumni</span></div></div>
+        <div class="card"><h4><span class="num">20</span>Automation platform</h4><p>Transactional outbox, consumer idempotency, editable rules and their runs, cron jobs with leader lock, durable job log, multi-step approvals, tasks, webhooks, integrations, scheduled reports, daily KPIs, imports.</p><div class="chips"><span class="chip">outbox_events</span><span class="chip">event_consumptions</span><span class="chip">automation_rules</span><span class="chip">automation_runs</span><span class="chip">scheduled_jobs</span><span class="chip">background_jobs</span><span class="chip">approval_workflows</span><span class="chip">approval_requests</span><span class="chip">approval_actions</span><span class="chip">tasks</span><span class="chip">integrations</span><span class="chip">webhooks</span><span class="chip">webhook_deliveries</span><span class="chip">api_keys</span><span class="chip">report_definitions</span><span class="chip">report_snapshots</span><span class="chip">kpi_daily</span><span class="chip">import_jobs</span></div></div>
+      </div>
+    </section>
+
+    <!-- ================= ERD ================= -->
+    <section id="erd">
+      <div class="sec-head">
+        <div class="eyebrow">05 · Relationships</div>
+        <h2>Entity diagrams</h2>
+        <p>Key relationships per module. Crow's-foot notation: one enrollment row per student per year, one attendance row per student per day, one result row per student per exam.</p>
+      </div>
+
+      <div class="erd"><h3>Core &amp; people</h3>
+<pre class="mermaid">
+erDiagram
+  schools ||--o{ campuses : has
+  schools ||--o{ users : has
+  users ||--o{ user_roles : has
+  roles ||--o{ user_roles : grants
+  roles ||--o{ role_permissions : has
+  schools ||--o{ students : enrols
+  schools ||--o{ staff : employs
+  users |o--o| students : "login for"
+  users |o--o| guardians : "login for"
+  users |o--o| staff : "login for"
+  students ||--o{ student_guardians : has
+  guardians ||--o{ student_guardians : has
+  students ||--o{ student_enrollments : "one per year"
+  academic_years ||--o{ student_enrollments : in
+  sections ||--o{ student_enrollments : in
+  departments ||--o{ staff : groups
+  staff ||--o{ staff_subjects : "can teach"
+</pre></div>
+
+      <div class="erd"><h3>Academic structure &amp; timetable</h3>
+<pre class="mermaid">
+erDiagram
+  academic_years ||--o{ terms : has
+  academic_years ||--o{ sections : has
+  classes ||--o{ sections : has
+  shifts ||--o{ periods : defines
+  classes ||--o{ class_subjects : studies
+  subjects ||--o{ class_subjects : ""
+  sections ||--o{ section_subject_teachers : ""
+  staff ||--o{ section_subject_teachers : teaches
+  sections ||--o{ timetable_slots : has
+  periods ||--o{ timetable_slots : at
+  staff ||--o{ timetable_slots : "teacher, no clash"
+  rooms ||--o{ timetable_slots : "room, no clash"
+  timetable_slots ||--o{ timetable_substitutions : "on a date"
+  class_subjects ||--o{ syllabi : has
+  syllabi ||--o{ syllabus_units : has
+  syllabus_units ||--o{ lesson_plans : covers
+</pre></div>
+
+      <div class="erd"><h3>Attendance &amp; leave</h3>
+<pre class="mermaid">
+erDiagram
+  attendance_devices ||--o{ device_punch_logs : sends
+  device_punch_logs }o--|| students : "resolved to"
+  device_punch_logs }o--|| staff : "resolved to"
+  students ||--o{ student_attendance : "1 per day"
+  students ||--o{ student_period_attendance : ""
+  timetable_slots ||--o{ student_period_attendance : ""
+  staff ||--o{ staff_attendance : "1 per day"
+  leave_types ||--o{ leave_applications : ""
+  leave_types ||--o{ leave_balances : ""
+  staff ||--o{ leave_balances : ""
+  students ||--o{ leave_applications : ""
+  staff ||--o{ leave_applications : ""
+  leave_applications ||--o{ timetable_substitutions : triggers
+  leave_applications }o--o| approval_requests : "routed via"
+</pre></div>
+
+      <div class="erd"><h3>Examinations</h3>
+<pre class="mermaid">
+erDiagram
+  grading_scales ||--o{ grading_bands : has
+  exam_types ||--o{ exams : ""
+  grading_scales ||--o{ exams : uses
+  exams ||--o{ exam_schedules : "per class-subject"
+  class_subjects ||--o{ exam_schedules : ""
+  exam_schedules ||--o{ marks : ""
+  students ||--o{ marks : ""
+  exams ||--o{ exam_seat_plans : ""
+  exams ||--o{ exam_results : computed
+  students ||--o{ exam_results : ""
+  student_enrollments ||--o| promotions : from
+  student_enrollments |o--o| promotions : to
+  questions ||--o{ online_exam_questions : ""
+  online_exams ||--o{ online_exam_questions : ""
+  online_exams ||--o{ online_exam_attempts : ""
+  exam_schedules |o--o{ online_exams : "syncs marks"
+</pre></div>
+
+      <div class="erd"><h3>Fees, payments &amp; accounting</h3>
+<pre class="mermaid">
+erDiagram
+  fee_heads ||--o{ fee_structure_items : ""
+  fee_structures ||--o{ fee_structure_items : ""
+  classes ||--o{ fee_structures : "per year"
+  discount_schemes ||--o{ student_discounts : ""
+  students ||--o{ student_discounts : ""
+  invoice_batches ||--o{ invoices : generates
+  students ||--o{ invoices : ""
+  invoices ||--o{ invoice_items : ""
+  payments ||--o{ payment_allocations : ""
+  invoices ||--o{ payment_allocations : ""
+  payment_gateways ||--o{ payments : via
+  payments ||--o{ refunds : ""
+  students ||--o{ student_ledger_entries : "running balance"
+  invoices ||--o{ fee_reminders : ""
+  payments }o--o| journal_entries : "auto-posted"
+  journal_entries ||--o{ journal_lines : ""
+  gl_accounts ||--o{ journal_lines : ""
+  fee_heads }o--o| gl_accounts : "income a/c"
+  bank_accounts ||--o{ bank_statement_lines : reconcile
+  expenses }o--o| journal_entries : ""
+</pre></div>
+
+      <div class="erd"><h3>HR &amp; payroll</h3>
+<pre class="mermaid">
+erDiagram
+  staff ||--o{ staff_contracts : ""
+  staff ||--o{ salary_structures : "effective ranges"
+  salary_structures ||--o{ salary_structure_items : ""
+  salary_components ||--o{ salary_structure_items : ""
+  staff ||--o{ staff_loans : ""
+  payroll_runs ||--o{ payslips : ""
+  staff ||--o{ payslips : ""
+  staff_attendance }o--|| staff : "present / LOP days"
+  leave_balances }o--|| staff : ""
+  payroll_runs }o--o| journal_entries : "auto-posted"
+  appraisal_cycles ||--o{ staff_appraisals : ""
+</pre></div>
+
+      <div class="erd"><h3>Transport &amp; hostel</h3>
+<pre class="mermaid">
+erDiagram
+  vehicles ||--o{ transport_routes : serves
+  transport_routes ||--o{ route_stops : ""
+  students ||--o{ student_transport : ""
+  route_stops ||--o{ student_transport : "boards at"
+  vehicles ||--o{ vehicle_trips : ""
+  vehicle_trips ||--o{ vehicle_gps_logs : ""
+  vehicle_trips ||--o{ transport_boardings : ""
+  vehicle_trips ||--o{ stop_alerts : "approaching / arrived"
+  hostels ||--o{ hostel_rooms : ""
+  hostel_rooms ||--o{ hostel_beds : ""
+  hostel_beds ||--o{ hostel_allocations : "no overlap"
+  students ||--o{ hostel_allocations : ""
+  students ||--o{ hostel_outpasses : ""
+</pre></div>
+
+      <div class="erd"><h3>Automation platform</h3>
+<pre class="mermaid">
+erDiagram
+  outbox_events ||--o{ event_consumptions : "processed once per consumer"
+  automation_rules ||--o{ automation_runs : ""
+  outbox_events |o--o{ automation_runs : triggered
+  scheduled_jobs ||--o{ background_jobs : enqueues
+  automation_rules ||--o{ background_jobs : enqueues
+  approval_workflows ||--o{ approval_requests : ""
+  approval_requests ||--o{ approval_actions : ""
+  webhooks ||--o{ webhook_deliveries : ""
+  report_definitions ||--o{ report_snapshots : ""
+  notification_templates ||--o{ notifications : renders
+  messaging_providers ||--o{ notifications : sends
+  users ||--o{ notifications : receives
+  tasks }o--|| users : assigned
+</pre></div>
+    </section>
+
+    <!-- ================= MATRIX ================= -->
+    <section id="matrix">
+      <div class="sec-head">
+        <div class="eyebrow">06 · Behaviour</div>
+        <h2>What runs automatically</h2>
+        <p>The condensed matrix. The full version with conditions, tables touched and the cron seed for 28 scheduled jobs is in <code>docs/AUTOMATION.md</code>.</p>
+        <div class="legend"><span class="kind sys">system</span> always on, in code <span class="kind rule">rule</span> seeded default, school can edit <span class="kind cron">cron</span> scheduled in school timezone</div>
+      </div>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Module</th><th>Kind</th><th>Trigger</th><th>What happens without anyone clicking</th></tr></thead>
+          <tbody>
+            <tr><td class="mod">Admissions</td><td><span class="kind rule">rule</span></td><td>Enquiry created</td><td>Counsellor assigned round-robin, acknowledgement SMS, follow-up task in 48 h.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind rule">rule</span></td><td>All test results entered</td><td>Merit list ranked, top-N shortlisted by seats, rest waitlisted, everyone notified.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Offer expired unpaid</td><td>Offer revoked, next waitlisted applicant promoted and offered.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Admission fee paid</td><td>Student, enrollment, guardians, user accounts, section by capacity, admission no, ID card, library card, welcome SMS.</td></tr>
+            <tr><td class="mod">Academic</td><td><span class="kind rule">rule</span></td><td>New academic year</td><td>Class-subjects, fee structures, grading scale and leave types cloned from last year.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Teacher leave approved</td><td>Substitutes suggested: free that period, teaches that subject, lowest load. HOD confirms.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Sunday 08:00</td><td>Syllabus units past their planned end and not taught: alert teacher and HOD with completion %.</td></tr>
+            <tr><td class="mod">Attendance</td><td><span class="kind sys">system</span></td><td>Device punch</td><td>Present or late by policy; first punch check-in, last punch check-out.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>10:30 cut-off</td><td>Unmarked active students become absent; guardian gets SMS; 3rd consecutive absence tasks the class teacher.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>1st of month</td><td>Below 75 %: warning letter PDF and SMS; admit card blocked if the policy says so.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Leave approved</td><td>Days marked excused, balance deducted, substitution flow started.</td></tr>
+            <tr><td class="mod">Exams</td><td><span class="kind rule">rule</span></td><td>7 days before exam</td><td>Seat plan, invigilator roster, admit cards only for fee-clear and attendance-eligible students; the rest listed for accounts.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>All papers locked</td><td>Grades from bands, credit-weighted GPA, pass/fail, rank in section and class, tabulation sheet.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind rule">rule</span></td><td>Publish time reached</td><td>Report card PDFs, "GPA 4.83, rank 5" SMS with app link.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind rule">rule</span></td><td>GPA drop ≥ 1.0 · GPA ≥ 5.0</td><td>Counsellor referral · merit scholarship proposed for approval.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Year closed</td><td>Promotion rules applied, next-year enrollments created, graduates become alumni.</td></tr>
+            <tr><td class="mod">LMS</td><td><span class="kind cron">cron</span></td><td>24 h before due</td><td>Reminder to students who have not submitted; late flags and penalty after due.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind rule">rule</span></td><td>15 min before class</td><td>Meeting created if missing, join link pushed, attendance from platform webhook.</td></tr>
+            <tr><td class="mod">Fees</td><td><span class="kind cron">cron</span></td><td>1st of month 06:00</td><td>Invoice batch: structure + transport + hostel + fines + previous due − discounts; PDF and pay link to guardians.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Daily 08:00</td><td>Reminders at −3, 0, +7, +15, +30 days; at +30 a call task for accounts.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Daily 00:30</td><td>Overdue status and late fine per rule, applied once.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Payment received</td><td>Oldest-first allocation, ledger, receipt PDF, thank-you message, balanced journal, blocks lifted.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Bank statement import</td><td>Lines matched to payments, expenses and payroll by amount, reference and date; leftovers become tasks.</td></tr>
+            <tr><td class="mod">Accounting</td><td><span class="kind sys">system</span></td><td>Any money movement</td><td>Journal posted; the DB rejects an unbalanced entry.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind rule">rule</span></td><td>Spend ≥ 90 % of budget</td><td>Alert to principal and treasurer.</td></tr>
+            <tr><td class="mod">HR &amp; payroll</td><td><span class="kind cron">cron</span></td><td>25th of month</td><td>Payroll drafted from structures, attendance, leave, loans and tax; sent for approval.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Payroll approved</td><td>Payslip PDFs, bank transfer file, salary journal, loan balances reduced, staff notified.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Daily</td><td>Contract, probation and document expiry alerts 30 days ahead; birthdays.</td></tr>
+            <tr><td class="mod">Library</td><td><span class="kind cron">cron</span></td><td>Daily 07:00</td><td>Due-soon and overdue reminders; fine accrues per day and lands on the next invoice at return.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Book returned</td><td>Next reservation marked ready and member notified with a 48 h hold.</td></tr>
+            <tr><td class="mod">Transport</td><td><span class="kind sys">system</span></td><td>GPS inside stop geofence</td><td>"Bus approaching" push to that stop's guardians, once per trip.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>RFID tap</td><td>Boarded / alighted push; school check-in fed into attendance.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Every 5 min</td><td>Trip not started 10 min after schedule: alert manager and route guardians. Documents expiring: tasks.</td></tr>
+            <tr><td class="mod">Hostel</td><td><span class="kind cron">cron</span></td><td>Every 15 min</td><td>Out-pass overdue by curfew margin: alert warden and guardian.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Bed allocated</td><td>Bed fee joins monthly invoicing; guardian notified.</td></tr>
+            <tr><td class="mod">Inventory</td><td><span class="kind sys">system</span></td><td>Stock below reorder level</td><td>Purchase order drafted with preferred vendor and reorder quantity.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>PO received</td><td>Stock-in, expense and journal, asset rows with QR tags for asset categories.</td></tr>
+            <tr><td class="mod">Communication</td><td><span class="kind sys">system</span></td><td>Any notify action</td><td>Recipients resolved by preference and quiet hours, template in the guardian's language, provider send with retries and cost.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind cron">cron</span></td><td>Saturday 18:00</td><td>Weekly digest: attendance, homework, dues, upcoming events.</td></tr>
+            <tr><td class="mod">Welfare</td><td><span class="kind cron">cron</span></td><td>Nightly</td><td>Behaviour points crossing a threshold propose detention, counselling or a merit certificate.</td></tr>
+            <tr><td class="mod"></td><td><span class="kind sys">system</span></td><td>Clinic sends student home</td><td>Immediate call task and SMS to the emergency contact.</td></tr>
+            <tr><td class="mod">Documents</td><td><span class="kind sys">system</span></td><td>TC requested</td><td>Eligibility checked: dues, library, hostel, discipline. Blocked items listed, otherwise approval, PDF with QR verification code.</td></tr>
+            <tr><td class="mod">Front office</td><td><span class="kind sys">system</span></td><td>Complaint created</td><td>Ticket, auto-assignment by category, SLA by priority, escalation on breach, survey on close.</td></tr>
+            <tr><td class="mod">Platform</td><td><span class="kind cron">cron</span></td><td>Nightly</td><td>KPI snapshot; anomaly alerts when collection or attendance drops; backups and retention purge.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= STACK ================= -->
+    <section id="stack">
+      <div class="sec-head">
+        <div class="eyebrow">07 · Choices</div>
+        <h2>Stack</h2>
+        <p>TypeScript end to end so the event catalogue is one shared package. A Python team could build the same schema with Django and Celery; nothing in the design depends on the framework.</p>
+      </div>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Layer</th><th>Choice</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>API</td><td>NestJS modular monolith, REST + OpenAPI</td><td>One deployable with hard module boundaries; split later only if needed.</td></tr>
+            <tr><td>Database</td><td>PostgreSQL 16 with RLS, btree_gist, pg_trgm, pgcrypto</td><td>Exclusion constraints solve timetable and room clashes in the database itself.</td></tr>
+            <tr><td>Data access</td><td>Drizzle ORM plus raw SQL for reports</td><td>SQL-first; the DDL stays the source of truth.</td></tr>
+            <tr><td>Queues</td><td>Redis 7 + BullMQ</td><td>Named queues for notifications, billing, payroll, PDF, sync and reports; retries with back-off.</td></tr>
+            <tr><td>Files</td><td>MinIO self-hosted or S3 / R2</td><td>Photos, documents and generated PDFs via pre-signed URLs.</td></tr>
+            <tr><td>PDF</td><td>Gotenberg</td><td>Renders the same HTML templates schools edit for report cards, receipts, certificates.</td></tr>
+            <tr><td>Web</td><td>Next.js 15, Tailwind, TanStack Query</td><td>Admin, accounts and teacher desks.</td></tr>
+            <tr><td>Mobile</td><td>Expo / React Native, FCM push</td><td>Guardian, student, teacher and bus-helper apps from one codebase.</td></tr>
+            <tr><td>Auth</td><td>JWT 15 min + refresh sessions, SMS OTP for guardians, TOTP for admins</td><td>Phone number is the guardian's identity in Bangladesh.</td></tr>
+            <tr><td>BI</td><td>Metabase on a read-only role and the daily KPI table</td><td>Principal dashboards without custom code.</td></tr>
+            <tr><td>Infra</td><td>Docker Compose on one VPS, Kubernetes past ~50 schools</td><td>Everything is stateless except Postgres, Redis and MinIO.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= ROADMAP ================= -->
+    <section id="roadmap" class="roadmap">
+      <div class="sec-head">
+        <div class="eyebrow">08 · Sequence</div>
+        <h2>Build plan</h2>
+        <p>Four engineers, one designer/QA, 36 working weeks. Each phase depends on the ones before it; adjust the week counts, not the order. The pilot school goes live after fees, because collecting money is what a school cannot run without.</p>
+      </div>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>Phase</th><th>Weeks</th><th>Timeline</th><th>Delivers</th><th>Exit criterion</th></tr></thead>
+          <tbody>
+            <tr><td>0 · Foundation</td><td class="weeks">1–2</td><td><div class="bar"><i style="left:0%;width:5.5%"></i></div></td><td>Monorepo, auth and tenancy, RBAC, files, audit, the automation core, notifications, PDF service.</td><td>Test event → rule → SMS and PDF. Cross-tenant read returns zero rows.</td></tr>
+            <tr><td>1 · Academic core &amp; people</td><td class="weeks">3–6</td><td><div class="bar"><i style="left:5.5%;width:11%"></i></div></td><td>Years to sections, students and guardians, staff, Excel import, timetable with clash constraints, guardian app v0.</td><td>1,000 students imported in under 2 minutes; 30-section timetable with no clash.</td></tr>
+            <tr><td>2 · Attendance &amp; communication</td><td class="weeks">7–9</td><td><div class="bar"><i style="left:16.5%;width:8.5%"></i></div></td><td>Device ingest, policies, auto-absent, leave and approvals, notices, chat, PTM, teacher app v0.</td><td>Every absence produces a guardian SMS within 5 minutes of cut-off.</td></tr>
+            <tr><td>3 · Fees &amp; accounting</td><td class="weeks">10–15</td><td><div class="bar"><i style="left:25%;width:16.5%"></i></div></td><td>Chart of accounts, fee structures, invoice batches, bKash / Nagad / SSLCommerz, ledger, reminders, fines, reconciliation, guardian payments.</td><td>A month closes with the trial balance in balance and zero manual fee journals.</td></tr>
+            <tr><td>Pilot go-live</td><td class="weeks">16</td><td><div class="bar"><i class="pilot" style="left:41.5%;width:2.8%"></i></div></td><td>Phases 0–3 in one school.</td><td>Online collection running.</td></tr>
+            <tr><td>4 · Exams &amp; results</td><td class="weeks">16–20</td><td><div class="bar"><i style="left:41.5%;width:14%"></i></div></td><td>Grading, schedules, seat plans, marks, result engine, report cards, promotion, online exams.</td><td>Annual result for 1,000 students ranked and published with PDFs in under 10 minutes.</td></tr>
+            <tr><td>5 · HR &amp; payroll</td><td class="weeks">21–24</td><td><div class="bar"><i style="left:55.5%;width:11%"></i></div></td><td>Contracts, salary structures, payroll from attendance and leave, payslips, appraisals.</td><td>Payroll for 150 staff drafted, approved, paid and posted in one pass.</td></tr>
+            <tr><td>6 · Admissions</td><td class="weeks">25–27</td><td><div class="bar"><i style="left:66.5%;width:8.5%"></i></div></td><td>Campaigns, public form, enquiry CRM, tests, merit list, offers, one-click enrolment. Pull forward if go-live meets admission season.</td><td>Form → payment → test → merit → offer → enrolled student without staff typing anything but marks.</td></tr>
+            <tr><td>7 · Operations</td><td class="weeks">28–31</td><td><div class="bar"><i style="left:75%;width:11%"></i></div></td><td>Library, transport with GPS, hostel, inventory and assets.</td><td>Each module's automation rows fire in staging.</td></tr>
+            <tr><td>8 · LMS, welfare, documents, front office</td><td class="weeks">32–34</td><td><div class="bar"><i style="left:86%;width:8.5%"></i></div></td><td>Assignments, online classes, behaviour, health, counselling, certificates with QR, complaints, alumni.</td><td>TC issued end-to-end with eligibility check and public verification.</td></tr>
+            <tr><td>9 · Hardening &amp; GA</td><td class="weeks">35–36</td><td><div class="bar"><i style="left:94.5%;width:5.5%"></i></div></td><td>Load test at 50 schools, RLS fuzzing, restore drill, dashboards, onboarding playbook, manuals.</td><td>Five schools onboarded.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid-2">
+        <div class="card milestone"><h4>Definition of done for any automation</h4><p>Event or cron documented. Handler idempotent. Run visible in the activity log with a readable result. Failure notifies an admin. Integration test covers the happy path and one failure.</p></div>
+        <div class="card milestone"><h4>Biggest risks</h4><p>SMS cost and delivery (push first, SMS fallback, balance alerts). Device variety (thin adapter per vendor, one resolver). Messy legacy data (import with error file, draft students until verified). Automation surprises at scale (preview mode for 48 h after a rule change, per-rule kill switch, cooldowns).</p></div>
+      </div>
+    </section>
+
+    <p class="footer-note">Files: <code>db/schema/00_common.sql … 99_finalize.sql</code> (DDL), <code>docs/ARCHITECTURE.md</code>, <code>docs/AUTOMATION.md</code>, <code>docs/PLAN.md</code>. Apply with <code>DATABASE_URL=… ./db/apply.sh</code>.</p>
+  </main>
+</div>
