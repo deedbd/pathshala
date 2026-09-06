@@ -33,8 +33,19 @@ export interface EventPayloads {
   'notification.failed': { notificationId: string; channel: string; error: string };
   'backup.finished': { backupId: string; status: 'success' | 'failed'; sizeBytes?: number | null };
   'import.finished': { importJobId: string; entityType: string; successRows: number; errorRows: number };
+  // phase 1: academic core, people, curriculum, cms
+  'student.created': { studentId: string; admissionNo: string; classId: string; sectionId: string | null; guardianUserIds: string[] };
+  'student.enrolled': { studentId: string; enrollmentId: string; academicYearId: string; classId: string; sectionId: string | null };
+  'guardian.linked': { guardianId: string; studentId: string; phone: string; relation: string };
+  'staff.created': { staffId: string; employeeNo: string; userId: string | null };
+  'timetable.published': { versionId: string; academicYearId: string; slots: number };
+  'substitution.suggested': { substitutionId: string; slotId: string; onDate: string; substituteTeacherId: string | null };
+  'lesson.taught': { lessonPlanId: string; sectionId: string; classSubjectId: string; unitId: string | null };
+  'syllabus.behind': { syllabusId: string; sectionId: string; pct: number; overdueUnits: number };
+  'page.published': { pageId: string; slug: string; locale: string };
+  'contact.received': { messageId: string; name: string; phone: string | null };
   // year-1 modules (payload shapes are filled in as each module ships; kept loose until then)
-  'enquiry.created': Record<string, unknown>;
+  'enquiry.created': { enquiryId: string; studentName: string; guardianName: string; phone: string; classId: string | null; source: string };
   'application.submitted': Record<string, unknown>;
   'applicant.enrolled': Record<string, unknown>;
   'academic_year.created': { academicYearId: string; previousYearId?: string | null };
@@ -58,6 +69,7 @@ export type EventType = keyof EventPayloads;
 export const EVENT_TYPES = Object.freeze([
   'school.created', 'user.created', 'user.invited', 'user.logged_in', 'user.locked', 'settings.changed', 'file.uploaded', 'installer.completed',
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
+  'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
   'enquiry.created', 'application.submitted', 'applicant.enrolled', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
   'attendance.marked', 'attendance.absent', 'marks.locked', 'result.published', 'invoice.created', 'payment.received', 'payroll.approved', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);

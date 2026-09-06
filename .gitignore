@@ -19,3 +19,4 @@ apps/web/build/
 packages/*/dist/
 apps/*/dist/
 tests/.tmp/
+tests/.tmp-*/

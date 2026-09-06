@@ -15,7 +15,9 @@
     "db:generate": "node db/generate.mjs && node db/verify.mjs && node db/seeds/build-seeds.mjs && node packages/db/scripts/gen-drizzle.mjs",
     "check:native": "node scripts/check-native.mjs",
     "release:cpanel": "node scripts/build-release.mjs",
-    "smoke": "node --test --test-concurrency=1 tests/smoke.test.mjs"
+    "smoke": "node --test --test-concurrency=1 tests/smoke.test.mjs tests/phase1.test.mjs",
+    "test:phase0": "node --test --test-concurrency=1 tests/smoke.test.mjs",
+    "test:phase1": "node --test --test-concurrency=1 tests/phase1.test.mjs"
   },
   "devDependencies": {
     "archiver": "7.0.1",

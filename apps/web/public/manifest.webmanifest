@@ -1,0 +1,13 @@
+{
+  "name": "Pathshala",
+  "short_name": "Pathshala",
+  "start_url": "/portal",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F2F4F7",
+  "theme_color": "#2B5FA8",
+  "lang": "bn",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

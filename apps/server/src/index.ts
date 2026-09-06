@@ -4,9 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createRequestHandler } from '@react-router/express';
-import { createApp, runWithContext, HttpError, type App, type UserRow, type SessionRow, type RequestContext } from '@pathshala/core';
+import { createApp, runWithContext, normalizeBdPhone, HttpError, type App, type UserRow, type SessionRow, type RequestContext } from '@pathshala/core';
 import { LocalStorage, SseRealtime } from '@pathshala/adapters';
 import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, settingWriteSchema, z } from '@pathshala/schemas';
+import { mountPhase1, mountPublic } from './routes/phase1.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -20,7 +21,8 @@ export async function createServer(app: App = createApp()) {
   server.disable('x-powered-by');
   server.set('trust proxy', true);
   // Body parsers only under /api and /cron: React Router actions read the raw stream themselves (request.formData()).
-  server.use(['/api', '/cron'], express.json({ limit: '2mb' }), express.urlencoded({ extended: true, limit: '2mb' }));
+  server.use('/api/import', express.raw({ type: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', 'application/octet-stream'], limit: '16mb' }));
+  server.use(['/api', '/cron'], express.json({ limit: '20mb' }), express.urlencoded({ extended: true, limit: '2mb' }));
   server.get('/favicon.ico', (_req, res) => res.status(204).end());
 
   // ---- per-request context: session → user → tenant → AsyncLocalStorage ----
@@ -108,7 +110,11 @@ export async function createServer(app: App = createApp()) {
   api.post('/auth/otp/request', wrap(async req => {
     const input = otpRequestSchema.parse(req.body);
     await verifyTurnstile(config.env, input.turnstile, req.ip);
-    const user = await app.auth.findByIdentifier(input.target);
+    let user = await app.auth.findByIdentifier(input.target);
+    if (!user) { // a guardian on file gets a portal account the first time they ask for a code
+      const g = await app.db.findOne<{ id: string; school_id: string }>('guardians', { phone: input.target.includes('@') ? '__' : normalizeBdPhone(input.target) ?? '__' });
+      if (g) { await app.people.ensureGuardianAccount(g.school_id, g.id); user = await app.auth.findByIdentifier(input.target); }
+    }
     if (!user) return { sent: true }; // do not reveal whether the number exists
     return { sent: true, ...(await app.auth.issueOtp({ schoolId: user.school_id, target: input.target, channel: input.channel, purpose: input.purpose, userId: user.id })) };
   }));
@@ -161,6 +167,10 @@ export async function createServer(app: App = createApp()) {
     return { ok: true, publicKey: app.adapters.push.publicKey() };
   }));
   api.get('/push/public-key', (_req, res) => res.json({ publicKey: app.adapters.push.publicKey() }));
+  mountPhase1(api, app, wrap, requirePerm, requireUser);
+  const pub = express.Router();
+  mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
+  api.use('/public', pub);
   server.use('/api', api);
 
   // ---- not installed → wizard ----

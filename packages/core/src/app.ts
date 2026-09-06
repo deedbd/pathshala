@@ -18,12 +18,21 @@ import { HandlerRegistry } from './automation/handlers.js';
 import { RuleEngine } from './automation/rules.js';
 import { Relay } from './automation/relay.js';
 import { registerPlatformJobs } from './automation/jobs.js';
+import { NumberingService } from './modules/numbering.js';
+import { AcademicService } from './modules/academic.js';
+import { PeopleService } from './modules/people.js';
+import { ImportService } from './modules/importer.js';
+import { TimetableService } from './modules/timetable.js';
+import { CurriculumService } from './modules/curriculum.js';
+import { CmsService } from './modules/cms.js';
+import { PortalService } from './modules/portal.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
   audit: AuditService; settings: SettingsService; rbac: RbacService; files: FileService; customFields: CustomFieldService;
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
+  numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -60,14 +69,40 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const rules = new RuleEngine(db, adapters, { notifications, tasks, approvals, outbox, log, appKey: config.appKey });
   relay = new Relay(db, handlers, rules, log, config.appKey);
   const auth = new AuthService(db, { audit, outbox, notifications, rbac, log, appKey: config.appKey, sessionDays: config.sessionDays });
-  const installer = new InstallerService(db, config, adapters, { auth, outbox, notifications, relay, log });
+
+  // phase 1 modules
+  const numbering = new NumberingService(db);
+  const academic = new AcademicService(db, outbox, settings);
+  const people = new PeopleService(db, outbox, numbering, auth);
+  const importer = new ImportService(db, adapters, outbox, files, people);
+  const timetable = new TimetableService(db, outbox, academic);
+  const curriculum = new CurriculumService(db, outbox, notifications);
+  const cms = new CmsService(db, outbox);
+  const portal = new PortalService(db, timetable, cms);
+
+  const installer = new InstallerService(db, config, adapters, {
+    auth, outbox, notifications, relay, log,
+    /** A fresh school gets a current academic year, the institution preset, default periods and a website. */
+    afterSchool: async (schoolId, input) => {
+      const y = new Date().getFullYear();
+      const yearId = await academic.createYear(schoolId, { name: String(y), startDate: `${y}-01-01`, endDate: `${y}-12-31`, setCurrent: true });
+      await academic.applyPreset(schoolId, input.institutionType, yearId);
+      await academic.ensureDefaultPeriods(schoolId);
+      const campus = await academic.mainCampus(schoolId);
+      if (campus && !(await db.count('rooms', { school_id: schoolId }))) for (let i = 1; i <= 6; i++) await academic.createRoom(schoolId, { campusId: String(campus.id), name: `Room ${100 + i}`, capacity: 40 });
+      await cms.ensureDefaultSite(schoolId);
+    },
+  });
 
   registerPlatformJobs({ db, adapters, notifications, outbox, log });
-  registerSystemHandlers(handlers, { notifications, tasks, log });
+  adapters.queue.register('people.import_students', (payload, ctx) => importer.runJob(payload, ctx));
+  adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
+  registerSystemHandlers(handlers, { notifications, tasks, log, db });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -93,8 +128,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
   return app;
 }
 
-/** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows). */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger }) {
+/** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db }) {
   h.on('rule.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['push', 'in_app', 'email'], eventKey: 'automation.rule_failed', data: { rule: e.payload.ruleCode, attempts: e.payload.attempts, error: e.payload.error }, entityType: 'platform.rule', entityId: e.payload.ruleId }); });
   h.on('job.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'automation.job_failed', title: 'Background job failed', body: `${e.payload.jobName} failed after ${e.payload.attempts} attempts: ${e.payload.error}`, entityType: 'platform.job', entityId: e.payload.jobId }); });
   h.on('notification.failed', 'alert-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['in_app'], eventKey: 'comms.delivery_failed', title: 'Message could not be delivered', body: `${e.payload.channel}: ${e.payload.error}`, entityType: 'communication.notification', entityId: e.payload.notificationId }); });
@@ -104,5 +139,18 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
   });
   h.on('approval.requested', 'notify-approvers', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'approval.requested', data: { summary: e.payload.summary ?? `${e.payload.entityType} needs approval (step ${e.payload.step})` }, entityType: 'platform.approval', entityId: e.payload.requestId }); });
   h.on('user.locked', 'notify-user', async e => { await d.notifications.notify({ schoolId: e.schoolId, userId: e.payload.userId, channels: ['sms', 'email'], eventKey: 'auth.locked', title: 'Account locked', body: `Too many wrong passwords. Try again after ${e.payload.until} UTC.`, respectQuietHours: false }); });
+  h.on('import.finished', 'notify-admins', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['in_app', 'push', 'email'], eventKey: 'import.finished', title: 'Import finished', body: `${e.payload.entityType}: ${e.payload.successRows} imported, ${e.payload.errorRows} rows need fixing${e.payload.errorRows ? ' (see the error file)' : ''}.`, entityType: 'platform.import_job', entityId: e.payload.importJobId }); });
+  h.on('notice.published', 'push-guardians', async e => {
+    // audience {public:true} → every guardian with a portal account; section/class targeting comes with Phase 2 comms
+    const users = await d.db.query<{ id: string }>(`SELECT u.id FROM users u WHERE u.school_id = ? AND u.user_type = 'guardian' AND u.is_active = TRUE LIMIT 5000`, [e.schoolId]);
+    for (const u of users) await d.notifications.notify({ schoolId: e.schoolId, userId: u.id, channels: ['push', 'in_app'], eventKey: 'notice.published', title: e.payload.title, body: e.payload.title, entityType: 'communication.notice', entityId: e.payload.noticeId });
+  });
+  h.on('contact.received', 'notify-front-office', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['in_app'], eventKey: 'cms.contact', title: 'New website message', body: `${e.payload.name}${e.payload.phone ? ' · ' + e.payload.phone : ''}`, entityType: 'cms.contact', entityId: e.payload.messageId }); });
+  h.on('timetable.published', 'notify-teachers', async e => { await d.notifications.notifyRole(e.schoolId, 'teacher', { channels: ['push', 'in_app'], eventKey: 'timetable.published', title: 'New timetable published', body: `${e.payload.slots} periods scheduled. Check your classes in the portal.`, entityType: 'curriculum.timetable', entityId: e.payload.versionId }); });
+  h.on('substitution.suggested', 'notify-substitute', async e => {
+    if (!e.payload.substituteTeacherId) return;
+    const st = await d.db.findOne<{ user_id: string | null }>('staff', { id: e.payload.substituteTeacherId });
+    if (st?.user_id) await d.notifications.notify({ schoolId: e.schoolId, userId: st.user_id, channels: ['push', 'in_app'], eventKey: 'substitution.suggested', title: 'Substitution proposed', body: `You may be asked to cover a class on ${e.payload.onDate}. HOD will confirm.`, entityType: 'curriculum.substitution', entityId: e.payload.substitutionId });
+  });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

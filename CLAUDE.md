@@ -34,8 +34,11 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Rule of thumb in code: `Db` (packages/db) is dialect-agnostic — `?` placeholders, UTC `'YYYY-MM-DD HH:MM:SS'` strings, JSON columns always hold valid JSON (stringify scalars). Services take `schoolId` explicitly; the request context (`runWithContext`) carries actor/tenant for audit.
 - Web routes use typegen types (`import type { Route } from './+types/<name>'`); `context.app` is the `App` from `@pathshala/core`. Body parsers are mounted only under `/api` and `/cron` — React Router actions read the raw stream.
 
+- Phase 1 modules live in `packages/core/src/modules/` (academic, people, importer, timetable, curriculum, cms, portal, numbering) and are wired in `app.ts`; their API is `apps/server/src/routes/phase1.ts`; console pages are `apps/web/app/routes/*.tsx` (loaders call `context.app.*` directly, mutations go through `/api/*` with the `api()` helper from `@pathshala/ui`). Public site: `/site`, guardian PWA: `/portal`. `tests/phase1.test.mjs` is the Phase 1 exit criterion (runs with `pnpm smoke`).
+- New module checklist: service in `modules/`, register in `app.ts` (queue/scheduled handlers + system handlers), Zod input in `packages/schemas`, routes in `routes/phase1.ts` (or a new file), console page, i18n keys in `packages/ui/src/i18n.ts`, a test in `tests/`.
+
 ## Next step
-Phase 1 (`docs/PLAN.md`, weeks 4–7): academic structure (school/college/madrasa/coaching modes), students/guardians/staff, enrollments, Excel import with error file, timetable builder + auto-generator v1, substitutions, syllabus & lesson plans, calendar, CMS website with admission form and notices, guardian PWA v0, design-system components in `packages/ui`. Exit: 1,500 students imported in < 2 min; 40-section timetable with zero clashes; school website live.
+Phase 2 (`docs/PLAN.md`, weeks 8–10): attendance (device ingestion ZKTeco/Hikvision push, RFID, QR/app marking, policies, auto-absent job C4 with SMS within 5 minutes of cut-off, leave workflow → substitutions from leave), communication (chat & section channels, PTM slots), homework diary, KG daily report, teacher PWA v0. Exit: absent SMS within 5 minutes for every section; a teacher marks a class in 30 s on a phone.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

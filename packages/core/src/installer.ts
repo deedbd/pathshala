@@ -28,7 +28,7 @@ export class InstallerService {
   private memory = new Map<InstallStep, StepState>();  // before the schema exists there is no table to write to
   private installedFlag: boolean | null = null;
 
-  constructor(private db: Db, private config: AppConfig, private adapters: Adapters, private deps: { auth: AuthService; outbox: OutboxService; notifications: NotificationService; relay: Relay; log: Logger }) {}
+  constructor(private db: Db, private config: AppConfig, private adapters: Adapters, private deps: { auth: AuthService; outbox: OutboxService; notifications: NotificationService; relay: Relay; log: Logger; afterSchool?: (schoolId: string, input: InstallSchoolInput) => Promise<void> }) {}
 
   private schemaFlag = false;
   /** True once the baseline schema has been applied (cheap, cached after the first positive answer). */
@@ -102,6 +102,7 @@ export class InstallerService {
       });
       await seed(this.db, { dbDir: this.config.dbDir, schoolId, log: m => this.deps.log.info(`seed: ${m}`) });
       const userId = await runWithContext(systemContext(schoolId), () => this.deps.auth.createUser({ schoolId, userType: 'admin', displayName: input.adminName, phone: input.adminPhone, email: input.adminEmail || null, password: input.adminPassword, locale: input.locale, roles: ['super_admin'] }));
+      if (this.deps.afterSchool) await runWithContext(systemContext(schoolId, { userId }), () => this.deps.afterSchool!(schoolId, input));
       await this.mark('school', 'done', { schoolId, userId, code });
       return { ...result, userId };
     } catch (e) { await this.mark('school', 'failed', { error: (e as Error).message }); throw e; }

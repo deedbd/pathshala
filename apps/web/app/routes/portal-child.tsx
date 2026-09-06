@@ -1,0 +1,35 @@
+import { redirect, useLoaderData } from 'react-router';
+import type { Route } from './+types/portal-child';
+import { formatDate, t, type Locale } from '@pathshala/ui';
+
+export async function loader({ context, request, params }: Route.LoaderArgs) {
+  if (!context.user) throw redirect(`/login?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  const u = context.user;
+  const data = await context.app.portal.child(u.school_id, u.id, params.id);
+  const offs = await context.app.academic.weeklyOffs(u.school_id);
+  return { locale: (u.locale as Locale) || context.locale, ...data, days: [0, 1, 2, 3, 4, 5, 6].filter(x => !offs.includes(x)), today: new Date().getUTCDay() };
+}
+export function meta() { return [{ title: 'Pathshala — Child' }]; }
+
+export default function PortalChild() {
+  const d = useLoaderData<typeof loader>(); const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L);
+  const c = d.child;
+  const byDay = new Map<number, typeof d.timetable>(); for (const s of d.timetable) byDay.set(Number(s.day_of_week), [...(byDay.get(Number(s.day_of_week)) ?? []), s]);
+  const subj = (g: Record<string, unknown>) => L === 'bn' && g.subject_name_bn ? String(g.subject_name_bn) : String(g.subject_name ?? '—');
+  return (
+    <div lang={L} className="mx-auto max-w-md pb-20">
+      <header className="sticky top-0 z-10 flex items-center gap-3 border-b px-4 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href="/portal" className="btn btn-ghost btn-sm">‹</a><div><div className="display text-base">{L === 'bn' && c.name_bn ? String(c.name_bn) : `${c.first_name} ${c.last_name ?? ''}`}</div><div className="text-xs" style={{ color: 'var(--muted)' }}>{String(c.class_name ?? '')} {String(c.section_name ?? '')} · {tr('stu.roll')} <span className="num">{String(c.current_roll_no ?? '—')}</span> · <span className="num">{String(c.admission_no)}</span></div></div></header>
+      <main className="px-4">
+        {d.classTeacher && <div className="card mt-4 p-3 text-sm"><span style={{ color: 'var(--muted)' }}>{tr('portal.classTeacher')}: </span>{String(d.classTeacher.first_name)} {String(d.classTeacher.last_name ?? '')}{d.classTeacher.phone ? <> · <a className="num" href={`tel:${d.classTeacher.phone}`}>{String(d.classTeacher.phone)}</a></> : null}</div>}
+        {d.substitutions.length > 0 && <div className="banner banner-warn mt-4 text-sm">{d.substitutions.map((s, i) => <div key={i}>{formatDate(String(s.on_date), L)} · {String(s.period_name)}: {s.sub_first ? `${s.sub_first} ${s.sub_last ?? ''}` : '—'}</div>)}</div>}
+        <h2 className="mt-6 text-base">{tr('portal.timetable')}</h2>
+        {d.timetable.length === 0 ? <div className="card mt-2 p-4 text-sm" style={{ color: 'var(--muted)' }}>—</div> : <div className="mt-2 grid gap-2">{d.days.map(day => <details key={day} className="card" open={day === d.today}><summary className="flex cursor-pointer items-center justify-between px-3 py-2 font-medium">{t(`day.${day}` as never, L)}{day === d.today && <span className="chip chip-accent">{tr('portal.today')}</span>}</summary><ul className="divide-y px-3 pb-2 text-sm" style={{ borderColor: 'var(--line)' }}>{(byDay.get(day) ?? []).map(s => <li key={String(s.id)} className="flex items-center gap-3 py-2"><span className="num w-24 text-xs" style={{ color: 'var(--muted)' }}>{String(s.start_time).slice(0, 5)}–{String(s.end_time).slice(0, 5)}</span><span className="flex-1"><span className="block font-medium">{subj(s)}</span><span className="block text-xs" style={{ color: 'var(--muted)' }}>{s.teacher_first ? `${s.teacher_first} ${s.teacher_last ?? ''}` : ''}{s.room_name ? ` · ${s.room_name}` : ''}</span></span></li>)}{(byDay.get(day) ?? []).length === 0 && <li className="py-2 text-xs" style={{ color: 'var(--muted)' }}>—</li>}</ul></details>)}</div>}
+        <h2 className="mt-6 text-base">{tr('portal.events')}</h2>
+        <ul className="card mt-2 divide-y text-sm" style={{ borderColor: 'var(--line)' }}>{d.events.map((e, i) => <li key={i} className="flex items-center justify-between p-3"><span>{String(e.title)}{Number(e.is_holiday) ? <span className="chip chip-bad ml-2">{tr('cal.holiday')}</span> : null}</span><span className="text-xs" style={{ color: 'var(--muted)' }}>{formatDate(String(e.start_date), L)}</span></li>)}{d.events.length === 0 && <li className="p-3 text-xs" style={{ color: 'var(--muted)' }}>—</li>}</ul>
+        <h2 className="mt-6 text-base">{tr('portal.notices')}</h2>
+        <ul className="card mt-2 divide-y text-sm" style={{ borderColor: 'var(--line)' }}>{d.notices.slice(0, 5).map(n => <li key={String(n.id)} className="p-3"><div className="font-medium">{String(n.title)}</div><div className="text-xs" style={{ color: 'var(--muted)' }}>{formatDate(String(n.publish_at), L)}</div></li>)}</ul>
+      </main>
+      <nav className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md justify-around border-t py-2 text-xs" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href="/portal">{tr('portal.children')}</a><a href="/portal#notices">{tr('portal.notices')}</a><a href="/site">{tr('web.title')}</a></nav>
+    </div>
+  );
+}

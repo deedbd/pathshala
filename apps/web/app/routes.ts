@@ -1,4 +1,4 @@
-import { type RouteConfig, index, layout, route } from '@react-router/dev/routes';
+import { type RouteConfig, index, layout, prefix, route } from '@react-router/dev/routes';
 
 export default [
   index('routes/index.tsx'),
@@ -8,5 +8,21 @@ export default [
   layout('routes/console.tsx', [
     route('dashboard', 'routes/dashboard.tsx'),
     route('automation', 'routes/automation.tsx'),
+    route('academic', 'routes/academic.tsx'),
+    route('students', 'routes/students.tsx'),
+    route('staff', 'routes/staff.tsx'),
+    route('import', 'routes/import.tsx'),
+    route('timetable', 'routes/timetable.tsx'),
+    route('syllabus', 'routes/syllabus.tsx'),
+    route('calendar', 'routes/calendar.tsx'),
+    route('website', 'routes/website.tsx'),
+  ]),
+  ...prefix('site', [
+    index('routes/site.tsx', { id: 'site-home' }),
+    route(':slug', 'routes/site.tsx', { id: 'site-page' }),
+  ]),
+  ...prefix('portal', [
+    index('routes/portal.tsx'),
+    route('child/:id', 'routes/portal-child.tsx'),
   ]),
 ] satisfies RouteConfig;

@@ -17,10 +17,13 @@ Turnstile · SSLCommerz/bKash later. Pure-JS packages only (enforced in CI).
 
 ## Status
 
-**Phase 0 (foundation + zero-touch installer) is implemented** — see `docs/PLAN.md`. A fresh
-database goes from zip to dashboard through `install.php` → `/install`, with the automation
-engine (outbox → relay → rules → queue), scheduler, notifications, auth/RBAC/audit and the
-cPanel release pipeline in place. Phase 1 (academic core, people, website) is next.
+**Phase 0 (foundation + zero-touch installer) and Phase 1 (academic core, people, website) are
+implemented** — see `docs/PLAN.md`. A fresh database goes from zip to dashboard through
+`install.php` → `/install`; the school then gets its academic year, classes, subjects, sections,
+periods and website from an institution preset. Students come in one at a time or 1,500 at a time
+from Excel (error workbook for bad rows), the timetable generator places every period without
+clashes, guardians sign in by OTP to a PWA that shows their children, the timetable and notices.
+Phase 2 (attendance, communication, diary) is next.
 
 ## Layout
 

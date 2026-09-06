@@ -23,8 +23,16 @@ export default function Console() {
           <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>{tr('app.name')}</div>
           <div className="display truncate text-base">{schoolName}</div>
         </div>
-        <nav className="flex gap-1 sm:flex-col">
+        <nav className="flex gap-1 overflow-x-auto sm:flex-col">
           <NavLink to="/dashboard" className={link} style={style}>{tr('nav.dashboard')}</NavLink>
+          <NavLink to="/academic" className={link} style={style}>{tr('nav.academic')}</NavLink>
+          <NavLink to="/students" className={link} style={style}>{tr('nav.students')}</NavLink>
+          <NavLink to="/staff" className={link} style={style}>{tr('nav.staff')}</NavLink>
+          <NavLink to="/timetable" className={link} style={style}>{tr('nav.timetable')}</NavLink>
+          <NavLink to="/syllabus" className={link} style={style}>{tr('nav.syllabus')}</NavLink>
+          <NavLink to="/calendar" className={link} style={style}>{tr('nav.calendar')}</NavLink>
+          <NavLink to="/import" className={link} style={style}>{tr('nav.import')}</NavLink>
+          <NavLink to="/website" className={link} style={style}>{tr('nav.website')}</NavLink>
           {d.canAutomation && <NavLink to="/automation" className={link} style={style}>{tr('nav.automation')}</NavLink>}
         </nav>
         <div className="hidden sm:mt-auto sm:block">

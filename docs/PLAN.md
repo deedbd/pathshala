@@ -27,6 +27,8 @@ Academic structure (school/college/madrasa/coaching switches), students/guardian
 
 **Exit:** 1,500 students imported in < 2 min; 40-section timetable generated with zero clashes; school website live on the school’s domain.
 
+> **Status (7 Sep 2026): implemented (v0).** `packages/core/src/modules/`: academic (years with clone, terms, classes, subjects, class-subject matrix, sections with auto-placement, shifts/periods, rooms, calendar + weekly offs, institution presets for school/madrasa/college/coaching), people (students with numbering, enrollments, guardians shared by phone → sibling links, staff with subjects, portal accounts on first OTP), importer (SheetJS template → validate → chunked job → error workbook), timetable (versions, clash rules, greedy generator v1, teacher auto-assign, substitution suggestions), curriculum (syllabi/units, lesson plans, progress roll-up, weekly behind-schedule alert B6), cms (block pages, menu, notices, public admission enquiry → rule A1, contact), portal (children, child card, timetable). Console pages for each, public site at `/site`, guardian PWA v0 at `/portal` (manifest + service worker). `tests/phase1.test.mjs` proves the exit criteria on SQLite, MySQL and Postgres: 1,500-row import ≈ 4–5 s, 40 sections × 30 periods → 1,200 placed, 0 clashes. Not yet: Excel import for staff, timetable drag-and-drop editing, custom-domain routing test on a real host, design-system component library beyond the basics.
+
 ## Phase 2 · Attendance, communication, diary (weeks 8–10)
 
 Device ingestion (ZKTeco/Hikvision push, RFID), QR/app marking, policies, auto-absent, leave workflow, substitutions from leave, chat & section channels, PTM slots, homework diary, KG daily report, teacher PWA v0.
