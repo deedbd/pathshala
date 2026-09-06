@@ -38,18 +38,19 @@ jobs:
         run: |
           pnpm db:generate
           git diff --exit-code -- db packages/db/src/schema || (echo "::error::run 'pnpm db:generate' and commit" && exit 1)
-      - run: pnpm build
+      - id: build
+        run: pnpm build
       - run: pnpm typecheck
       - name: No native packages in the server's production tree
         run: pnpm check:native apps/server
       - name: Smoke test — SQLite (node:sqlite fallback)
         run: bash scripts/ci-smoke.sh sqlite
       - name: Smoke test — MySQL 8 (cPanel primary)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bash scripts/ci-smoke.sh mysql
         env: { TEST_DB_URL: 'mysql://root:root@127.0.0.1:3306/pathshala' }
       - name: Smoke test — Postgres 16 (VPS/Docker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: bash scripts/ci-smoke.sh postgres
         env: { TEST_DB_URL: 'postgres://postgres:root@127.0.0.1:5432/pathshala' }
       - name: Build cPanel release zip (Linux x64, Node 22, node_modules baked in)

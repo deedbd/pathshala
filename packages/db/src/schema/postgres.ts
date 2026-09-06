@@ -2046,7 +2046,7 @@ export const examSeatPlans = pgTable('exam_seat_plans', {
   schoolId: char('school_id', { length: 26 }).notNull(),
   examId: char('exam_id', { length: 26 }).notNull(),
   studentId: char('student_id', { length: 26 }).notNull(),
-  roomId: char('room_id', { length: 26 }).notNull(),
+  roomId: char('room_id', { length: 26 }),
   seatNo: varchar('seat_no', { length: 10 }).notNull(),
   admitCardFileId: char('admit_card_file_id', { length: 26 }),
   isEligible: boolean('is_eligible').notNull(),

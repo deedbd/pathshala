@@ -2046,7 +2046,7 @@ export const examSeatPlans = sqliteTable('exam_seat_plans', {
   schoolId: text('school_id').notNull(),
   examId: text('exam_id').notNull(),
   studentId: text('student_id').notNull(),
-  roomId: text('room_id').notNull(),
+  roomId: text('room_id'),
   seatNo: text('seat_no').notNull(),
   admitCardFileId: text('admit_card_file_id'),
   isEligible: integer('is_eligible', { mode: 'boolean' }).notNull(),
