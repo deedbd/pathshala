@@ -46,8 +46,14 @@ export interface EventPayloads {
   'contact.received': { messageId: string; name: string; phone: string | null };
   // year-1 modules (payload shapes are filled in as each module ships; kept loose until then)
   'enquiry.created': { enquiryId: string; studentName: string; guardianName: string; phone: string; classId: string | null; source: string };
-  'application.submitted': Record<string, unknown>;
-  'applicant.enrolled': Record<string, unknown>;
+  'application.submitted': { applicationId: string; applicationNo: string; campaignId: string; classId: string; formFee: number; invoiceId: string | null };
+  'applicant.enrolled': { applicationId: string; studentId: string; admissionNo: string; classId: string; academicYearId: string };
+  'campaign.opened': { campaignId: string };
+  'test.results_entered': { testId: string; campaignId: string; classId: string; results: number };
+  'merit_list.generated': { campaignId: string; classId: string; ranked: number; shortlisted: number; waitlisted: number };
+  'offer.made': { offerId: string; applicationId: string; amount: number; expiresAt: string };
+  'document.requested': { requestId: string; docType: string; eligible: boolean; blockers: string[] };
+  'document.issued': { documentId: string; docType: string; documentNo: string; verificationCode: string };
   'academic_year.created': { academicYearId: string; previousYearId?: string | null };
   'calendar.holiday_added': { eventId: string; startDate: string; endDate: string };
   'leave.approved': { leaveId: string; applicantType: string; staffId: string | null; studentId: string | null; fromDate: string; toDate: string; dates: string[] };
@@ -86,7 +92,7 @@ export const EVENT_TYPES = Object.freeze([
   'school.created', 'user.created', 'user.invited', 'user.logged_in', 'user.locked', 'settings.changed', 'file.uploaded', 'installer.completed',
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
-  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
+  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
   'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 

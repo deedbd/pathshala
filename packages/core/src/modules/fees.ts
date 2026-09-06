@@ -183,7 +183,7 @@ export class FeesService {
   }
 
   /** Creates one invoice with its items, applies approved discounts, posts the receivable journal. */
-  async createInvoice(schoolId: string, inv: { studentId: string; academicYearId?: string | null; billingPeriod?: string | null; batchId?: string | null; dueDay?: number; issueDate?: string; items: { feeHeadId?: string | null; description: string; amount: number; quantity?: number; itemKind?: 'fee' | 'fine' | 'adjustment' | 'previous_due'; glAccountId?: string | null }[]; notes?: string | null }, tx?: Db) {
+  async createInvoice(schoolId: string, inv: { studentId?: string | null; applicationId?: string | null; academicYearId?: string | null; billingPeriod?: string | null; batchId?: string | null; dueDay?: number; issueDate?: string; items: { feeHeadId?: string | null; description: string; amount: number; quantity?: number; itemKind?: 'fee' | 'fine' | 'adjustment' | 'previous_due'; glAccountId?: string | null }[]; notes?: string | null }, tx?: Db) {
     const run = async (t: Db) => {
       if (!inv.items.length) throw badRequest('an invoice needs at least one item');
       const id = ulid();
@@ -191,7 +191,8 @@ export class FeesService {
       const issueDate = inv.issueDate ?? nowSql().slice(0, 10);
       const period = inv.billingPeriod ?? issueDate.slice(0, 7) + '-01';
       const dueDate = `${period.slice(0, 7)}-${String(inv.dueDay ?? 10).padStart(2, '0')}`;
-      const discounts = inv.academicYearId ? await this.discountsFor(schoolId, inv.studentId, inv.academicYearId) : [];
+      if (!inv.studentId && !inv.applicationId) throw badRequest('an invoice belongs to a student or to an applicant');
+      const discounts = inv.studentId && inv.academicYearId ? await this.discountsFor(schoolId, inv.studentId, inv.academicYearId) : [];
       let subtotal = 0, discountTotal = 0;
       const rows: Row[] = [];
       for (const it of inv.items) {
@@ -210,9 +211,10 @@ export class FeesService {
         rows.push({ id: ulid(), school_id: schoolId, invoice_id: id, fee_head_id: it.feeHeadId ?? null, description: it.description, quantity: qty, unit_amount: it.amount, discount_amount: discount, discount_id: discountId, tax_amount: 0, amount: round(gross - discount), item_kind: it.itemKind ?? 'fee', source_type: null, source_id: null });
       }
       const total = round(subtotal - discountTotal);
-      await t.insert('invoices', { id, school_id: schoolId, invoice_no: invoiceNo, student_id: inv.studentId, academic_year_id: inv.academicYearId ?? null, batch_id: inv.batchId ?? null, billing_period: period, issue_date: issueDate, due_date: dueDate, subtotal, discount_total: discountTotal, fine_total: 0, tax_total: 0, total, paid_total: 0, balance: total, status: 'issued', is_auto: !!inv.batchId, notes: inv.notes ?? null });
+      await t.insert('invoices', { id, school_id: schoolId, invoice_no: invoiceNo, student_id: inv.studentId ?? null, application_id: inv.applicationId ?? null, academic_year_id: inv.academicYearId ?? null, batch_id: inv.batchId ?? null, billing_period: period, issue_date: issueDate, due_date: dueDate, subtotal, discount_total: discountTotal, fine_total: 0, tax_total: 0, total, paid_total: 0, balance: total, status: 'issued', is_auto: !!inv.batchId, notes: inv.notes ?? null });
       await t.insertMany('invoice_items', rows);
-      await this.ledger(schoolId, inv.studentId, { entryType: 'invoice', refType: 'invoice', refId: id, debit: total, description: `${invoiceNo} ${period.slice(0, 7)}` }, t);
+      // an applicant has no student ledger yet; theirs starts when they enrol
+      if (inv.studentId) await this.ledger(schoolId, inv.studentId, { entryType: 'invoice', refType: 'invoice', refId: id, debit: total, description: `${invoiceNo} ${period.slice(0, 7)}` }, t);
       // Dr fees receivable, Cr the income account of each head (falls back to tuition income)
       const lines: { accountId?: string; accountCode?: string; debit?: number; credit?: number; description?: string }[] = [{ accountCode: '1300', debit: total, description: invoiceNo }];
       const byAccount = new Map<string, number>();
@@ -223,7 +225,7 @@ export class FeesService {
       }
       for (const [accountId, amount] of byAccount) if (amount) lines.push({ accountId, credit: amount });
       const j = await this.accounting.post(schoolId, { entryDate: issueDate, memo: `Fee invoice ${invoiceNo}`, sourceType: 'invoice', sourceId: id, lines }, t);
-      await this.outbox.emit(t, { type: 'invoice.created', schoolId, aggregateType: 'fees.invoice', aggregateId: id, payload: { invoiceId: id, studentId: inv.studentId, total, dueDate } });
+      await this.outbox.emit(t, { type: 'invoice.created', schoolId, aggregateType: 'fees.invoice', aggregateId: id, payload: { invoiceId: id, studentId: inv.studentId ?? '', total, dueDate } });
       return { id, invoiceNo, total, journalEntryId: j.id };
     };
     return tx ? run(tx) : this.db.transaction(run);

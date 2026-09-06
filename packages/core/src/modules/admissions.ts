@@ -135,7 +135,7 @@ export class AdmissionsService {
     let invoiceId: string | null = null;
     if (formFee > 0) {
       const head = await this.db.findOne<{ id: string }>('fee_heads', { school_id: schoolId, code: 'FORM' });
-      const inv = await this.fees.createInvoice(schoolId, { studentId: id, items: [{ feeHeadId: head?.id ?? null, description: `Admission form fee — ${c.name}`, amount: formFee }], notes: `application:${id}` });
+      const inv = await this.fees.createInvoice(schoolId, { applicationId: id, items: [{ feeHeadId: head?.id ?? null, description: `Admission form fee — ${c.name}`, amount: formFee }], notes: `application:${id}` });
       invoiceId = inv.id;
       await this.db.update('admission_applications', { form_fee_invoice_id: invoiceId, updated_at: nowSql() }, { id });
     }
@@ -271,7 +271,7 @@ export class AdmissionsService {
     if (await this.db.findOne('admission_offers', { application_id: String(a.id) })) return false;
     const expires = nowSql(new Date(Date.now() + Number(c.offer_validity_days ?? 7) * 86_400_000));
     const amount = await this.admissionFeeFor(schoolId, String(a.class_id), String(c.academic_year_id));
-    const inv = amount > 0 ? await this.fees.createInvoice(schoolId, { studentId: String(a.id), items: [{ feeHeadId: (c.admission_fee_head_id as string) ?? null, description: `Admission fee — ${c.name}`, amount }], notes: `application:${a.id}` }) : null;
+    const inv = amount > 0 ? await this.fees.createInvoice(schoolId, { applicationId: String(a.id), items: [{ feeHeadId: (c.admission_fee_head_id as string) ?? null, description: `Admission fee — ${c.name}`, amount }], notes: `application:${a.id}` }) : null;
     const letter = await this.documents.issue(schoolId, {
       docType: 'offer_letter', personType: 'other',
       data: { name: `${a.first_name} ${a.last_name ?? ''}`.trim(), application_no: String(a.application_no), campaign: String(c.name), expires_at: expires, amount: String(amount), guardian: String(a.guardian_name) },
