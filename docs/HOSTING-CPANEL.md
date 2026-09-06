@@ -19,8 +19,14 @@ public_html/
   db/                       → mysql/ sqlite/ postgres/ schema.sql, migrations/<engine>/, seeds/*.json, schema.json
   .env (written by install.php) · .env.example · VERSION · README.txt
 ```
-Built by `pnpm release:cpanel` (`scripts/build-release.mjs`), which runs `pnpm deploy` for the server so the
-workspace packages are real directories, copies the web build, `db/` and the installer, then zips.
+Built by `pnpm release:cpanel` (`scripts/build-release.mjs`). `app/node_modules` is a **flat, symlink-free
+tree**: cPanel's File Manager does not restore symlinks when it extracts a zip, so pnpm's linked layout
+would arrive broken. The script therefore collects the union of every workspace package's production
+dependencies, installs them with npm (hoisted, `--ignore-scripts`), copies the workspace packages'
+`dist/` in by hand, then fails the build if any symlink or unresolvable runtime import remains.
+`pnpm verify:release` boots the result the way Passenger will (`node app/server.js`) and drives the
+installer through it — schema, seeds, school, self-test, Excel template, SSR pages — so the zip is
+proven to run, not just to build. CI does both on every push.
 The release pipeline builds the zip with `node_modules` already installed for Linux x64 and
 Node 22 (`/opt/alt/alt-nodejs22`). Only pure-JS packages (bcryptjs, jimp, pdf-lib, mysql2,
 xlsx) — no compiler, no npm on the server. Migrations run automatically when the app boots.

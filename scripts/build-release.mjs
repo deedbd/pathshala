@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,12 +27,39 @@ const log = m => console.log(`[release] ${m}`);
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, 'app'), { recursive: true });
 
-// 1. server + production node_modules with workspace packages physically copied (pnpm deploy)
-log('pnpm deploy @pathshala/server → app/');
+/*
+ * 1. app/ = server bundle + a FLAT node_modules.
+ * pnpm's own layout is symlink-based and cPanel's File Manager does not restore symlinks when it
+ * extracts a zip, so the tree is built with npm (hoisted, no symlinks) from the union of every
+ * workspace package's external dependencies; the workspace packages themselves are copied in.
+ */
 const deployDir = path.join(out, 'app');
-try { execSync(`pnpm --filter @pathshala/server deploy --prod --legacy "${deployDir}"`, { cwd: root, stdio: 'inherit' }); }
-catch { execSync(`pnpm --filter @pathshala/server deploy --prod "${deployDir}"`, { cwd: root, stdio: 'inherit' }); }
-for (const f of ['tsconfig.json', 'src']) fs.rmSync(path.join(deployDir, f), { recursive: true, force: true });
+const WORKSPACE = ['db', 'events', 'schemas', 'adapters', 'core'];   // runtime packages; ui/web are bundled by Vite
+const readPkg = p => JSON.parse(fs.readFileSync(p, 'utf8'));
+const serverPkg = readPkg(path.join(root, 'apps', 'server', 'package.json'));
+const deps = {};
+const addDeps = d => { for (const [name, ver] of Object.entries(d ?? {})) { if (name.startsWith('@pathshala/')) continue; if (deps[name] && deps[name] !== ver) throw new Error(`version conflict for ${name}: ${deps[name]} vs ${ver}`); deps[name] = ver; } };
+addDeps(serverPkg.dependencies);
+for (const w of WORKSPACE) addDeps(readPkg(path.join(root, 'packages', w, 'package.json')).dependencies);
+
+fs.mkdirSync(deployDir, { recursive: true });
+fs.writeFileSync(path.join(deployDir, 'package.json'), JSON.stringify({ name: 'pathshala-app', version: pkg.version, private: true, type: 'module', main: 'server.js', dependencies: Object.fromEntries(Object.entries(deps).sort()) }, null, 2) + '\n');
+fs.copyFileSync(path.join(root, 'apps', 'server', 'server.js'), path.join(deployDir, 'server.js'));
+fs.cpSync(path.join(root, 'apps', 'server', 'dist'), path.join(deployDir, 'dist'), { recursive: true });
+log(`npm install (${Object.keys(deps).length} production packages, flat tree)`);
+execSync('npm install --omit=dev --no-audit --no-fund --ignore-scripts --no-package-lock', { cwd: deployDir, stdio: 'inherit' });
+// workspace packages: build output + manifest (and the bundled PDF fonts)
+for (const w of WORKSPACE) {
+  const src = path.join(root, 'packages', w); const dst = path.join(deployDir, 'node_modules', '@pathshala', w);
+  fs.mkdirSync(dst, { recursive: true });
+  fs.cpSync(path.join(src, 'dist'), path.join(dst, 'dist'), { recursive: true });
+  const m = readPkg(path.join(src, 'package.json'));
+  delete m.devDependencies; delete m.scripts;
+  m.dependencies = Object.fromEntries(Object.entries(m.dependencies ?? {}).filter(([n]) => !n.startsWith('@pathshala/')));
+  fs.writeFileSync(path.join(dst, 'package.json'), JSON.stringify(m, null, 2) + '\n');
+  if (fs.existsSync(path.join(src, 'fonts'))) fs.cpSync(path.join(src, 'fonts'), path.join(dst, 'fonts'), { recursive: true });
+}
+fs.rmSync(path.join(deployDir, 'node_modules', '.bin'), { recursive: true, force: true }); // shims are symlinks and nothing runs them
 fs.mkdirSync(path.join(deployDir, 'tmp'), { recursive: true });
 fs.writeFileSync(path.join(deployDir, 'tmp', '.gitkeep'), '');
 
@@ -54,8 +82,19 @@ for (const d of ['uploads/logs', 'uploads/installer', 'uploads/backups', 'storag
 fs.writeFileSync(path.join(out, 'VERSION'), `${version}\n`);
 fs.writeFileSync(path.join(out, 'README.txt'), `Pathshala ${version}\n\nUpload this folder's contents to public_html on cPanel, then open your domain.\nThe installer configures Node (Passenger), the database, cron and the first school by itself.\nSee docs/HOSTING-CPANEL.md in the repository for the fallback matrix.\n`);
 
-// 5. sanity: no native packages
+// 5. sanity: no native packages, no symlinks (cPanel's zip extractor drops them), every runtime import resolves
 execSync(`node "${path.join(root, 'scripts', 'check-native.mjs')}" "${deployDir}"`, { stdio: 'inherit' });
+const links = [];
+(function findLinks(dir) { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isSymbolicLink()) links.push(path.relative(out, p)); else if (e.isDirectory()) findLinks(p); } })(deployDir);
+if (links.length) throw new Error(`${links.length} symlinks in the release (cPanel cannot extract them): ${links.slice(0, 5).join(', ')}`);
+const require_ = createRequire(path.join(deployDir, 'server.js'));
+for (const [from, mods] of [['@pathshala/core', ['xlsx', 'bcryptjs', 'json-logic-js']], ['@pathshala/adapters', ['pdfmake', 'nodemailer', 'web-push']], ['@pathshala/db', ['mysql2', 'pg']], ['.', ['express', 'react', 'react-router', '@react-router/express']]]) {
+  const base = from === '.' ? path.join(deployDir, 'server.js') : path.join(deployDir, 'node_modules', from, 'dist', 'index.js');
+  const r = createRequire(base);
+  for (const m of mods) { try { r.resolve(m); } catch { throw new Error(`${m} does not resolve from ${from} in the release`); } }
+}
+void require_;
+log(`no symlinks · every runtime dependency resolves`);
 
 // 6. zip
 if (zip) {

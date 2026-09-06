@@ -55,6 +55,8 @@ jobs:
       - name: Build cPanel release zip (Linux x64, Node 22, node_modules baked in)
         run: pnpm release:cpanel
       - run: pnpm check:native release/app
+      - name: The zip actually runs — boot it and drive the installer through it
+        run: pnpm verify:release
       - uses: actions/upload-artifact@v4
         with:
           name: pathshala-cpanel
