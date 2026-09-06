@@ -53,6 +53,8 @@ export class PeopleService {
         if (uid) await t.update('students', { user_id: uid }, { id });
       }
       await this.outbox.emit(t, { type: 'student.created', schoolId, aggregateType: 'people.student', aggregateId: id, payload: { studentId: id, admissionNo, classId: s.classId, sectionId, guardianUserIds: [] } });
+      // separate from student.created: enrolment also happens on promotion and on transfer in, which fees/library react to
+      await this.outbox.emit(t, { type: 'student.enrolled', schoolId, aggregateType: 'people.enrollment', aggregateId: enrollmentId, payload: { studentId: id, enrollmentId, academicYearId: String(year.id), classId: s.classId, sectionId } });
       return { id, admissionNo, enrollmentId, guardianIds };
     };
     return tx ? run(tx) : this.db.transaction(run);
