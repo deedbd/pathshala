@@ -43,12 +43,13 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Money: every movement goes through `AccountingService.post()`, which refuses an unbalanced entry. Fees, payments, refunds and expenses each post their own journal, so the trial balance comes from the same rows the modules wrote. Amounts are rounded with `round()` (2 dp) everywhere.
 - JSON columns must hold valid JSON on MySQL/Postgres (SQLite is lax): an encrypted secret is stored as `{ enc: "v1..." }`, never as a bare string.
 - Express matches routes in order, so a literal path that shares a shape with a parameterised one must be registered first — `/exams/annual/compute` before `/exams/:id/compute`, or `annual` is read as an exam id.
+- MySQL reads inside a transaction use REPEATABLE READ, so a plain SELECT cannot see a row another connection committed after the transaction began — it will still collide on the unique key. Where a row is read then created (`NumberingService`), write first (`UPDATE … SET n = n + 1`) and read after: an UPDATE sees the latest committed row and locks it.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
 ## Next step
-Phase 5 (`docs/PLAN.md`, weeks 20–23): recruitment, onboarding, contracts, shifts, salary components and structures, loans, provident fund, tax slabs, payroll built from attendance and leave, payslips, bank file, MPO split, appraisals, exits. Exit: payroll for 150 staff drafted, approved, paid and journaled in one pass.
+Phase 6 (`docs/PLAN.md`, weeks 24–26): admission campaigns, enquiry CRM, the public application form with its form fee, admission tests, merit and lottery selection, offers with expiry, waitlist promotion, one-click enrolment; document templates, requests with eligibility, the QR verification page, ID cards and print jobs. The plan states no exit criterion for phases 6–9, so each one is judged by its own test: for Phase 6, 500 applications taken through merit selection to 200 enrolments without a spreadsheet.
 
-Phases 0–4 are implemented; each phase's status paragraph in `docs/PLAN.md` says what is done and what was left out. `pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres); `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion instead of the 120-student default.
+Phases 0–5 are implemented; each phase's status paragraph in `docs/PLAN.md` says what is done and what was left out. `pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres); `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion instead of the 120-student default.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

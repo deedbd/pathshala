@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { connect, dbConfigFromEnv, type Db } from '@pathshala/db';
+import { connect, dbConfigFromEnv, nowSql, type Db } from '@pathshala/db';
 import { createAdapters, type Adapters, type Logger, type SchedulerMode } from '@pathshala/adapters';
 import { loadConfig, type AppConfig } from './config.js';
 import { createLogger } from './logger.js';
@@ -31,6 +31,7 @@ import { CommunicationService } from './modules/communication.js';
 import { AccountingService } from './modules/accounting.js';
 import { FeesService } from './modules/fees.js';
 import { AssessmentService } from './modules/assessment.js';
+import { HrService } from './modules/hr.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -38,7 +39,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -90,6 +91,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const accounting = new AccountingService(db, outbox, numbering, approvals);
   const fees = new FeesService(db, outbox, notifications, numbering, academic, accounting, adapters, config.appKey);
   const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters);
+  const hr = new HrService(db, outbox, notifications, academic, accounting, approvals, tasks, files, people, adapters);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -108,6 +110,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
       await fees.ensureFineRule(schoolId);
       await fees.ensureDefaultStructures(schoolId, yearId);
       await assessment.ensureExamTypes(schoolId);
+      await hr.ensureSalaryComponents(schoolId);
+      await hr.ensureTaxSlabs(schoolId);
     },
   });
 
@@ -116,16 +120,19 @@ export function createApp(opts: CreateAppOptions = {}): App {
   adapters.queue.register('attendance.notify_absent', (payload, ctx) => attendance.notifyAbsentBatch(payload, ctx as never) as never);
   adapters.queue.register('fees.generate_invoices', (payload, ctx) => fees.runBatch(payload, ctx));
   adapters.queue.register('assessment.report_cards', (payload, ctx) => assessment.renderReportCards(payload, ctx));
+  adapters.queue.register('payroll.calculate', (payload, ctx) => hr.calculateRun(payload, ctx));
+  adapters.queue.register('payroll.payslips', (payload, ctx) => hr.renderPayslips(payload, ctx));
   adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
   for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(fees.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(assessment.jobs())) adapters.scheduler.register(key, fn);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees });
+  for (const [key, fn] of Object.entries(hr.jobs())) adapters.scheduler.register(key, fn);
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -152,7 +159,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -192,5 +199,19 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
     const id = await d.fees.proposeSiblingDiscount(e.schoolId, e.payload.studentId, e.payload.academicYearId);
     if (id) await d.notifications.notifyRole(e.schoolId, 'accountant', { channels: ['in_app'], eventKey: 'fees.discount_proposed', title: 'Sibling discount proposed', body: 'A newly enrolled student has a sibling already in school. Approve or reject the discount.', entityType: 'fees.discount', entityId: id });
   });
+  // H2: an approved payroll (or loan) request carries out what was approved
+  h.on('approval.decided', 'hr-approvals', async e => {
+    if (e.payload.decision === 'rejected') return;
+    if (e.payload.entityType === 'hr.payroll') await d.hr.approveRun(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`payroll approval: ${(err as Error).message}`));
+    if (e.payload.entityType === 'hr.loan') await d.hr.approveLoan(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`loan approval: ${(err as Error).message}`));
+  });
+  // H6: someone leaving loses their account and their sessions, and their classes need covering
+  h.on('staff.left', 'close-account', async e => {
+    const st = await d.db.findOne<{ user_id: string | null; first_name: string }>('staff', { id: e.payload.staffId });
+    if (st?.user_id) { await d.db.update('users', { is_active: false, updated_at: nowSql() }, { id: st.user_id }); await d.auth.logoutEverywhere(st.user_id); }
+    const slots = await d.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM timetable_slots WHERE school_id = ? AND teacher_id = ?`, [e.schoolId, e.payload.staffId]);
+    if (Number(slots[0]?.n)) await d.tasks.create({ schoolId: e.schoolId, title: `Reassign ${Number(slots[0]!.n)} timetable periods of ${st?.first_name ?? 'a leaver'}`, taskType: 'hr.exit', assignedRole: 'admin', entityType: 'people.staff', entityId: e.payload.staffId, priority: 'high' });
+  });
+  h.on('application.received', 'notify-hr', async e => { await d.notifications.notifyRole(e.schoolId, 'admin', { channels: ['in_app'], eventKey: 'hr.application_received', title: 'New job application', body: `${e.payload.name} applied for ${e.payload.title}.`, entityType: 'hr.applicant', entityId: e.payload.applicantId }); });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

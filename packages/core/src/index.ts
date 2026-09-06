@@ -34,3 +34,4 @@ export { CommunicationService, type MessageInput } from './modules/communication
 export { AccountingService, round, type JournalInput, type JournalLine } from './modules/accounting.js';
 export { FeesService, type PaymentInput, type StructureItemInput, type Frequency } from './modules/fees.js';
 export { AssessmentService, type ExamInput, type MarkInput as ExamMarkInput } from './modules/assessment.js';
+export { HrService, type StructureInput, type LoanInput, type ExitInput, type TaxSlab } from './modules/hr.js';
