@@ -1,6 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { Db, Row } from '@pathshala/db';
 import { nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
+import type { NotificationService } from '../notifications.js';
+import type { TaskService } from '../tasks.js';
 import type { NumberingService } from './numbering.js';
 import type { ApprovalService } from '../approvals.js';
 import { HttpError, badRequest, notFound } from '../context.js';
@@ -15,7 +19,7 @@ export interface JournalInput { entryDate?: string; memo?: string; sourceType?: 
  * Entries are balanced or refused; the chart of accounts is seeded per school (BD school COA).
  */
 export class AccountingService {
-  constructor(private db: Db, private outbox: OutboxService, private numbering: NumberingService, private approvals: ApprovalService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private tasks: TaskService, private numbering: NumberingService, private approvals: ApprovalService) {}
 
   async accounts(schoolId: string) { return this.db.findMany<Row>('gl_accounts', { school_id: schoolId, status: 'active' }, { orderBy: 'code ASC' }); }
   async accountByCode(schoolId: string, code: string) {
@@ -182,6 +186,132 @@ export class AccountingService {
     if (ex) { await this.db.update('budgets', { amount, alert_at_pct: alertAtPct, updated_at: nowSql() }, { id: ex.id }); return ex.id; }
     const id = ulid(); await this.db.insert('budgets', { id, school_id: schoolId, fiscal_year_id: fiscalYearId, gl_account_id: glAccountId, cost_center_id: null, amount, alert_at_pct: alertAtPct }); return id;
   }
+  // ---------- scheduled jobs ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // G6: the ledger checks itself once a day instead of waiting to be checked
+      'accounting.daily_watch': async ({ schoolId, payload, deadline }) => this.dailyWatch(schoolId, { today: (payload.onDate as string) || undefined, deadline }),
+      // G4: last month's statements, kept as a snapshot and sent to the people who run the school
+      'accounting.month_end': async ({ schoolId, payload }) => this.monthEnd(schoolId, (payload.month as string) || undefined),
+    };
+  }
+
+  private async openTaskFor(schoolId: string, entityType: string, entityId: string) {
+    return this.db.findOne<Row>('tasks', { school_id: schoolId, entity_type: entityType, entity_id: entityId, status: 'open' });
+  }
+
+  /**
+   * G6: four passes over the books, every one of them idempotent.
+   *
+   * - an expense that was approved but never posted → posted (the approval *was* the human step, and
+   *   `payExpense` refuses to post a second journal for the same expense)
+   * - a budget past its alert threshold → one task, once, for as long as it stays unattended
+   * - bank lines still unmatched → matching re-run (deterministic), then one task naming what is left,
+   *   because pairing a stranger's transfer to a payment is a judgement
+   * - a posted entry whose sides disagree → said out loud; `post()` cannot make one, so if there is
+   *   one it came from outside the application and a person has to look at it
+   */
+  async dailyWatch(schoolId: string, opts: { today?: string; deadline?: number } = {}) {
+    const today = opts.today ?? nowSql().slice(0, 10);
+    const deadline = opts.deadline ?? Date.now() + 20_000;
+    const out = { expensesPosted: 0, budgetAlerts: 0, matched: 0, unmatchedTasks: 0, unbalanced: 0 };
+
+    const approved = await this.db.query<Row>(`SELECT id FROM expenses WHERE school_id = ? AND status = 'approved' AND journal_entry_id IS NULL ORDER BY expense_date LIMIT 100`, [schoolId]);
+    for (const e of approved) {
+      if (Date.now() > deadline) break;
+      try { const r = await this.payExpense(schoolId, String(e.id)); if (!(r as { alreadyPosted?: boolean }).alreadyPosted) out.expensesPosted++; } catch { /* a missing account is the month-end job's story */ }
+    }
+
+    const fy = await this.fiscalYear(schoolId, today);
+    for (const b of await this.budgetStatus(schoolId, String(fy.id))) {
+      const amount = Number(b.amount), spent = Number(b.spent ?? 0), pct = Number(b.alert_at_pct ?? 90);
+      if (amount <= 0 || spent < (amount * pct) / 100) continue;
+      if (await this.openTaskFor(schoolId, 'accounting.budget', String(b.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `${b.name} has used Tk ${round(spent)} of its Tk ${round(amount)} budget`, taskType: 'accounting.budget', assignedRole: 'admin', priority: spent >= amount ? 'high' : 'normal',
+        description: `Account ${b.code} in ${fy.name} is at ${Math.round((spent * 100) / amount)}% of what was budgeted. Nothing is blocked — move the budget or the spending, whichever was wrong.`,
+        entityType: 'accounting.budget', entityId: String(b.id),
+      });
+      out.budgetAlerts++;
+    }
+
+    for (const acc of await this.bankAccounts(schoolId)) {
+      if (Date.now() > deadline) break;
+      const r = await this.reconcile(schoolId, String(acc.id));
+      out.matched += r.matched;
+      const left = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_statement_lines WHERE school_id = ? AND bank_account_id = ? AND matched_id IS NULL AND txn_date <= ?`, [schoolId, String(acc.id), new Date(Date.parse(today) - 7 * 86400_000).toISOString().slice(0, 10)]);
+      if (!Number(left[0]?.n ?? 0)) continue;
+      if (await this.openTaskFor(schoolId, 'accounting.bank_account', String(acc.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `${Number(left[0]!.n)} bank lines on ${acc.account_name} match nothing`, taskType: 'accounting.reconcile', assignedRole: 'accountant', priority: 'normal',
+        description: 'Amount and date were tried and failed. Somebody has to say what each of these was — a fee paid at the branch, a charge, a transfer between the school\'s own accounts.',
+        entityType: 'accounting.bank_account', entityId: String(acc.id),
+      });
+      out.unmatchedTasks++;
+    }
+
+    const since = new Date(Date.parse(today) - 45 * 86400_000).toISOString().slice(0, 10);
+    const bad = await this.db.query<Row>(`SELECT e.id, e.entry_no, SUM(l.debit) AS dr, SUM(l.credit) AS cr FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+      WHERE e.school_id = ? AND e.status = 'posted' AND e.entry_date >= ? GROUP BY e.id, e.entry_no HAVING SUM(l.debit) <> SUM(l.credit) LIMIT 20`, [schoolId, since]);
+    for (const e of bad) {
+      if (await this.openTaskFor(schoolId, 'accounting.journal_entry', String(e.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `${e.entry_no} does not balance`, taskType: 'accounting.journal', assignedRole: 'accountant', priority: 'urgent',
+        description: `Debits Tk ${round(Number(e.dr))}, credits Tk ${round(Number(e.cr))}. The application cannot post an entry like this, so it was changed in the database. Reverse it and post it again.`,
+        entityType: 'accounting.journal_entry', entityId: String(e.id),
+      });
+      out.unbalanced++;
+    }
+    return out;
+  }
+
+  /** The report definition the monthly snapshots hang off — created once, then reused for ever. */
+  private async monthEndDefinition(schoolId: string) {
+    const ex = await this.db.findOne<Row>('report_definitions', { school_id: schoolId, module: 'accounting', name: 'Month end' });
+    if (ex) return String(ex.id);
+    const id = ulid();
+    await this.db.insert('report_definitions', { id, school_id: schoolId, name: 'Month end', module: 'accounting', definition: { kind: 'trial_balance_and_statements' } as never, output_format: 'html', cron_expr: null, recipients: null, is_system: true, created_by: null });
+    return id;
+  }
+
+  /**
+   * G4: the month that has just ended, closed off by itself. The trial balance and the income
+   * statement are kept as one `report_snapshots` row whose id is derived from the month, so a second
+   * run — a retried scheduler, a second Passenger process — finds its own row and does nothing.
+   * Nothing is ever locked here: closing a fiscal year is irreversible and stays a person's decision.
+   */
+  async monthEnd(schoolId: string, month?: string) {
+    const now = new Date();
+    const target = month ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const from = `${target}-01`;
+    const to = new Date(Date.UTC(Number(target.slice(0, 4)), Number(target.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const definitionId = await this.monthEndDefinition(schoolId);
+    const id = createHash('sha256').update(`${definitionId}:${target}`).digest('hex').slice(0, 26).toUpperCase();
+    if (await this.db.findOne('report_snapshots', { id })) return { month: target, already: true, notified: false };
+
+    const s = await this.statements(schoolId, from, to);
+    await this.db.insert('report_snapshots', {
+      id, school_id: schoolId, definition_id: definitionId, file_id: null, row_count: s.accounts.length, generated_at: nowSql(),
+      params: { month: target, from, to, income: s.income, expense: s.expense, surplus: s.surplus, assets: s.assets, liabilities: s.liabilities, equity: s.equity, totalDebit: s.totalDebit, totalCredit: s.totalCredit, balanced: s.balanced } as never,
+    });
+    const body = `${target}: income Tk ${s.income}, spending Tk ${s.expense}, ${s.surplus >= 0 ? 'surplus' : 'deficit'} Tk ${Math.abs(s.surplus)}.${s.balanced ? '' : ' The trial balance does NOT balance — the ledger needs looking at.'}`;
+    for (const role of ['accountant', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app', 'push'], eventKey: 'accounting.month_end', title: `Accounts for ${target}`, body, data: { income: s.income, expense: s.expense, surplus: s.surplus }, entityType: 'accounting.snapshot', entityId: id });
+
+    // a fiscal year whose last day has gone by: prepared, never carried out — closing it is final
+    let yearTask = false;
+    const ended = await this.db.query<Row>(`SELECT id, name, end_date FROM fiscal_years WHERE school_id = ? AND is_closed = FALSE AND end_date < ? LIMIT 5`, [schoolId, to]);
+    for (const fy of ended) {
+      if (await this.openTaskFor(schoolId, 'accounting.fiscal_year', String(fy.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `Fiscal year ${fy.name} ended on ${fy.end_date}`, taskType: 'accounting.year_end', assignedRole: 'admin', priority: 'normal',
+        description: 'Everything for the year is posted. Closing it stops any further entry being dated inside it, which cannot be undone — so the system will not close it for you.',
+        entityType: 'accounting.fiscal_year', entityId: String(fy.id),
+      });
+      yearTask = true;
+    }
+    return { month: target, already: false, notified: true, surplus: s.surplus, balanced: s.balanced, accounts: s.accounts.length, yearEndTask: yearTask };
+  }
+
   async budgetStatus(schoolId: string, fiscalYearId: string) {
     const fy = await this.db.findOne<Row>('fiscal_years', { id: fiscalYearId, school_id: schoolId });
     if (!fy) throw notFound('fiscal year');

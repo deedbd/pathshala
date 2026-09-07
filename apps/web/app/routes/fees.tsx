@@ -17,10 +17,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     context.app.db.query(`SELECT sd.id, sd.status, ds.name, ds.discount_kind, ds.value_type, ds.value, s.first_name, s.last_name FROM student_discounts sd JOIN discount_schemes ds ON ds.id = sd.discount_scheme_id JOIN students s ON s.id = sd.student_id WHERE sd.school_id = ? ORDER BY sd.created_at DESC LIMIT 100`, [sid]),
     context.app.academic.classes(sid), context.app.people.students(sid, { limit: 200 }), context.app.fees.openSessionFor(sid, user.id),
   ]);
-  const [cheques, plans] = await Promise.all([context.app.fees.pendingCheques(sid), context.app.fees.instalmentPlans(sid)]);
+  const [cheques, plans, ageing] = await Promise.all([context.app.fees.pendingCheques(sid), context.app.fees.instalmentPlans(sid), context.app.fees.ageing(sid)]);
   const outstanding = dues.reduce((a, d) => a + Number(d.due), 0);
   const collected = collection.reduce((a, c) => a + Number(c.amount), 0);
-  return { locale: (user.locale as Locale) || context.locale, period, yearId, heads, structures, batches, dues, collection, invoices, payments, discounts, classes, students: students.rows, outstanding, collected, cash, cheques, plans };
+  return { locale: (user.locale as Locale) || context.locale, period, yearId, heads, structures, batches, dues, collection, invoices, payments, discounts, classes, students: students.rows, outstanding, collected, cash, cheques, plans, ageing };
 }
 export function meta() { return [{ title: 'Pathshala — Fees' }]; }
 
@@ -55,6 +55,13 @@ export default function Fees() {
       {msg && <div className="mt-4"><Banner kind="ok">{msg}</Banner></div>}
       <div className="mt-6"><Tabs value={tab} onChange={setTab} tabs={[{ key: 'dues', label: tr('fee.dues'), count: d.dues.length }, { key: 'invoices', label: tr('fee.invoices'), count: d.invoices.length }, { key: 'payments', label: tr('fee.payments'), count: d.payments.length }, { key: 'cheques', label: tr('fee.cheques'), count: d.cheques.length }, { key: 'instalments', label: tr('fee.instalments'), count: d.plans.length }, { key: 'structures', label: tr('fee.structures'), count: d.structures.length }, { key: 'discounts', label: tr('fee.discounts'), count: d.discounts.length }]} /></div>
 
+      {/* the same buckets the monthly job messages accounts about — read here, not rebuilt by hand */}
+      {tab === 'dues' && <div className="mt-4 flex flex-wrap gap-2 text-xs">
+        <span style={{ color: 'var(--muted)' }}>{tr('fee.ageing')}:</span>
+        {([[tr('fee.notDue'), d.ageing.notDue], ['1–30', d.ageing.days1to30], ['31–60', d.ageing.days31to60], ['61–90', d.ageing.days61to90], ['90+', d.ageing.over90]] as const).map(([label, value]) => (
+          <span key={label} className="num">{label}: <strong>{money(value)}</strong></span>
+        ))}
+      </div>}
       {tab === 'dues' && <div className="mt-4"><DataTable locale={d.locale} rows={d.dues} columns={[{ key: 'admission_no', label: tr('stu.admissionNo'), className: 'num' }, { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name} ${r.last_name ?? ''}` }, { key: 'class_name', label: tr('common.class') }, { key: 'invoices', label: tr('fee.invoices'), className: 'num' }, { key: 'oldest_due', label: tr('fee.due'), render: r => formatDate(String(r.oldest_due), d.locale) }, { key: 'due', label: tr('fee.balance'), className: 'num money', render: r => money(r.due) }]} /></div>}
 
       {tab === 'invoices' && <div className="mt-4"><DataTable locale={d.locale} rows={d.invoices} columns={[{ key: 'invoice_no', label: tr('fee.invoiceNo'), className: 'num' }, { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name ?? ''} ${r.last_name ?? ''}` }, { key: 'class_name', label: tr('common.class') }, { key: 'billing_period', label: 'Period', render: r => String(r.billing_period ?? '').slice(0, 7) }, { key: 'total', label: tr('fee.amount'), className: 'num money', render: r => money(r.total) }, { key: 'paid_total', label: tr('fee.paid'), className: 'num money', render: r => money(r.paid_total) }, { key: 'balance', label: tr('fee.balance'), className: 'num money', render: r => money(r.balance) }, { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status)} /> }]} /></div>}

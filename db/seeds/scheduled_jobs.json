@@ -45,6 +45,36 @@
     "rows": "F10"
   },
   {
+    "job_key": "fees.money_watch",
+    "cron_expr": "0 7 * * *",
+    "rows": "F14"
+  },
+  {
+    "job_key": "fees.receivables_ageing",
+    "cron_expr": "0 7 1 * *",
+    "rows": "F15"
+  },
+  {
+    "job_key": "accounting.daily_watch",
+    "cron_expr": "30 7 * * *",
+    "rows": "G6"
+  },
+  {
+    "job_key": "accounting.month_end",
+    "cron_expr": "30 3 1 * *",
+    "rows": "G4, G5"
+  },
+  {
+    "job_key": "commerce.day_close",
+    "cron_expr": "0 19 * * *",
+    "rows": "P27"
+  },
+  {
+    "job_key": "giving.daily",
+    "cron_expr": "0 8 * * *",
+    "rows": "P28"
+  },
+  {
     "job_key": "payroll.draft_run",
     "cron_expr": "0 9 25 * *",
     "rows": "H1"

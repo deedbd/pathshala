@@ -4,6 +4,7 @@ import { json, nowSql, ulid } from '@pathshala/db';
 import type { Adapters, JobContext, ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
+import type { TaskService } from '../tasks.js';
 import type { NumberingService } from './numbering.js';
 import type { AcademicService } from './academic.js';
 import type { AccountingService } from './accounting.js';
@@ -19,6 +20,15 @@ export interface PaymentInput { studentId?: string | null; amount: number; metho
 const REMINDER_LADDER: { stage: string; offsetDays: number }[] = [
   { stage: 'due_in_3', offsetDays: -3 }, { stage: 'due_today', offsetDays: 0 }, { stage: 'overdue_3', offsetDays: 3 }, { stage: 'overdue_7', offsetDays: 7 }, { stage: 'overdue_15', offsetDays: 15 },
 ];
+
+/** How long the office waits for a cheque before somebody has to say what the bank did with it. */
+const CHEQUE_CLEARING_DAYS = 5;
+/** An instalment invoice this far past its date means the plan has gone quiet and needs a person. */
+const QUIET_PLAN_DAYS = 14;
+/** A batch still pending after this long was interrupted — a recycled process, a host asleep. */
+const STALE_BATCH_MINUTES = 60;
+
+const shiftDay = (day: string, n: number) => new Date(Date.parse(day) + n * 86400_000).toISOString().slice(0, 10);
 
 /**
  * Does a structure item fall due in this calendar month (1–12)?
@@ -46,7 +56,7 @@ export function fallsDueInMonth(frequency: Frequency, applicableMonths: number[]
  * so the trial balance is produced from the same rows — "zero manual fee journals".
  */
 export class FeesService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private numbering: NumberingService, private academic: AcademicService, private accounting: AccountingService, private documents: DocumentService, private adapters: Adapters, private appKey: string) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private tasks: TaskService, private numbering: NumberingService, private academic: AcademicService, private accounting: AccountingService, private documents: DocumentService, private adapters: Adapters, private appKey: string) {}
 
   // ---------- structures ----------
   async heads(schoolId: string) { return this.db.findMany<Row>('fee_heads', { school_id: schoolId, status: 'active' }, { orderBy: 'name ASC' }); }
@@ -205,6 +215,9 @@ export class FeesService {
       if (Date.now() > ctx.deadline && done < students.length) return { continue: true as const, cursor: { done, count, total } };
     }
     await this.db.update('invoice_batches', { status: 'success', invoice_count: count, total_amount: total, finished_at: nowSql(), updated_at: nowSql() }, { id: batchId });
+    // the batch says so itself: nobody has to open the page to find out whether the month was billed
+    await this.outbox.emitNow({ type: 'invoice.batch_finished', schoolId, aggregateType: 'fees.invoice_batch', aggregateId: batchId, payload: { batchId, billingPeriod, invoices: count, total } });
+    await this.notifications.notifyRole(schoolId, 'accountant', { channels: ['in_app', 'push'], eventKey: 'fees.batch_finished', title: 'Invoices raised', body: `${count} invoices for ${billingPeriod.slice(0, 7)}, Tk ${total} in total.`, entityType: 'fees.invoice_batch', entityId: batchId });
     return { result: { invoices: count, total } };
   }
 
@@ -529,6 +542,11 @@ export class FeesService {
     const expected = round(Number(s.opening_cash) + Number(collected[0]?.total ?? 0));
     const variance = round(countedCash - expected);
     await this.db.update('cash_sessions', { closed_at: nowSql(), expected_cash: expected, counted_cash: countedCash, variance, updated_at: nowSql() }, { id: sessionId });
+    // F10: a till that does not add up is said out loud the moment it is counted, not found in a report
+    if (variance !== 0) {
+      const body = `Counter cash was Tk ${countedCash} against Tk ${expected} expected — ${variance > 0 ? 'a surplus' : 'a shortfall'} of Tk ${Math.abs(variance)}.`;
+      for (const role of ['accountant', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app', 'push'], eventKey: 'fees.cash_variance', title: 'Cash does not match', body, entityType: 'fees.cash_session', entityId: sessionId });
+    }
     return { expected, counted: countedCash, variance };
   }
   async openSessionFor(schoolId: string, cashierId: string) { return this.db.findOne<Row>('cash_sessions', { school_id: schoolId, cashier_id: cashierId, closed_at: null }); }
@@ -585,7 +603,168 @@ export class FeesService {
       'fees.reminders': async ({ schoolId }) => this.runReminders(schoolId),
       'fees.overdue_and_fines': async ({ schoolId }) => this.applyOverdueAndFines(schoolId),
       'fees.day_end_summary': async ({ schoolId }) => this.dayEndSummary(schoolId),
+      // F14: everything in the fee module that today waits for somebody to remember it
+      'fees.money_watch': async ({ schoolId, payload, deadline }) => this.moneyWatch(schoolId, { today: (payload.onDate as string) || undefined, deadline }),
+      // F15: what is owed, by how long — the figure the office otherwise rebuilds by hand each month
+      'fees.receivables_ageing': async ({ schoolId, payload }) => this.ageingReport(schoolId, (payload.onDate as string) || undefined),
     };
+  }
+
+  /** An open task already standing for this thing: the watchdogs never ask twice for the same row. */
+  private async openTaskFor(schoolId: string, entityType: string, entityId: string) {
+    return this.db.findOne<Row>('tasks', { school_id: schoolId, entity_type: entityType, entity_id: entityId, status: 'open' });
+  }
+  /** Has this exact message already gone out since `since`? Keeps a daily job from repeating itself. */
+  private async messagedSince(schoolId: string, eventKey: string, entityId: string, since: string) {
+    const r = await this.db.query<{ id: string }>(`SELECT id FROM notifications WHERE school_id = ? AND event_key = ? AND entity_id = ? AND created_at >= ? LIMIT 1`, [schoolId, eventKey, entityId, since]);
+    return !!r[0];
+  }
+
+  /**
+   * F14: the daily walk over money that has stopped moving. Each pass is either carried out (nothing
+   * to decide, nothing to lose) or *prepared* as one task with everything already filled in:
+   *
+   * - receipts nobody printed → issued (the payment is already recorded; the PDF is just its copy)
+   * - a cheque past its clearing window → **a person decides**: only the bank knows whether it was
+   *   honoured, and clearing it moves money onto the ledger, so the task carries the cheque number,
+   *   the amount and the child, and the office presses clear or bounce
+   * - a till left open overnight → **a person decides**: the counted cash is not in the database
+   * - an instalment plan whose billed instalment went unpaid → **a person decides** what to offer next
+   * - a discount whose `valid_to` has passed → expired (the school already set the date)
+   * - an invoice batch nobody finished → re-queued, and a month that was never billed at all is billed
+   * - a fee head with no income account → **a person decides** which account it belongs to
+   *
+   * Everything here is keyed on an open task or on the row's own state, so running it twice in a day
+   * changes nothing the first run did not already do.
+   */
+  async moneyWatch(schoolId: string, opts: { today?: string; deadline?: number; clearingDays?: number; quietDays?: number } = {}) {
+    const today = opts.today ?? nowSql().slice(0, 10);
+    const deadline = opts.deadline ?? Date.now() + 20_000;
+    const out = { receipts: 0, cheques: 0, cashSessions: 0, quietPlans: 0, discountsExpired: 0, batches: 0, headsWithoutAccount: 0 };
+
+    // ---- receipts nobody printed ----
+    const unreceipted = await this.db.query<Row>(`SELECT id FROM payments WHERE school_id = ? AND status = 'success' AND receipt_file_id IS NULL ORDER BY paid_at LIMIT 100`, [schoolId]);
+    for (const p of unreceipted) {
+      if (Date.now() > deadline) break;
+      // a payment whose template is missing is left for the next pass rather than failing the job
+      try { const r = await this.issueReceipt(schoolId, String(p.id)); if (!(r as { alreadyIssued?: boolean }).alreadyIssued) out.receipts++; } catch { /* next time */ }
+    }
+
+    // ---- cheques past their clearing window ----
+    const clearingCutoff = shiftDay(today, -(opts.clearingDays ?? CHEQUE_CLEARING_DAYS));
+    const stale = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no FROM payments p LEFT JOIN students s ON s.id = p.student_id
+      WHERE p.school_id = ? AND p.method = 'cheque' AND p.status = 'pending' AND p.paid_at <= ? ORDER BY p.paid_at LIMIT 200`, [schoolId, `${clearingCutoff} 23:59:59`]);
+    for (const c of stale) {
+      if (await this.openTaskFor(schoolId, 'fees.payment', String(c.id))) continue;
+      const days = Math.max(0, Math.floor((Date.parse(today) - Date.parse(String(c.paid_at).slice(0, 10))) / 86400_000));
+      const who = c.first_name ? `${c.first_name} ${c.last_name ?? ''}`.trim() : 'a counter payment';
+      await this.tasks.create({
+        schoolId, title: `Cheque ${c.reference} for Tk ${Number(c.amount)} has not cleared`, taskType: 'fees.cheque', assignedRole: 'accountant', priority: 'high',
+        description: `${who} handed this cheque in ${days} days ago and it is still pending. Ask the bank, then clear it or mark it returned — nothing is on the ledger until you do.`,
+        entityType: 'fees.payment', entityId: String(c.id),
+      });
+      await this.outbox.emitNow({ type: 'cheque.overdue', schoolId, aggregateType: 'fees.payment', aggregateId: String(c.id), payload: { paymentId: String(c.id), studentId: (c.student_id as string) ?? '', amount: Number(c.amount), reference: String(c.reference ?? ''), days } });
+      out.cheques++;
+    }
+
+    // ---- a till left open overnight ----
+    const openTills = await this.db.query<Row>(`SELECT * FROM cash_sessions WHERE school_id = ? AND closed_at IS NULL AND opened_at < ? ORDER BY opened_at LIMIT 100`, [schoolId, `${today} 00:00:00`]);
+    for (const s of openTills) {
+      if (await this.openTaskFor(schoolId, 'fees.cash_session', String(s.id))) continue;
+      const collected = await this.db.query<{ total: number }>(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE cash_session_id = ? AND method = 'cash' AND status = 'success'`, [String(s.id)]);
+      const expected = round(Number(s.opening_cash) + Number(collected[0]?.total ?? 0));
+      await this.tasks.create({
+        schoolId, title: `Close the counter of ${String(s.opened_at).slice(0, 10)}`, taskType: 'fees.cash_session', assignedTo: (s.cashier_id as string) ?? null, assignedRole: s.cashier_id ? null : 'accountant', priority: 'high',
+        description: `The till has been open since ${String(s.opened_at).slice(0, 16)}. Tk ${expected} should be in it. Count the cash and close the session — the counted amount is the one thing the system cannot know.`,
+        entityType: 'fees.cash_session', entityId: String(s.id),
+      });
+      out.cashSessions++;
+    }
+
+    // ---- an instalment plan that has gone quiet ----
+    const quietCutoff = shiftDay(today, -(opts.quietDays ?? QUIET_PLAN_DAYS));
+    const plans = await this.db.findMany<Row>('instalment_plans', { school_id: schoolId, status: 'active' }, { limit: 300 });
+    for (const plan of plans) {
+      const rows = json<{ due: string; amount: number; invoiceId: string | null }[]>(plan.instalments) ?? [];
+      const billed = rows.map(r => r.invoiceId).filter((v): v is string => !!v);
+      if (!billed.length) continue;
+      const late = await this.db.query<Row>(`SELECT invoice_no, balance, due_date FROM invoices WHERE school_id = ? AND id IN (${billed.map(() => '?').join(',')}) AND balance > 0 AND due_date <= ? ORDER BY due_date LIMIT 1`, [schoolId, ...billed, quietCutoff]);
+      if (!late[0]) continue;
+      if (await this.openTaskFor(schoolId, 'fees.instalment_plan', String(plan.id))) continue;
+      const student = await this.db.findOne<Row>('students', { id: String(plan.student_id) });
+      await this.tasks.create({
+        schoolId, title: `Instalment plan of ${student ? `${student.first_name} ${student.last_name ?? ''}`.trim() : 'a student'} has stopped`, taskType: 'fees.instalment_plan', assignedRole: 'accountant', priority: 'normal',
+        description: `${late[0].invoice_no} was due ${String(late[0].due_date)} and Tk ${Number(late[0].balance)} of it is unpaid. The reminders have already gone out. Re-plan it, or cancel the plan — both take money off the family, so neither is done automatically.`,
+        entityType: 'fees.instalment_plan', entityId: String(plan.id),
+      });
+      out.quietPlans++;
+    }
+
+    // ---- a discount whose end date has passed is not a discount any more ----
+    const done = await this.db.query<Row>(`SELECT id, student_id, discount_scheme_id, valid_to FROM student_discounts WHERE school_id = ? AND status = 'approved' AND valid_to IS NOT NULL AND valid_to < ? LIMIT 200`, [schoolId, today]);
+    for (const d of done) {
+      await this.db.update('student_discounts', { status: 'expired', updated_at: nowSql() }, { id: String(d.id) });
+      await this.outbox.emitNow({ type: 'discount.expired', schoolId, aggregateType: 'fees.discount', aggregateId: String(d.id), payload: { discountId: String(d.id), studentId: String(d.student_id), schemeId: String(d.discount_scheme_id), validTo: String(d.valid_to) } });
+      out.discountsExpired++;
+    }
+
+    // ---- a batch nobody finished, and a month nobody billed ----
+    const staleAt = nowSql(new Date(Date.now() - STALE_BATCH_MINUTES * 60_000));
+    const stuck = await this.db.query<Row>(`SELECT id FROM invoice_batches WHERE school_id = ? AND status IN ('pending','running') AND (started_at IS NULL OR started_at < ?) LIMIT 20`, [schoolId, staleAt]);
+    for (const b of stuck) {
+      await this.adapters.queue.push({ name: 'fees.generate_invoices', queue: 'batch', schoolId, payload: { batchId: String(b.id) }, triggeredBy: 'fees.money_watch' });
+      out.batches++;
+    }
+    // never on the 1st (the monthly job owns that day) and never for a school that has not billed
+    // before: a watchdog must not be the thing that invoices a school for the very first time.
+    if (Number(today.slice(8, 10)) >= 2) {
+      const period = today.slice(0, 7) + '-01';
+      const already = await this.db.findOne('invoice_batches', { school_id: schoolId, billing_period: period });
+      const previous = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM invoice_batches WHERE school_id = ? AND billing_period < ? AND status = 'success'`, [schoolId, period]);
+      if (!already && Number(previous[0]?.n ?? 0) > 0) {
+        try { await this.generateBatch(schoolId, { billingPeriod: period }); out.batches++; } catch { /* no current year yet: the monthly job will say so */ }
+      }
+    }
+
+    // ---- a fee head with nowhere to post its income ----
+    const orphans = await this.db.query<Row>(`SELECT id, name, code FROM fee_heads WHERE school_id = ? AND status = 'active' AND gl_account_id IS NULL LIMIT 50`, [schoolId]);
+    for (const h of orphans) {
+      if (await this.openTaskFor(schoolId, 'fees.head', String(h.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `“${h.name}” has no income account`, taskType: 'fees.head', assignedRole: 'accountant', priority: 'normal',
+        description: `Invoices for ${h.code} post to general tuition income (4100) instead of an account of their own, so nothing is lost — but the income statement cannot tell this head apart until somebody picks the account it belongs to.`,
+        entityType: 'fees.head', entityId: String(h.id),
+      });
+      out.headsWithoutAccount++;
+    }
+    return out;
+  }
+
+  /** Everything still owed, split by how long it has been owed. Bucketed in SQL: a big school's ledger never lands in memory. */
+  async ageing(schoolId: string, asOf = nowSql().slice(0, 10)) {
+    const d30 = shiftDay(asOf, -30), d60 = shiftDay(asOf, -60), d90 = shiftDay(asOf, -90);
+    const r = await this.db.query<Row>(`SELECT
+        COALESCE(SUM(CASE WHEN due_date >= ? THEN balance ELSE 0 END), 0) AS not_due,
+        COALESCE(SUM(CASE WHEN due_date < ? AND due_date >= ? THEN balance ELSE 0 END), 0) AS b30,
+        COALESCE(SUM(CASE WHEN due_date < ? AND due_date >= ? THEN balance ELSE 0 END), 0) AS b60,
+        COALESCE(SUM(CASE WHEN due_date < ? AND due_date >= ? THEN balance ELSE 0 END), 0) AS b90,
+        COALESCE(SUM(CASE WHEN due_date < ? THEN balance ELSE 0 END), 0) AS older,
+        COUNT(*) AS invoices
+      FROM invoices WHERE school_id = ? AND balance > 0 AND status <> 'cancelled'`, [asOf, asOf, d30, d30, d60, d60, d90, d90, schoolId]);
+    const row = r[0] ?? {};
+    const buckets = { notDue: round(Number(row.not_due ?? 0)), days1to30: round(Number(row.b30 ?? 0)), days31to60: round(Number(row.b60 ?? 0)), days61to90: round(Number(row.b90 ?? 0)), over90: round(Number(row.older ?? 0)) };
+    return { asOf, invoices: Number(row.invoices ?? 0), ...buckets, total: round(buckets.notDue + buckets.days1to30 + buckets.days31to60 + buckets.days61to90 + buckets.over90) };
+  }
+
+  /** F15: the ageing put in front of accounts once a month — never twice, whatever the scheduler does. */
+  async ageingReport(schoolId: string, asOf = nowSql().slice(0, 10)) {
+    const a = await this.ageing(schoolId, asOf);
+    const month = asOf.slice(0, 7);
+    if (await this.messagedSince(schoolId, 'fees.ageing', month, `${month}-01 00:00:00`)) return { ...a, notified: false, already: true };
+    if (a.total <= 0) return { ...a, notified: false, already: false };
+    const body = `Tk ${a.total} outstanding: Tk ${a.notDue} not yet due, Tk ${a.days1to30} up to a month late, Tk ${a.days31to60} up to two, Tk ${a.days61to90} up to three, Tk ${a.over90} older than that.`;
+    for (const role of ['accountant', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app', 'push'], eventKey: 'fees.ageing', title: 'What the school is owed', body, data: { total: a.total, over90: a.over90 }, entityType: 'fees.ageing', entityId: month });
+    return { ...a, notified: true, already: false };
   }
 
   /**

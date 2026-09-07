@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
+import type { TaskService } from '../tasks.js';
 import type { NumberingService } from './numbering.js';
 import type { AccountingService } from './accounting.js';
 import { round } from './accounting.js';
@@ -26,8 +28,8 @@ export interface SaleLine { productId: string; quantity?: number }
 export class CommerceService {
   constructor(
     private db: Db, private outbox: OutboxService, private notifications: NotificationService,
-    private numbering: NumberingService, private accounting: AccountingService, private fees: FeesService,
-    private settings: SettingsService,
+    private tasks: TaskService, private numbering: NumberingService, private accounting: AccountingService,
+    private fees: FeesService, private settings: SettingsService,
   ) {}
 
   // ---------- wallets ----------
@@ -272,8 +274,80 @@ export class CommerceService {
     return this.setOrderStatus(schoolId, String(order.id), 'paid');
   }
 
-  private async notifyGuardians(schoolId: string, studentId: string, eventKey: string, title: string, body: string) {
+  private async notifyGuardians(schoolId: string, studentId: string, eventKey: string, title: string, body: string, entity?: { type: string; id: string }) {
     const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [studentId]);
-    for (const g of guardians) await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['push', 'in_app'], eventKey, title, body, entityType: 'people.student', entityId: studentId });
+    for (const g of guardians) await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['push', 'in_app'], eventKey, title, body, entityType: entity?.type ?? 'people.student', entityId: entity?.id ?? studentId });
+  }
+
+  // ---------- scheduled jobs ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // P4/P5: the till's own day book, the wallets about to run dry, and the goods nobody handed over
+      'commerce.day_close': async ({ schoolId, payload, deadline }) => this.dayClose(schoolId, { onDate: (payload.onDate as string) || undefined, deadline }),
+    };
+  }
+
+  private async openTaskFor(schoolId: string, entityType: string, entityId: string) {
+    return this.db.findOne<Row>('tasks', { school_id: schoolId, entity_type: entityType, entity_id: entityId, status: 'open' });
+  }
+  private async messagedSince(schoolId: string, eventKey: string, entityId: string, since: string) {
+    const r = await this.db.query<{ id: string }>(`SELECT id FROM notifications WHERE school_id = ? AND event_key = ? AND entity_id = ? AND created_at >= ? LIMIT 1`, [schoolId, eventKey, entityId, since]);
+    return !!r[0];
+  }
+
+  /**
+   * The end of a trading day, without anyone closing anything by hand:
+   *
+   * - each outlet's day book goes to accounts once — the key is the outlet *and the date*, so a
+   *   second run on the same evening sends nothing
+   * - a wallet under the school's low-balance mark tells the guardian, at most once a week: a child
+   *   who cannot buy lunch is worth a message, a family told the same thing every night is not
+   * - an order paid for and still not handed over is one task, once, for whoever runs the shop
+   *
+   * Nothing here tops a wallet up. Moving a family's money without them asking is not automation.
+   */
+  async dayClose(schoolId: string, opts: { onDate?: string; deadline?: number } = {}) {
+    const onDate = opts.onDate ?? nowSql().slice(0, 10);
+    const deadline = opts.deadline ?? Date.now() + 20_000;
+    const out = { outlets: 0, lowBalance: 0, staleOrders: 0, total: 0 };
+
+    for (const o of await this.outlets(schoolId)) {
+      if (Date.now() > deadline) break;
+      const book = await this.dayBook(schoolId, String(o.id), onDate);
+      if (book.total <= 0) continue;
+      out.total = round(out.total + book.total);
+      // one message per outlet per day: `entity_id` holds an id and nothing else (CHAR(26) on MySQL),
+      // so the day is the window the lookup runs over rather than part of the key
+      const key = String(o.id);
+      if (await this.messagedSince(schoolId, 'commerce.day_book', key, `${onDate} 00:00:00`)) continue;
+      const split = book.byMethod.map(m => `${m.paid_by} Tk ${round(Number(m.total))}`).join(', ');
+      for (const role of ['accountant', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app', 'push'], eventKey: 'commerce.day_book', title: `${o.name}: Tk ${book.total} today`, body: `${split}. Best seller: ${book.bestSellers[0]?.name ?? '—'}.`, data: { total: book.total }, entityType: 'commerce.outlet', entityId: key });
+      out.outlets++;
+    }
+
+    const floor = (await this.settings.get<number>(schoolId, 'commerce.low_balance_at')) ?? 50;
+    const weekAgo = nowSql(new Date(Date.parse(`${onDate}T00:00:00Z`) - 7 * 86400_000));
+    const low = await this.db.query<Row>(`SELECT w.id, w.student_id, w.balance FROM wallets w WHERE w.school_id = ? AND w.status = 'active' AND w.balance < ?
+      AND EXISTS (SELECT 1 FROM wallet_transactions t WHERE t.wallet_id = w.id) ORDER BY w.balance LIMIT 500`, [schoolId, floor]);
+    for (const w of low) {
+      if (Date.now() > deadline) break;
+      if (await this.messagedSince(schoolId, 'commerce.low_balance', String(w.id), weekAgo)) continue;
+      await this.notifyGuardians(schoolId, String(w.student_id), 'commerce.low_balance', 'Wallet running low', `Only Tk ${round(Number(w.balance))} is left on the card. Top it up from the app or at the office.`, { type: 'commerce.wallet', id: String(w.id) });
+      out.lowBalance++;
+    }
+
+    const cutoff = new Date(Date.parse(`${onDate}T00:00:00Z`) - 3 * 86400_000).toISOString().slice(0, 10);
+    const waiting = await this.db.query<Row>(`SELECT o.id, o.order_no, o.student_id, o.total FROM shop_orders o WHERE o.school_id = ? AND o.status = 'paid' AND o.updated_at <= ? ORDER BY o.updated_at LIMIT 100`, [schoolId, `${cutoff} 23:59:59`]);
+    for (const o of waiting) {
+      if (await this.openTaskFor(schoolId, 'commerce.order', String(o.id))) continue;
+      const st = await this.db.findOne<Row>('students', { id: String(o.student_id) });
+      await this.tasks.create({
+        schoolId, title: `Order ${o.order_no} is paid for and still on the shelf`, taskType: 'commerce.order', assignedRole: 'admin', priority: 'normal',
+        description: `${st ? `${st.first_name} ${st.last_name ?? ''}`.trim() : 'A family'} paid Tk ${round(Number(o.total))} more than three days ago. Mark it ready when it is packed — the guardian is told the moment you do.`,
+        entityType: 'commerce.order', entityId: String(o.id),
+      });
+      out.staleOrders++;
+    }
+    return out;
   }
 }

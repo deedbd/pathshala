@@ -95,6 +95,10 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | F11 | ⚙️ `discount.proposed` | — | Route approval (principal); on approve, re-rate current-month open invoices | `approval_requests`, `invoice_items` |
 | F12 | ⚙️ `student.status_changed` → transferred/dropped | — | Stop future invoices; final settlement statement; refund proposal for refundable heads | `invoices`, `refunds` |
 | F13 | ⏰ daily 06:00 | instalment falls due today | Raise that instalment's invoice only; the plan closes when the last one is billed | `instalment_plans`, `invoices` |
+| F14 | ⏰ daily 07:00 | money that has stopped moving | Receipts nobody printed are issued; a cheque past its clearing window becomes one task for accounts (only the bank knows what happened, so a person clears or bounces it); a till left open overnight becomes a task for its cashier (the counted cash is not in the database); an instalment plan whose billed instalment went unpaid becomes a task; a discount whose `valid_to` has passed is expired; a batch nobody finished is re-queued and a month never billed is billed (never on the 1st, never for a school that has not billed before); a fee head with no income account becomes a task | `payments.receipt_file_id`, `tasks`, `student_discounts`, `invoice_batches` |
+| F15 | ⏰ monthly 1st 07:00 | — | Receivables ageing (not due / 30 / 60 / 90 / older) to accounts and the head — once a month, whatever the scheduler does | `notifications` |
+| F16 | 🔒 cash session closed | `variance ≠ 0` | Say so at the counter, to accounts and the head, the moment it is counted | `notifications` |
+| F17 | 🔒 invoice batch finished | — | `invoice.batch_finished`; accounts is told how many invoices and how much, so nobody opens the page to check | `invoice_batches`, `notifications` |
 
 ## 7. Accounting
 
@@ -103,8 +107,10 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | G1 | 🔒 any of: payment, refund, payroll paid, expense paid, PO received, other income | — | Balanced journal entry auto-posted (DB trigger rejects unbalanced) | `journal_entries`, `journal_lines` |
 | G2 | 🔒 `expense.requested` | amount > category threshold | Approval workflow; else auto-approve | `approval_requests` |
 | G3 | ⚙️ `journal.posted` | spend ≥ `budgets.alert_at_pct` | Budget alert to principal/treasurer | `notifications` |
-| G4 | ⏰ monthly 1st | — | Income statement, collection vs budget, receivables ageing PDFs to management | `report_snapshots` |
-| G5 | ⏰ fiscal year end | — | Lock period; carry balances; open new fiscal year | `fiscal_years` |
+| G4 | ⏰ monthly 1st | — | Trial balance and income statement for the month just ended, kept as a snapshot whose id is derived from the month (a second run finds its own row), and sent to accounts and the head; a trial balance that does not balance says so in the message | `report_snapshots`, `notifications` |
+| G5 | ⏰ fiscal year end | — | Lock period; carry balances; open new fiscal year — **prepared only**: the month-end job raises one task when a year's last day has passed, because closing a year cannot be undone | `tasks`, `fiscal_years` |
+| G6 | ⏰ daily 07:30 | — | An expense approved but never posted is posted (the approval was the human step); a budget past its alert threshold becomes one task; bank lines are re-matched and whatever is left over becomes one task per account; a posted entry whose sides disagree becomes an urgent task — `post()` cannot make one, so it came from outside the application | `expenses`, `journal_entries`, `bank_statement_lines`, `tasks` |
+| G7 | 🔒 `approval.decided` | entity is an expense | Approved expense posts Dr expense, Cr cash/bank at once | `expenses`, `journal_entries` |
 
 ## 8. HR & payroll
 
@@ -213,6 +219,12 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `fees.instalments_due` | `0 6 * * *` | F13 |
 | `fees.overdue_and_fines` | `30 0 * * *` | F4 |
 | `fees.day_end_summary` | `0 18 * * *` | F10 |
+| `fees.money_watch` | `0 7 * * *` | F14 |
+| `fees.receivables_ageing` | `0 7 1 * *` | F15 |
+| `accounting.daily_watch` | `30 7 * * *` | G6 |
+| `accounting.month_end` | `30 3 1 * *` | G4, G5 |
+| `commerce.day_close` | `0 19 * * *` | P27 |
+| `giving.daily` | `0 8 * * *` | P28 |
 | `payroll.draft_run` | `0 9 25 * *` | H1 |
 | `hr.expiry_alerts` | `0 8 * * *` | H3, H4 |
 | `exams.pre_exam_prep` | `0 7 * * *` | D2 |
@@ -279,3 +291,5 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | P24 | Forecast | ⏰ monthly, after the billing run | Cash-flow projection for the next 3–6 months from this school's own collection rate; a projected shortfall raises a message with its assumptions, never an invoice |
 | P25 | Forecast | ⏰ monthly | Staffing forecast from the published timetable and the leavers on record; subjects with periods nobody is timetabled to teach are listed with the count |
 | P26 | Forecast | ⏰ weekly | Wellbeing early-warning scores refreshed into `risk_scores`; welfare involvement adds weight but never scores alone, and the alert never says what is in the record |
+| P27 | Wallet/POS | ⏰ daily 19:00 | Each outlet's day book to accounts, once for that outlet and that date; a wallet under the school's low-balance mark tells the guardian at most once a week; an order paid for and still not handed over after three days becomes one task. Nothing tops a wallet up — moving a family's money without them asking is not automation |
+| P28 | Scholarships | ⏰ daily 08:00 | An appeal past the closing date the school itself set is closed, and one that reached its goal is reported once; money received with no receipt gets its receipt; a pledge unpaid for 30 days and an award still active after its academic year ended each become one task, because chasing a donor and taking a discount off a child are people's decisions |

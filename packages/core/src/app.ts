@@ -113,9 +113,9 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const portal = new PortalService(db, timetable, cms, files);
   const attendance = new AttendanceService(db, outbox, notifications, academic, approvals, adapters);
   const communication = new CommunicationService(db, outbox, notifications, adapters);
-  const accounting = new AccountingService(db, outbox, numbering, approvals);
+  const accounting = new AccountingService(db, outbox, notifications, tasks, numbering, approvals);
   const documents = new DocumentService(db, outbox, notifications, numbering, files, approvals, adapters);
-  const fees = new FeesService(db, outbox, notifications, numbering, academic, accounting, documents, adapters, config.appKey);
+  const fees = new FeesService(db, outbox, notifications, tasks, numbering, academic, accounting, documents, adapters, config.appKey);
   const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters, documents, fees);
   const hr = new HrService(db, outbox, notifications, academic, accounting, approvals, tasks, files, people, settings, adapters);
   const importer = new ImportService(db, adapters, outbox, files, people, attendance, hr);
@@ -128,8 +128,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const welfare = new WelfareService(db, outbox, notifications, tasks, approvals, inventory, config.appKey);
   const lms = new LmsService(db, outbox, notifications, academic, documents);
   const engagement = new EngagementService(db, outbox, notifications, documents);
-  const commerce = new CommerceService(db, outbox, notifications, numbering, accounting, fees, settings);
-  const giving = new GivingService(db, outbox, notifications, accounting, fees, academic, documents);
+  const commerce = new CommerceService(db, outbox, notifications, tasks, numbering, accounting, fees, settings);
+  const giving = new GivingService(db, outbox, notifications, tasks, accounting, fees, academic, documents);
   const alumni = new AlumniService(db, outbox, notifications, academic);
   const facilities = new FacilitiesService(db, outbox, notifications, tasks, accounting, adapters);
   const governance = new GovernanceService(db, outbox, notifications, tasks, config.appKey);
@@ -186,6 +186,10 @@ export function createApp(opts: CreateAppOptions = {}): App {
   adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
   for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(fees.jobs())) adapters.scheduler.register(key, fn);
+  // accounting, commerce and giving had no jobs of their own until the money watchdogs were added
+  for (const [key, fn] of Object.entries(accounting.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(commerce.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(giving.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(assessment.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(hr.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(admissions.jobs())) adapters.scheduler.register(key, fn);
@@ -208,7 +212,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
   // a plugin's webhook is somebody else's server: the relay posts to it and gives up quickly
   marketplace.registerHooks(handlers, ['student.enrolled', 'payment.received', 'attendance.absent', 'result.published', 'invoice.created', 'staff.joined']);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce, college });
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, accounting, hr, auth, admissions, inventory, welfare, commerce, college });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
@@ -241,7 +245,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; accounting: AccountingService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -321,6 +325,15 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
     // wait for the last mark of the class: ranking half a cohort would hand out the wrong seats
     if (!(await d.admissions.readyForMerit(e.schoolId, e.payload.campaignId, e.payload.classId))) return;
     await d.admissions.computeMerit(e.schoolId, e.payload.campaignId, e.payload.classId);
+  });
+  // G2: an approved expense pays itself. The approval was the human step — leaving the journal for
+  // somebody to post by hand is how an approved bill ends up unpaid and off the books.
+  h.on('approval.decided', 'accounting-approvals', async e => {
+    // only a decision that actually approves pays: an escalation is still somebody's to make
+    if (e.payload.decision !== 'approved' && e.payload.decision !== 'auto_approved') return;
+    if (e.payload.entityType !== 'expense') return;
+    await d.db.update('expenses', { status: 'approved', updated_at: nowSql() }, { id: e.payload.entityId as string, school_id: e.schoolId, status: 'pending' });
+    await d.accounting.payExpense(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`expense approval: ${(err as Error).message}`));
   });
   // L3: an approved issue request empties the shelf onto somebody's name
   h.on('approval.decided', 'inventory-approvals', async e => {
