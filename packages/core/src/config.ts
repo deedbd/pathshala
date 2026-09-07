@@ -13,6 +13,19 @@ export interface AppConfig {
   isProduction: boolean;
   port: number;
   sessionDays: number;
+  /**
+   * The path the Pathshala team's own sign-in lives behind, without a slash — say `k7f2p9m4qz`.
+   *
+   * It is written into `.env` at install time and printed once. An unguessable path is not the
+   * security boundary and is not treated as one: the gate is still the role, the founder school, the
+   * password and the second factor. What the door buys is that the vendor's console does not appear
+   * on a school's site at all — `/owner` and `/api/owner` answer 404 to everybody who has not come
+   * through it, so there is nothing to find and nothing to attack. With no door configured the whole
+   * thing is closed rather than open.
+   */
+  ownerDoor: string | null;
+  /** Optional comma-separated list of addresses that may reach the door at all. */
+  ownerIps: string[];
 }
 
 /** Minimal .env parser (no dependency): KEY=value, quotes optional, # comments. Does not override existing process env. */
@@ -71,5 +84,7 @@ export function loadConfig(rootDir = resolveRootDir()): AppConfig {
     isProduction: (env.APP_ENV || env.NODE_ENV) === 'production',
     port: Number(env.PORT) || 3000,
     sessionDays: Number(env.SESSION_DAYS) || 30,
+    ownerDoor: (env.OWNER_DOOR || '').trim().replace(/^\/+|\/+$/g, '').toLowerCase() || null,
+    ownerIps: (env.OWNER_IPS || '').split(',').map(x => x.trim()).filter(Boolean),
   };
 }

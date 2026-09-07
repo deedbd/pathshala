@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Db, Row } from '@pathshala/db';
 import { json, migrate, nowSql, seed, ulid } from '@pathshala/db';
@@ -190,14 +191,38 @@ export class InstallerService {
       const p = path.join(this.config.rootDir, f);
       try { if (fs.existsSync(p) && fs.readFileSync(p, 'utf8').includes('Pathshala installer')) { fs.unlinkSync(p); removed.push(f); } } catch (e) { this.deps.log.warn(`could not remove ${f}`, e); }
     }
+    // The Pathshala team's own console needs a door before it can be opened at all, and the install
+    // is the only moment we can write one nobody has ever seen. It goes into .env and is returned
+    // here — the installer shows it once, and after that it is only in the file on the server.
+    if (!this.config.ownerDoor) {
+      try {
+        const door = randomDoor();
+        writeDotenv(path.join(this.config.rootDir, '.env'), { OWNER_DOOR: door });
+        this.config.env.OWNER_DOOR = door;
+        (this.config as { ownerDoor: string | null }).ownerDoor = door;
+        this.ownerDoorJustWritten = door;
+      } catch (e) { this.deps.log.warn('could not write the owner door', e); }
+    }
     if (!this.adapters.push.publicKey() && !this.config.env.VAPID_PUBLIC_KEY) {
       try { const k = WebPush.generateKeys(); writeDotenv(path.join(this.config.rootDir, '.env'), { VAPID_PUBLIC_KEY: k.publicKey, VAPID_PRIVATE_KEY: k.privateKey, VAPID_SUBJECT: `mailto:admin@${new URL(this.config.appUrl).hostname}` }); } catch (e) { this.deps.log.warn('could not write VAPID keys', e); }
     }
     await this.mark('done', 'done', { removed, at: nowSql(), url: this.config.appUrl });
+    const ownerDoorUrl = this.ownerDoorJustWritten ? `${this.config.appUrl}/${this.ownerDoorJustWritten}` : null;
     this.installedFlag = true;
     await this.deps.outbox.emitNow({ type: 'installer.completed', schoolId, aggregateType: 'core.school', aggregateId: schoolId, payload: { schoolId, engine: this.db.engine, url: this.config.appUrl } });
     // Under Passenger (release layout: <root>/app/server.js) touch tmp/restart.txt so the process restarts with the final .env
     const appDir = path.join(this.config.rootDir, 'app');
     if (fs.existsSync(path.join(appDir, 'server.js'))) { try { fs.mkdirSync(path.join(appDir, 'tmp'), { recursive: true }); fs.writeFileSync(path.join(appDir, 'tmp', 'restart.txt'), String(Date.now())); } catch { /* read-only app dir */ } }
+    return { removed, ownerDoorUrl };
   }
+
+  /** Written once, shown once: the path the vendor's own sign-in lives behind. */
+  private ownerDoorJustWritten: string | null = null;
+}
+
+/** A door nobody can guess and a person can still read down a telephone. */
+function randomDoor(): string {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';               // no l/1, no o/0
+  const bytes = randomBytes(16);
+  return Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
 }
