@@ -38,7 +38,11 @@ export class Relay {
     // consumers emit follow-up events (task.created, approval.requested…); keep passing until nothing new is pending
     this.inflight = (async () => {
       const total = { published: 0, failed: 0 };
-      for (let i = 0; i < 8; i++) {
+      // A budgeted call (a request heartbeat, the background loop) stops when its slice is up. An
+      // unbudgeted one — /cron/tick, a test — keeps passing until nothing is pending, because
+      // stopping early leaves an event unconsumed and whoever was waiting for its rule sees nothing.
+      const maxPasses = deadline ? 8 : 200;
+      for (let i = 0; i < maxPasses; i++) {
         const r = await this.pass(max, deadline);
         total.published += r.published; total.failed += r.failed;
         if (r.published === 0 || (deadline && Date.now() > deadline)) break;
