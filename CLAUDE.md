@@ -65,5 +65,6 @@ All nine phases of `docs/PLAN.md` are implemented and each has a test suite that
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.
-- No MySQL/MariaDB or Docker on this machine (XAMPP is not installed here); MySQL/Postgres verification happens in GitHub Actions. `node:sqlite` works in Node 22.13+ (experimental warning is harmless).
+- Neither MySQL nor Docker is installed on this machine. Portable MariaDB and PostgreSQL unpacked into the session scratchpad and started on spare ports (3307 and 5433) run the suites locally before pushing; CI runs them again on MySQL 8 and Postgres 16. `node:sqlite` works in Node 22.13+ (the experimental warning is harmless).
+- Multi-line strings with Bengali text break in Git Bash heredocs: write a `.py` file into the scratchpad with the Write tool and run it, rather than piping a heredoc into python.
 - pnpm 12: install-script approval lives in `pnpm-workspace.yaml` (`allowBuilds`); `pnpm deploy` needs `--legacy` with the shared lockfile, and it strips the workspace `.bin` shims (tsc disappears) — `scripts/build-release.mjs` runs `pnpm install` afterwards; do the same if you ever run deploy by hand.
