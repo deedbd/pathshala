@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Db, Row } from '@pathshala/db';
-import { catalogue, json, migrate, nowSql, seed, ulid } from '@pathshala/db';
+import { json, migrate, nowSql, seed, ulid } from '@pathshala/db';
 import type { Adapters, Logger } from '@pathshala/adapters';
 import { WebPush } from '@pathshala/adapters';
 import type { InstallSchoolInput } from '@pathshala/schemas';
 import type { AppConfig } from './config.js';
+import { syncCatalogue } from './automation/catalogue.js';
 import { writeDotenv } from './config.js';
 import type { AuthService } from './auth/service.js';
 import type { OutboxService } from './automation/outbox.js';
@@ -39,44 +40,17 @@ export class InstallerService {
   }
 
   /**
-   * Reconciles every school against the automation catalogue this build ships.
-   *
-   * Seeds run when a school is created, so a school installed last year has no `scheduled_jobs` row
-   * for a job added this year: the handler is registered, the scheduler never calls it, and the work
-   * silently does not happen. An update that adds automation has to reach the schools that are
-   * already there, which is every school that matters.
-   *
-   * It only ever adds what is missing. A job a school switched off keeps `is_active = false`, a cron
-   * expression somebody changed is left alone, and a rule whose actions were edited is not restored
-   * to the shipped version — the row exists, so it is not touched.
+   * Reconciles every school on this installation against the automation catalogue the build ships.
+   * `syncCatalogue` is the rule; this is the pass over the schools, run once at boot.
    */
   async ensureAutomationCatalogue(): Promise<{ schools: number; jobs: number; rules: number }> {
     const added = { schools: 0, jobs: 0, rules: 0 };
     if (!(await this.hasSchema())) return added;
-    const { jobs, rules } = catalogue(this.config.dbDir);
-    if (!jobs.length && !rules.length) return added;
     const schools = await this.db.query<{ id: string }>(`SELECT id FROM schools WHERE status <> 'closed' ORDER BY created_at, id`);
     for (const school of schools) {
-      const sid = String(school.id);
-      const haveJobs = new Set((await this.db.query<{ job_key: string }>(`SELECT job_key FROM scheduled_jobs WHERE school_id = ?`, [sid])).map(r => String(r.job_key)));
-      const haveRules = new Set((await this.db.query<{ code: string }>(`SELECT code FROM automation_rules WHERE school_id = ?`, [sid])).map(r => String(r.code)));
-      let touched = false;
-      for (const j of jobs) {
-        if (haveJobs.has(j.job_key)) continue;
-        await this.db.insert('scheduled_jobs', { id: ulid(), school_id: sid, job_key: j.job_key, cron_expr: j.cron_expr, timezone: 'Asia/Dhaka', payload: { rows: j.rows }, is_active: true });
-        added.jobs++; touched = true;
-      }
-      for (const r of rules) {
-        if (haveRules.has(r.code)) continue;
-        await this.db.insert('automation_rules', {
-          id: ulid(), school_id: sid, code: r.code, name: r.name, module: r.module, description: r.description,
-          trigger_kind: r.trigger_kind, event_type: r.event_type, cron_expr: null,
-          conditions: r.condition_text ? { note: r.condition_text } : null, actions: r.actions as Row[],
-          is_system: true, is_active: true, priority: 100, cooldown_minutes: 5, run_count: 0,
-        });
-        added.rules++; touched = true;
-      }
-      if (touched) added.schools++;
+      const r = await syncCatalogue(this.db, this.config.dbDir, String(school.id));
+      added.jobs += r.jobs.length; added.rules += r.rules.length;
+      if (r.jobs.length || r.rules.length) added.schools++;
     }
     if (added.jobs || added.rules) {
       this.deps.log.info(`automation catalogue: added ${added.jobs} job(s) and ${added.rules} rule(s) across ${added.schools} school(s)`);

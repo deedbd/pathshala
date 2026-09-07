@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import type { Db, Row } from '@pathshala/db';
 import { nowSql, ulid } from '@pathshala/db';
+import { syncCatalogue } from '../automation/catalogue.js';
 import type { Adapters, JobContext, Logger, ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
@@ -284,24 +285,14 @@ export class PlatformService {
     else await this.db.insert('system_health', { id: ulid(), check_key: checkKey, ...row });
   }
   /**
-   * Every job in the seeded catalogue has a row for this school. It matters after an update: the
-   * seeds only run when a school is provisioned, so a school installed last year would never gain
-   * the automations shipped this year — they would sit in the code with nothing to call them.
+   * Every job in the shipped catalogue has a row for this school. It matters after an update on a
+   * host where the process does not restart: `syncCatalogue` also runs at boot, and this is the same
+   * pass for the school whose watchdog is ticking.
    */
-  private catalogue: { job_key: string; cron_expr: string; rows: string }[] | null = null;
   async syncScheduledJobs(schoolId: string) {
-    if (!this.catalogue) {
-      try { this.catalogue = JSON.parse(fs.readFileSync(path.join(this.rootDir, 'db', 'seeds', 'scheduled_jobs.json'), 'utf8')) as { job_key: string; cron_expr: string; rows: string }[]; }
-      catch { this.catalogue = []; }
-    }
-    const added: string[] = [];
-    for (const j of this.catalogue) {
-      if (await this.db.findOne('scheduled_jobs', { school_id: schoolId, job_key: j.job_key })) continue;
-      await this.db.insert('scheduled_jobs', { id: ulid(), school_id: schoolId, job_key: j.job_key, cron_expr: j.cron_expr, timezone: 'Asia/Dhaka', payload: { rows: j.rows } as never, is_active: true });
-      added.push(j.job_key);
-    }
-    return added;
+    return (await syncCatalogue(this.db, path.join(this.rootDir, 'db'), schoolId)).jobs;
   }
+
   /**
    * What the machinery itself is doing, checked by the machinery itself.
    *
