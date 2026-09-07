@@ -184,6 +184,16 @@ export async function seed(db: Db, opts: SeedOptions): Promise<SeedResult> {
   return { inserted };
 }
 
+export interface SeededJob { job_key: string; cron_expr: string; rows: string }
+export interface SeededRule { code: string; module: string; name: string; description: string; trigger_kind: string; event_type: string | null; condition_text: string; actions: unknown[] }
+/** The automation catalogue the build shipped, so a running install can reconcile itself against it. */
+export function catalogue(dbDir: string) {
+  return {
+    jobs: readJson<SeededJob[]>(dbDir, 'scheduled_jobs.json'),
+    rules: readJson<SeededRule[]>(dbDir, 'automation_rules.json'),
+  };
+}
+
 function readJson<T>(dbDir: string, file: string): T {
   const p = path.join(dbDir, 'seeds', file);
   if (!fs.existsSync(p)) return [] as unknown as T;

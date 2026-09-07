@@ -216,7 +216,14 @@ export function createApp(opts: CreateAppOptions = {}): App {
     numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, facilities, governance, compliance, analytics, saas, marketplace, ai, groups, forecast, ivr, college, adaptive, platform,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
-      const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
+      const loops = () => {
+        // an update ships jobs the database has never heard of; the schools already installed get
+        // their rows here, before the scheduler goes looking for something to run
+        installer.ensureAutomationCatalogue().catch(e => log.error('automation catalogue', e));
+        relay.start(500);
+        if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); }
+        log.info('background loops running');
+      };
       if (await installer.hasSchema()) loops();
       else { const t = setInterval(async () => { if (await installer.hasSchema()) { clearInterval(t); loops(); } }, 3000); t.unref?.(); }
       log.info(`pathshala started · db=${db.engine} · adapters=${[adapters.queue.kind, adapters.scheduler.kind, adapters.storage.kind, adapters.pdf.kind, adapters.realtime.kind].join(',')} · mail=${adapters.mail.kind} sms=${adapters.sms.kind} push=${adapters.push.kind}`);

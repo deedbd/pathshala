@@ -58,6 +58,43 @@ describe('phase 9', () => {
   const api = async (p, body, method = body ? 'POST' : 'GET', extra = {}) => { const r = await fetch(`${baseUrl}/api${p}`, { method, headers: { 'Content-Type': 'application/json', cookie: extra.cookie ?? cookieA }, body: body ? JSON.stringify(body) : undefined }); const text = await r.text(); let j; try { j = JSON.parse(text); } catch { throw new Error(`${method} ${p} → ${r.status} non-JSON: ${text.slice(0, 200)}`); } if (!r.ok) throw new Error(`${method} ${p} → ${r.status} ${JSON.stringify(j)}`); return j; };
   const status = async (p, extra = {}) => (await fetch(`${baseUrl}/api${p}`, { headers: extra.cookie ? { cookie: extra.cookie } : {} })).status;
 
+  // ---------------- an update reaches the schools that are already there ----------------
+  test('a school installed before a job existed gets its row on the next boot, and keeps its own settings', async () => {
+    const sid = schools[0].schoolId;
+    const before = await app.db.query(`SELECT job_key, cron_expr, is_active FROM scheduled_jobs WHERE school_id = ? ORDER BY job_key`, [sid]);
+    assert.ok(before.length > 10, 'the school was seeded with the catalogue it was installed with');
+
+    // this is what an update looks like from the database's side: the build knows a job the school
+    // does not, because the school was installed before the job was written
+    const victim = String(before[0].job_key);
+    await app.db.execute(`DELETE FROM scheduled_jobs WHERE school_id = ? AND job_key = ?`, [sid, victim]);
+    // and one the school has deliberately switched off, with a cron of its own
+    const kept = String(before[1].job_key);
+    await app.db.execute(`UPDATE scheduled_jobs SET is_active = FALSE, cron_expr = '5 5 * * *' WHERE school_id = ? AND job_key = ?`, [sid, kept]);
+
+    const added = await app.installer.ensureAutomationCatalogue();
+    assert.equal(added.jobs, 1, 'exactly the missing one');
+    assert.ok(added.schools >= 1);
+
+    const back = await app.db.findOne('scheduled_jobs', { school_id: sid, job_key: victim });
+    assert.ok(back, 'the job the build ships is now a row this school has');
+    assert.equal(Number(back.is_active), 1);
+
+    const untouched = await app.db.findOne('scheduled_jobs', { school_id: sid, job_key: kept });
+    assert.equal(String(untouched.cron_expr), '5 5 * * *', 'a school that changed the time keeps its time');
+    assert.equal(Number(untouched.is_active), 0, 'and a job it switched off stays off');
+
+    // running twice adds nothing: the scheduler must not end up with the same job twice
+    const again = await app.installer.ensureAutomationCatalogue();
+    assert.deepEqual({ jobs: again.jobs, rules: again.rules }, { jobs: 0, rules: 0 });
+    const rows = await app.db.query(`SELECT COUNT(*) AS n FROM scheduled_jobs WHERE school_id = ? AND job_key = ?`, [sid, victim]);
+    assert.equal(Number(rows[0].n), 1);
+
+    // and the second tenant is reconciled too — an update reaches every school on the host
+    const other = await app.db.query(`SELECT COUNT(*) AS n FROM scheduled_jobs WHERE school_id = ?`, [schools[1].schoolId]);
+    assert.equal(Number(other[0].n), before.length, 'every school carries the whole catalogue');
+  });
+
   // ---------------- security ----------------
   test('one school never sees another’s data, whatever id it asks for', async () => {
     const a = schools[0], b = schools[1];
