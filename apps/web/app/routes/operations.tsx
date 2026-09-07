@@ -15,16 +15,28 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     context.app.frontOffice.visitors(sid, date), context.app.frontOffice.complaints(sid),
     context.app.inventory.stores(sid),
   ]);
-  return { locale: (user.locale as Locale) || context.locale, date, books, issues, routes, trips, hostels, residents, outpasses, stock, purchaseOrders, visitors, complaints, stores };
+  // the voice line: the register it wrote, the menu a guardian hears, and whether the gateway has a
+  // secret to send. The secret itself is never read back out of the settings row.
+  const [ivrCalls, ivrSchool, ivrSecret] = await Promise.all([
+    context.app.ivr.calls(sid, 100),
+    context.app.db.findOne('schools', { id: sid }),
+    context.app.settings.get<{ enc?: string }>(sid, 'ivr.webhook_secret'),
+  ]);
+  const ivrMenu = ivrSchool ? context.app.ivr.menu(ivrSchool) : null;
+  const ivrPhone = ivrSchool && ivrSchool.phone ? String(ivrSchool.phone) : null;
+  return { locale: (user.locale as Locale) || context.locale, date, books, issues, routes, trips, hostels, residents, outpasses, stock, purchaseOrders, visitors, complaints, stores, ivrCalls, ivrMenu, ivrPhone, ivrSecretSet: !!ivrSecret?.enc };
 }
 export function meta() { return [{ title: 'Pathshala — Operations' }]; }
 
 export default function Operations() {
   const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
-  const [tab, setTab] = useState<'library' | 'transport' | 'hostel' | 'inventory' | 'frontoffice'>('library');
+  const [tab, setTab] = useState<'library' | 'transport' | 'hostel' | 'inventory' | 'frontoffice' | 'ivr'>('library');
   const [drawer, setDrawer] = useState<null | 'book' | 'issue' | 'route' | 'hostel' | 'item' | 'visitor' | 'complaint'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  // only ever what the rotate call handed back, and only until the page is left: the secret the
+  // office typed is never held here, and the server never returns it
+  const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   const money = (n: unknown) => formatMoney(Number(n ?? 0), d.locale);
   const overdue = d.issues.filter(i => String(i.status) === 'overdue').length;
@@ -53,6 +65,7 @@ export default function Operations() {
         { key: 'hostel', label: tr('ops.hostel'), count: d.hostels.length },
         { key: 'inventory', label: tr('ops.inventory'), count: d.stock.length },
         { key: 'frontoffice', label: tr('ops.frontOffice'), count: d.visitors.length },
+        { key: 'ivr', label: tr('ivr.tab'), count: d.ivrCalls.length },
       ]} /></div>
 
       {tab === 'library' && <div className="mt-4">
@@ -168,6 +181,45 @@ export default function Operations() {
           { key: 'status', label: tr('common.status'), render: r => <Chip status={['resolved', 'closed'].includes(String(r.status)) ? 'active' : r.escalated_at ? 'failed' : 'pending'}>{String(r.status)}</Chip> },
           { key: 'id', label: '', render: r => ['open', 'in_progress'].includes(String(r.status)) ? <Button size="sm" onClick={() => run(() => api(`/api/frontoffice/complaints/${r.id}`, { method: 'POST', json: { status: 'resolved', resolution: 'Handled at the front desk.', note: 'Resolved.' } }))}>{tr('ops.resolve')}</Button> : null },
         ]} />
+      </div>}
+
+      {tab === 'ivr' && <div className="mt-4">
+        <Banner kind="info">{tr('ivr.note')}</Banner>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <div className="card p-4">
+            <div className="kpi-label">{tr('ivr.line')}</div>
+            <p className="mt-2 text-sm">{tr('ivr.ringNumber')}: <span className="num">{d.ivrPhone ?? tr('ivr.noPhone')}</span></p>
+            <p className="mt-2 text-xs" style={{ color: 'var(--muted)' }}>{tr('ivr.gatewayNote')}</p>
+            <p className="mt-3 flex items-center gap-2 text-sm">{tr('ivr.secret')}: <Chip status={d.ivrSecretSet ? 'active' : 'failed'}>{d.ivrSecretSet ? tr('ivr.secretSet') : tr('ivr.secretMissing')}</Chip></p>
+            <form className="mt-3 grid gap-3" onSubmit={e => {
+              e.preventDefault(); const form = e.currentTarget; const secret = String(new FormData(form).get('secret') ?? '');
+              run(async () => { const x = await api<{ configured: boolean; webhookUrl: string }>('/api/ivr/secret', { method: 'POST', json: { secret } }); form.reset(); setWebhookUrl(x.webhookUrl); setMsg(tr('ivr.webhookShown')); });
+            }}>
+              <Field label={tr('ivr.secret')} hint={tr('ivr.secretHint')}><Input name="secret" type="password" minLength={12} maxLength={200} required autoComplete="off" /></Field>
+              <div><Button size="sm" disabled={busy}>{tr('ivr.saveSecret')}</Button></div>
+            </form>
+            {webhookUrl && <div className="mt-3"><Banner kind="ok"><span className="block text-xs">{tr('ivr.webhook')}</span><code className="break-all text-xs">{webhookUrl}</code></Banner></div>}
+          </div>
+          <div className="card p-4">
+            <div className="kpi-label">{tr('ivr.menu')}</div>
+            <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('ivr.menuNote')}</p>
+            {d.ivrMenu && <>
+              <p className="mt-3 text-sm">{tr('ivr.welcomeLine')}: “{d.ivrMenu.welcome}”</p>
+              <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('ivr.language')}: {d.ivrMenu.locale}</p>
+              <ul className="mt-3 grid gap-2 text-sm">{d.ivrMenu.choices.map(c => <li key={c.key} className="flex items-start gap-2"><span className="chip num">{c.key}</span><span>{c.says} <span className="text-xs" style={{ color: 'var(--muted)' }}>({c.topic})</span></span></li>)}</ul>
+            </>}
+          </div>
+        </div>
+        <h2 className="mt-6 text-lg">{tr('ivr.calls')}</h2>
+        <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('ivr.callsNote')}</p>
+        <div className="mt-2"><DataTable locale={d.locale} rows={d.ivrCalls} columns={[
+          { key: 'called_at', label: tr('ivr.when'), render: r => String(r.called_at ?? '').slice(0, 16) },
+          { key: 'caller_name', label: tr('ivr.caller'), render: r => r.caller_name ? String(r.caller_name) : <span style={{ color: 'var(--muted)' }}>{tr('ivr.unknownCaller')}</span> },
+          { key: 'phone', label: tr('common.phone'), className: 'num', render: r => String(r.phone ?? '') },
+          { key: 'purpose', label: tr('ivr.asked'), render: r => String(r.purpose ?? '—') },
+          { key: 'notes', label: tr('ivr.said'), render: r => { const said = String(r.notes ?? '').split('\n').filter(Boolean); return said.length ? said[said.length - 1] : '—'; } },
+          { key: 'follow_up_at', label: tr('ivr.ended'), render: r => r.follow_up_at ? <Chip status="pending">{tr('ivr.callbackWanted')}</Chip> : String(r.notes ?? '').includes('[-]') ? <Chip status="failed">{tr('ivr.turnedAway')}</Chip> : <Chip status="active">{tr('ivr.answered')}</Chip> },
+        ]} /></div>
       </div>}
 
       <Drawer open={drawer === 'book'} onClose={() => setDrawer(null)} title={tr('ops.newBook')}>
