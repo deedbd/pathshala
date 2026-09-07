@@ -5777,7 +5777,7 @@ export const riskScores = sqliteTable('risk_scores', {
   id: text('id').primaryKey(),
   schoolId: text('school_id').notNull(),
   studentId: text('student_id').notNull(),
-  riskType: text('risk_type', { enum: ['dropout', 'fee_default', 'result_decline', 'attendance'] }).notNull(),
+  riskType: text('risk_type', { enum: ['dropout', 'fee_default', 'result_decline', 'attendance', 'wellbeing'] }).notNull(),
   score: numeric('score', { mode: 'number' }).notNull(),
   factors: text('factors', { mode: 'json' }),
   computedAt: text('computed_at').notNull(),

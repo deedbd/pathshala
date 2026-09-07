@@ -292,6 +292,62 @@ exit criterion on all three engines.
 > read replicas for very large groups, a rate feed instead of a typed-in rate, VAT returns and the
 > auditor portal, and board/government API integrations.
 
+---
+### Safeguarding and wellbeing early warning — shipped
+> **Status (7 Sep 2026): implemented.** `forecast.computeWellbeing` scores every pupil on attendance,
+> negative behaviour points, a fall between the last two exams, and whether welfare is already
+> involved, and writes the result to `risk_scores` as a fifth risk type beside the four
+> `AnalyticsService.computeRisks` already keeps — through `AnalyticsService.saveRisk`, so the table
+> still has exactly one writer and the "tell somebody once" rule has exactly one implementation.
+> The confidential half obeys the rule the welfare module already follows, and then goes further:
+> welfare involvement never scores on its own. A pupil in ordinary counselling with good attendance,
+> steady marks and no incidents is not on the list at all, because flagging them would tell every
+> reader of the watchlist that the child is seeing a counsellor — the exact inference the encrypted
+> notes exist to prevent. It only ever adds a flat weight to something measurable that is already
+> wrong, and counselling and a safeguarding case are worth the same, so the score cannot be read
+> backwards to tell them apart. The stored reasons name the attendance, the points and the marks;
+> they never carry a category, a session count, a risk level or a word of a note, and the alert that
+> goes out is in-app only and says explicitly that it does not carry the reasons — a push would land
+> on a lock screen a sibling or a neighbour can read. API: `/api/forecast/wellbeing`. Weekly job:
+> `forecast.wellbeing` (P26).
+> Not yet: a console watchlist page, a welfare-lead role separate from `principal`, and any signal
+> from outside school — family illness, money trouble, a bereavement — which is often the whole story.
+---
+## Year 5 · Intelligence (after year 4)
+### Fee forecasting and cash-flow projection — shipped
+> **Status (7 Sep 2026): implemented.** `forecast.cashFlow` projects three to six months: what the
+> active fee structures and the agreed instalment plans will bill each month, what this school —
+> on its own collection record, never a rule of thumb — is likely to collect against it, what the
+> arrears already on the books are worth at their own recovery rate, and what payroll and the
+> ordinary monthly bills take back out. The collection rate counts only invoices that have already
+> fallen due, because counting a bill raised last week as unpaid makes a punctual school look
+> hopeless and every figure below it is then wrong. Opening cash comes from the posted journal lines
+> on the accounts the bank and cash records point at, not from a typed-in number, so the projection
+> starts where the ledger is. Every response carries `assumptions` — the rate used and what it was
+> worked out from, the months of history actually found, the payroll basis, the roll — and
+> `blindSpots`: no fee structure, no approved payroll run, no expenses recorded, grants and MPO
+> subvention, and the fact that the roll is held at today's number. Rates are rounded before they are
+> used, not only before they are printed, so the percentage shown reproduces the figures a head
+> teacher checks with a calculator. `fallsDueInMonth` is shared with `FeesService` rather than copied,
+> so the forecast cannot drift from the invoice run. API: `/api/forecast/cash-flow`.
+> Not yet: a console page with the month-by-month chart, multi-currency, scenario comparison
+> ("what if we raise tuition 10%"), and grants and donations as projected income.
+### Staffing forecast — shipped
+> **Status (7 Sep 2026): implemented.** `forecast.staffing` reads the published timetable and the
+> leavers on record and reports, by subject, how many periods a week will have nobody to teach them —
+> slots with no teacher at all, plus slots held by somebody leaving inside the horizon, including
+> anyone who has already gone and whose classes were never reassigned, which is the commonest version
+> of this and the one nobody notices until a Sunday morning. Spare capacity is counted across a
+> teacher's whole week rather than per subject, so the arithmetic does not over-hire, and who could
+> cover a subject is inferred only from who already teaches it in the grid — the system holds no
+> qualifications, and guessing from a designation would put a Bangla teacher in front of a chemistry
+> practical. Sections over capacity are reported beside it, because splitting one needs a teacher the
+> timetable does not know about yet. The assumed full week is a stated, adjustable assumption
+> (30 periods) shown next to this school's busiest actual load. API: `/api/forecast/staffing`.
+> Monthly job: `forecast.monthly` (P24, P25) — it messages the office and emits an event; it never
+> raises an invoice, opens a vacancy or reassigns a period.
+> Not yet: qualification and training records feeding the cover inference, a hiring pipeline that
+> turns a gap into a job posting for a person to approve, and substitution load over the term.
 
 ---
 

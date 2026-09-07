@@ -6992,7 +6992,7 @@ CREATE TABLE `risk_scores` (
   KEY `ix_risk_scores_student_id` (`student_id`),
   KEY `ix_risk_scores_acknowledged_by` (`acknowledged_by`),
   UNIQUE KEY `uq_risk_scores_student_id_risk_type` (`student_id`, `risk_type`),
-  CHECK (`risk_type` IN ('dropout', 'fee_default', 'result_decline', 'attendance'))
+  CHECK (`risk_type` IN ('dropout', 'fee_default', 'result_decline', 'attendance', 'wellbeing'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Predicted risks per student with explanation, refreshed weekly.';
 
 CREATE TABLE `anomaly_alerts` (

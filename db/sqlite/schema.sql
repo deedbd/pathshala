@@ -6988,7 +6988,7 @@ CREATE TABLE `risk_scores` (
   `updated_at` TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
   PRIMARY KEY (`id`),
   UNIQUE (`student_id`, `risk_type`),
-  CHECK (`risk_type` IN ('dropout', 'fee_default', 'result_decline', 'attendance'))
+  CHECK (`risk_type` IN ('dropout', 'fee_default', 'result_decline', 'attendance', 'wellbeing'))
 );
 CREATE INDEX `ix_risk_scores_school_id` ON `risk_scores` (`school_id`);
 CREATE INDEX `ix_risk_scores_student_id` ON `risk_scores` (`student_id`);
