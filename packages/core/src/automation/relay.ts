@@ -65,14 +65,18 @@ export class Relay {
     if (done) return true;
     try {
       await fn();
-      await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, processed_at: nowSql() });
+      await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, attempts: 1, processed_at: nowSql() });
       return true;
     } catch (e) {
-      const attempts = Number(await this.db.count('event_consumptions', { consumer: `${consumer}:failed`, event_uid: event.uid }));
-      this.log.error(`consumer ${consumer} failed on ${event.type} ${event.uid} (attempt ${attempts + 1})`, e);
-      await this.db.insert('event_consumptions', { id: ulid(), consumer: `${consumer}:failed`, event_uid: event.uid, processed_at: nowSql() });
-      if (attempts + 1 >= 5) { // give up: record and let the event publish so the queue does not stall
-        await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, processed_at: nowSql() });
+      // attempts live on one row per (consumer, event): a second failure must not collide on the unique key
+      const failed = `${consumer}:failed`;
+      const prior = await this.db.findOne<{ id: string; attempts: number }>('event_consumptions', { consumer: failed, event_uid: event.uid });
+      const attempts = prior ? Number(prior.attempts) + 1 : 1;
+      this.log.error(`consumer ${consumer} failed on ${event.type} ${event.uid} (attempt ${attempts})`, e);
+      if (prior) await this.db.update('event_consumptions', { attempts, processed_at: nowSql() }, { id: prior.id });
+      else await this.db.insert('event_consumptions', { id: ulid(), consumer: failed, event_uid: event.uid, attempts, processed_at: nowSql() });
+      if (attempts >= 5) { // give up: record and let the event publish so the queue does not stall
+        await this.db.insert('event_consumptions', { id: ulid(), consumer, event_uid: event.uid, attempts, processed_at: nowSql() });
         return true;
       }
       return false;

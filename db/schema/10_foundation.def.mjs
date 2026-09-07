@@ -207,9 +207,10 @@ export default [
     published_at   dt i
     version        small ! =1
   `, index:[['aggregate_type','aggregate_id']] },
-  event_consumptions:{ tenant:false, ts:false, desc:'Idempotency: consumer × event processed once.', cols:`
+  event_consumptions:{ tenant:false, ts:false, desc:'Idempotency: consumer × event processed once; failures count their attempts on one row.', cols:`
     consumer     str(80) !
     event_uid    str(36) !
+    attempts     small ! =1
     processed_at dt ! =now
   `, unique:[['consumer','event_uid']] },
   automation_rules:{ desc:'WHEN trigger IF conditions (JSONLogic) THEN actions. Seeded system defaults are editable, not deletable.', cols:`

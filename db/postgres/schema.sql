@@ -375,6 +375,7 @@ CREATE TABLE IF NOT EXISTS "event_consumptions" (
   "id" CHAR(26) NOT NULL,
   "consumer" VARCHAR(80) NOT NULL,
   "event_uid" VARCHAR(36) NOT NULL,
+  "attempts" SMALLINT NOT NULL DEFAULT 1,
   "processed_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY ("id"),
   UNIQUE ("consumer", "event_uid")

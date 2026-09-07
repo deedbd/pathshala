@@ -235,7 +235,10 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
   // A5: once a class's results are in, the merit list follows if the campaign asks for it
   h.on('test.results_entered', 'compute-merit', async e => {
     const campaign = await d.db.findOne<{ auto_merit_list: unknown }>('admission_campaigns', { id: e.payload.campaignId });
-    if (campaign && Number(campaign.auto_merit_list)) await d.admissions.computeMerit(e.schoolId, e.payload.campaignId, e.payload.classId);
+    if (!campaign || !Number(campaign.auto_merit_list)) return;
+    // wait for the last mark of the class: ranking half a cohort would hand out the wrong seats
+    if (!(await d.admissions.readyForMerit(e.schoolId, e.payload.campaignId, e.payload.classId))) return;
+    await d.admissions.computeMerit(e.schoolId, e.payload.campaignId, e.payload.classId);
   });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

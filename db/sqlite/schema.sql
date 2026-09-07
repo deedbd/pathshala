@@ -376,6 +376,7 @@ CREATE TABLE `event_consumptions` (
   `id` TEXT NOT NULL,
   `consumer` TEXT NOT NULL,
   `event_uid` TEXT NOT NULL,
+  `attempts` INTEGER NOT NULL DEFAULT 1,
   `processed_at` TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
   PRIMARY KEY (`id`),
   UNIQUE (`consumer`, `event_uid`)

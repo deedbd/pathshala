@@ -16,13 +16,14 @@
     "check:native": "node scripts/check-native.mjs",
     "release:cpanel": "node scripts/build-release.mjs",
     "verify:release": "node scripts/verify-release.mjs",
-    "smoke": "node --test --test-concurrency=1 tests/smoke.test.mjs tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs",
+    "smoke": "node --test --test-concurrency=1 tests/smoke.test.mjs tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs",
     "test:phase0": "node --test --test-concurrency=1 tests/smoke.test.mjs",
     "test:phase1": "node --test --test-concurrency=1 tests/phase1.test.mjs",
     "test:phase2": "node --test --test-concurrency=1 tests/phase2.test.mjs",
     "test:phase3": "node --test --test-concurrency=1 tests/phase3.test.mjs",
     "test:phase4": "node --test --test-concurrency=1 tests/phase4.test.mjs",
-    "test:phase5": "node --test --test-concurrency=1 tests/phase5.test.mjs"
+    "test:phase5": "node --test --test-concurrency=1 tests/phase5.test.mjs",
+    "test:phase6": "node --test --test-concurrency=1 tests/phase6.test.mjs"
   },
   "devDependencies": {
     "archiver": "7.0.1",

@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 350 tables · 4045 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 350 tables · 4046 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -353,13 +353,14 @@ Domain events written in the same transaction as the change. Relay publishes to 
 | version | small | required · default 1 |
 
 ### `event_consumptions`
-Idempotency: consumer × event processed once.
+Idempotency: consumer × event processed once; failures count their attempts on one row.
 
 | Column | Type | Notes |
 |---|---|---|
 | id | ulid | required · ULID primary key |
 | consumer | str(80) | required |
 | event_uid | str(36) | required |
+| attempts | small | required · default 1 |
 | processed_at | dt | required · default now |
 
 ### `automation_rules`

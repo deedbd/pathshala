@@ -36,11 +36,11 @@ export class AdmissionsService {
 
   // ---------- campaigns ----------
   async campaigns(schoolId: string) { return this.db.findMany<Row>('admission_campaigns', { school_id: schoolId }, { orderBy: 'opens_at DESC', limit: 50 }); }
-  async campaign(schoolId: string, id: string) {
+  async campaign(schoolId: string, id: string): Promise<Row & { classes: Row[] }> {
     const c = await this.db.findOne<Row>('admission_campaigns', { id, school_id: schoolId });
     if (!c) throw notFound('campaign');
     const classes = await this.db.query<Row>(`SELECT cc.*, c.name AS class_name, c.numeric_level, (SELECT COUNT(*) FROM admission_applications a WHERE a.campaign_id = cc.campaign_id AND a.class_id = cc.class_id AND a.status NOT IN ('draft','rejected','withdrawn')) AS applicants FROM admission_campaign_classes cc JOIN classes c ON c.id = cc.class_id WHERE cc.campaign_id = ? ORDER BY c.numeric_level`, [id]);
-    return { ...c, classes };
+    return { ...c, classes } as Row & { classes: Row[] };
   }
   async createCampaign(schoolId: string, c: CampaignInput) {
     const year = await this.academic.requireYear(schoolId, c.academicYearId);
@@ -77,7 +77,7 @@ export class AdmissionsService {
     const e = await this.db.findOne<Row>('admission_enquiries', { id: enquiryId, school_id: schoolId });
     if (!e) throw notFound('enquiry');
     if (e.assigned_to) return String(e.assigned_to);
-    const counsellors = await this.db.query<Row>(`SELECT s.id, (SELECT COUNT(*) FROM admission_enquiries q WHERE q.assigned_to = s.id AND q.status IN ('new','contacted','visited')) AS load FROM staff s WHERE s.school_id = ? AND s.status IN ('active','probation') AND s.staff_category IN ('admin','non_teaching') ORDER BY load ASC, s.id ASC LIMIT 1`, [schoolId]);
+    const counsellors = await this.db.query<Row>(`SELECT s.id, (SELECT COUNT(*) FROM admission_enquiries q WHERE q.assigned_to = s.id AND q.status IN ('new','contacted','visited')) AS open_leads FROM staff s WHERE s.school_id = ? AND s.status IN ('active','probation') AND s.staff_category IN ('admin','non_teaching') ORDER BY open_leads ASC, s.id ASC LIMIT 1`, [schoolId]);
     const staffId = counsellors[0] ? String(counsellors[0].id) : null;
     await this.db.update('admission_enquiries', { assigned_to: staffId, updated_at: nowSql() }, { id: enquiryId });
     return staffId;
@@ -212,12 +212,20 @@ export class AdmissionsService {
    * lottery draws a number, first-come uses the submission time. A sibling already in the school wins a
    * tie, then the older child. Everyone beyond the seats is waitlisted in the same order.
    */
+  /** A5's condition: nobody in this class is still waiting for a mark. */
+  async readyForMerit(schoolId: string, campaignId: string, classId: string) {
+    const pending = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_applications a WHERE a.school_id = ? AND a.campaign_id = ? AND a.class_id = ? AND a.status IN ('submitted','screening','test_scheduled') AND a.test_score IS NULL`, [schoolId, campaignId, classId]);
+    return Number(pending[0]?.n ?? 0) === 0;
+  }
   async computeMerit(schoolId: string, campaignId: string, classId: string) {
     const c = await this.db.findOne<Row>('admission_campaigns', { id: campaignId, school_id: schoolId });
     if (!c) throw notFound('campaign');
     const seatRow = await this.db.findOne<Row>('admission_campaign_classes', { campaign_id: campaignId, class_id: classId });
     if (!seatRow) throw badRequest('that class is not part of this admission');
-    const seats = Number(seatRow.seats);
+    // seats already held by an offer or an enrolment are not up for grabs again, and those applicants
+    // keep the rank they were given: recomputing must never unseat somebody who has been told they are in
+    const taken = Number((await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND status IN ('offered','accepted','enrolled')`, [schoolId, campaignId, classId]))[0]?.n ?? 0);
+    const seats = Math.max(0, Number(seatRow.seats) - taken);
     const apps = await this.db.query<Row>(`SELECT * FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND status IN ('submitted','screening','test_scheduled','tested','shortlisted','waitlisted') ORDER BY id`, [schoolId, campaignId, classId]);
     if (!apps.length) return { ranked: 0, shortlisted: 0, waitlisted: 0 };
     const mode = String(c.selection_mode);
@@ -241,7 +249,7 @@ export class AdmissionsService {
         const a = sorted[i]!;
         const inSeat = i < seats;
         await tx.update('admission_applications', {
-          merit_rank: i + 1, lottery_no: mode === 'lottery' ? String(lottery.get(String(a.id))).padStart(6, '0') : null,
+          merit_rank: taken + i + 1, lottery_no: mode === 'lottery' ? String(lottery.get(String(a.id))).padStart(6, '0') : null,
           status: inSeat ? 'shortlisted' : 'waitlisted', waitlist_position: inSeat ? null : i - seats + 1, updated_at: nowSql(),
         }, { id: String(a.id) });
         if (inSeat) shortlisted++; else waitlisted++;
@@ -264,8 +272,22 @@ export class AdmissionsService {
     if (!c) throw notFound('campaign');
     const apps = await this.db.query<Row>(`SELECT * FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND status = 'shortlisted'${classId ? ' AND class_id = ?' : ''} ORDER BY class_id, merit_rank`, classId ? [schoolId, campaignId, classId] : [schoolId, campaignId]);
     let made = 0;
-    for (const a of apps) if (await this.offerTo(schoolId, c, a)) made++;
+    const seatsLeft = new Map<string, number>();
+    for (const a of apps) {
+      const cls = String(a.class_id);
+      if (!seatsLeft.has(cls)) seatsLeft.set(cls, await this.freeSeats(schoolId, campaignId, cls));
+      // an offer is a seat held: never promise more places than the class has
+      if ((seatsLeft.get(cls) ?? 0) <= 0) continue;
+      if (await this.offerTo(schoolId, c, a)) { made++; seatsLeft.set(cls, (seatsLeft.get(cls) ?? 0) - 1); }
+    }
     return { offers: made };
+  }
+  /** Seats not already held by a live offer or an enrolled student. */
+  async freeSeats(schoolId: string, campaignId: string, classId: string) {
+    const seat = await this.db.findOne<Row>('admission_campaign_classes', { campaign_id: campaignId, class_id: classId });
+    if (!seat) return 0;
+    const held = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_offers o JOIN admission_applications a ON a.id = o.application_id WHERE a.campaign_id = ? AND a.class_id = ? AND o.revoked_at IS NULL AND o.declined_at IS NULL`, [campaignId, classId]);
+    return Math.max(0, Number(seat.seats) - Number(held[0]?.n ?? 0));
   }
   private async offerTo(schoolId: string, c: Row, a: Row) {
     if (await this.db.findOne('admission_offers', { application_id: String(a.id) })) return false;
@@ -285,7 +307,7 @@ export class AdmissionsService {
     return true;
   }
   private async admissionFeeFor(schoolId: string, classId: string, yearId: string) {
-    const rows = await this.db.query<{ amount: number }>(`SELECT i.amount FROM fee_structure_items i JOIN fee_structures s ON s.id = i.structure_id JOIN fee_heads h ON h.id = i.fee_head_id WHERE s.school_id = ? AND s.class_id = ? AND s.academic_year_id = ? AND h.code = 'ADMISSION' LIMIT 1`, [schoolId, classId, yearId]);
+    const rows = await this.db.query<{ amount: number }>(`SELECT i.amount FROM fee_structure_items i JOIN fee_structures s ON s.id = i.fee_structure_id JOIN fee_heads h ON h.id = i.fee_head_id WHERE s.school_id = ? AND s.class_id = ? AND s.academic_year_id = ? AND h.code = 'ADMISSION' LIMIT 1`, [schoolId, classId, yearId]);
     return Number(rows[0]?.amount ?? 0);
   }
   async offers(schoolId: string, campaignId: string) {

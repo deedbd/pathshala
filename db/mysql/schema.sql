@@ -377,10 +377,11 @@ CREATE TABLE `event_consumptions` (
   `id` CHAR(26) NOT NULL COMMENT 'ULID primary key',
   `consumer` VARCHAR(80) NOT NULL,
   `event_uid` VARCHAR(36) NOT NULL,
+  `attempts` SMALLINT NOT NULL DEFAULT 1,
   `processed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_event_consumptions_consumer_event_uid` (`consumer`, `event_uid`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Idempotency: consumer × event processed once.';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Idempotency: consumer × event processed once; failures count their attempts on one row.';
 
 CREATE TABLE `automation_rules` (
   `id` CHAR(26) NOT NULL COMMENT 'ULID primary key',
