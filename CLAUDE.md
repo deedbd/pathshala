@@ -31,6 +31,7 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Monorepo: pnpm 12 + Turborepo. `apps/server` (Express 5, Passenger startup `server.js`), `apps/web` (React Router 7 SSR), `apps/installer` (`install.php`), `packages/db|core|adapters|events|schemas|ui`. See README.md for the layout.
 - `pnpm install && pnpm build && pnpm smoke` — the smoke test (`tests/smoke.test.mjs`) is the Phase 0 exit criterion: installer → school → rule → SMS + PDF → scheduler → HTTP API. CI runs it on SQLite, MySQL 8 and Postgres 16.
 - After editing `db/schema/*.def.mjs` run `pnpm db:generate` (SQL for 3 engines + schema.json + seeds JSON from docs/AUTOMATION.md + Drizzle tables). CI fails if generated files are stale.
+- Updating a live install: `node scripts/update.mjs --zip <release.zip> --root <public_html>` backs up the database, keeps the running `app/`, `db/`, `index.php` and `VERSION`, extracts the new zip over the top (never `.env`, `uploads/` or `storage/`), boots it on a spare port and rolls back if `/_health` does not answer. `--rollback` undoes it later; `--extracted` covers a host with no `unzip`, and says plainly that rollback is then unavailable.
 - Release: `pnpm release:cpanel` → `release/pathshala-<ver>-cpanel.zip`, then `pnpm verify:release` (boots the built zip itself and drives the installer through it). `app/node_modules` must stay **flat and symlink-free** — cPanel's File Manager drops symlinks on extract, so pnpm's linked layout ships a broken app; the build fails if a symlink or unresolvable runtime import survives. Never judge a release by booting `apps/server/server.js` with `APP_ROOT` at the release: that uses the source tree's modules. `docker compose up` boots the same build on Postgres.
 - Rule of thumb in code: `Db` (packages/db) is dialect-agnostic — `?` placeholders, UTC `'YYYY-MM-DD HH:MM:SS'` strings, JSON columns always hold valid JSON (stringify scalars). Services take `schoolId` explicitly; the request context (`runWithContext`) carries actor/tenant for audit.
 - Web routes use typegen types (`import type { Route } from './+types/<name>'`); `context.app` is the `App` from `@pathshala/core`. Body parsers are mounted only under `/api` and `/cron` — React Router actions read the raw stream.
@@ -57,9 +58,8 @@ All nine phases of `docs/PLAN.md` are implemented and each has a test suite that
 
 1. Run the installer on an actual Namecheap Stellar account and time it end to end (Phase 0's exit criterion has only been proven locally and in CI).
 2. Take one pilot school live: Cloudflare and Turnstile against a real site key, a real SMS gateway, a real bKash or SSLCommerz merchant account.
-3. The update-with-rollback script (`scripts/update.mjs`): back up, swap the release, health-check, and restore the previous release if the check fails.
-4. Google Drive and S3 backup targets (Dropbox works today).
-5. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
+3. Google Drive and S3 backup targets (Dropbox works today).
+4. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
 
 `pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres). `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
 
