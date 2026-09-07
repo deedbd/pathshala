@@ -9,7 +9,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const [outlets, products, sales, orders, funds, awards, campaigns, donors, donations, alumni, batches, mentorships, jobs, competitions, students] = await Promise.all([
     context.app.commerce.outlets(sid), context.app.commerce.products(sid), context.app.commerce.sales(sid), context.app.commerce.orders(sid),
     context.app.giving.funds(sid), context.app.giving.awards(sid), context.app.giving.campaigns(sid), context.app.giving.donors(sid), context.app.giving.donations(sid),
-    context.app.alumni.directory(sid), context.app.alumni.batches(sid), context.app.alumni.pairs(sid, { activeOnly: true }), context.app.alumni.jobs(sid),
+    context.app.alumni.directory(sid), context.app.alumni.batches(sid), context.app.alumni.pairs(sid, { activeOnly: true }), context.app.alumni.jobBoard(sid),
     context.app.engagement.competitions(sid), context.app.people.students(sid, { limit: 300 }),
   ]);
   const dayBook = outlets[0] ? await context.app.commerce.dayBook(sid, String(outlets[0].id)) : null;

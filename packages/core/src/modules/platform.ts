@@ -62,15 +62,42 @@ export class PlatformService {
       }
       await pipeline(Readable.from(lines()), createGzip(), fs.createWriteStream(file));
       const size = fs.statSync(file).size;
+      // A backup nobody has read is a rumour. Reading it back costs a second and catches the two
+      // failures that otherwise surface only on the day the school actually needs it: a truncated
+      // gzip stream, and a file that is technically valid but empty because the query found nothing.
+      const check = this.verify(file);
+      if (!check.ok) throw new Error(`the backup did not read back: ${check.error}`);
       let stored = file;
       if (target !== 'local') stored = await this.upload(target, file, name);
       await this.db.update('backups', { status: 'success', size_bytes: size, file_path: stored, finished_at: nowSql(), updated_at: nowSql() }, { id });
-      await this.outbox.emitNow({ type: 'backup.finished', schoolId: schoolId ?? '', aggregateType: 'platform.backup', aggregateId: id, payload: { backupId: id, kind, target, sizeBytes: size, path: stored } as never });
-      return { id, file: stored, sizeBytes: size, target };
+      await this.outbox.emitNow({ type: 'backup.finished', schoolId: schoolId ?? '', aggregateType: 'platform.backup', aggregateId: id, payload: { backupId: id, status: 'success', sizeBytes: size, kind, target, path: stored, tables: check.tables, rows: check.rows } as never });
+      return { id, file: stored, sizeBytes: size, target, tables: check.tables, rows: check.rows };
     } catch (e) {
       await this.db.update('backups', { status: 'failed', error: (e as Error).message.slice(0, 2000), finished_at: nowSql(), updated_at: nowSql() }, { id });
+      await this.outbox.emitNow({ type: 'backup.finished', schoolId: schoolId ?? '', aggregateType: 'platform.backup', aggregateId: id, payload: { backupId: id, status: 'failed', sizeBytes: null } as never });
       throw e;
     }
+  }
+  /**
+   * Reads a backup file back the way `restore()` would, without writing anything: the same gunzip,
+   * the same header check, the same line parsing. It is the restore rehearsal a school will never
+   * think to run, and it is the difference between "the backup ran" and "the backup is a backup".
+   */
+  verify(file: string): { ok: boolean; tables: number; rows: number; error: string | null } {
+    const full = path.isAbsolute(file) ? file : path.join(this.rootDir, 'storage', 'backups', file);
+    try {
+      if (!fs.existsSync(full)) return { ok: false, tables: 0, rows: 0, error: 'the file is not there' };
+      const lines = gunzipSync(fs.readFileSync(full)).toString('utf8').split('\n').filter(Boolean);
+      const header = JSON.parse(lines[0] ?? '{}') as { pathshala?: number };
+      if (!header.pathshala) return { ok: false, tables: 0, rows: 0, error: 'no Pathshala header on the first line' };
+      const tables = new Set<string>();
+      for (const line of lines.slice(1)) {
+        const { t } = JSON.parse(line) as { t: string; r: Row };
+        tables.add(t);
+      }
+      if (!tables.size) return { ok: false, tables: 0, rows: 0, error: 'the file holds no rows at all' };
+      return { ok: true, tables: tables.size, rows: lines.length - 1, error: null };
+    } catch (e) { return { ok: false, tables: 0, rows: 0, error: (e as Error).message.slice(0, 200) }; }
   }
   /**
    * Tables in the order the schema creates them, which is also the order that satisfies the foreign
@@ -244,13 +271,149 @@ export class PlatformService {
     };
   }
 
+  // ---------- watchdog ----------
+  /**
+   * Records one health check. `system_health.check_key` is unique, so a check that inserted a new
+   * row every night would fail on the second night — quietly, since a scheduled job that throws is
+   * only written to its own `last_status`. The state of a check is one row that gets overwritten.
+   */
+  async recordHealth(checkKey: string, status: 'ok' | 'warn' | 'fail', detail: Record<string, unknown>) {
+    const row = { status, detail: detail as never, checked_at: nowSql() };
+    const ex = await this.db.findOne<{ id: string }>('system_health', { check_key: checkKey });
+    if (ex) await this.db.update('system_health', row, { id: ex.id });
+    else await this.db.insert('system_health', { id: ulid(), check_key: checkKey, ...row });
+  }
+  /**
+   * Every job in the seeded catalogue has a row for this school. It matters after an update: the
+   * seeds only run when a school is provisioned, so a school installed last year would never gain
+   * the automations shipped this year — they would sit in the code with nothing to call them.
+   */
+  private catalogue: { job_key: string; cron_expr: string; rows: string }[] | null = null;
+  async syncScheduledJobs(schoolId: string) {
+    if (!this.catalogue) {
+      try { this.catalogue = JSON.parse(fs.readFileSync(path.join(this.rootDir, 'db', 'seeds', 'scheduled_jobs.json'), 'utf8')) as { job_key: string; cron_expr: string; rows: string }[]; }
+      catch { this.catalogue = []; }
+    }
+    const added: string[] = [];
+    for (const j of this.catalogue) {
+      if (await this.db.findOne('scheduled_jobs', { school_id: schoolId, job_key: j.job_key })) continue;
+      await this.db.insert('scheduled_jobs', { id: ulid(), school_id: schoolId, job_key: j.job_key, cron_expr: j.cron_expr, timezone: 'Asia/Dhaka', payload: { rows: j.rows } as never, is_active: true });
+      added.push(j.job_key);
+    }
+    return added;
+  }
+  /**
+   * What the machinery itself is doing, checked by the machinery itself.
+   *
+   * Everything else in this system watches the school. Nothing watched the watcher: a scheduled job
+   * that threw wrote `failed` into its own row and told nobody, a backup that could not be written
+   * did the same, and an event whose consumer gave up after five attempts was marked consumed so the
+   * queue would not stall — correctly, but silently. On a shared host with no monitoring, silence is
+   * indistinguishable from working, and the first sign of a fortnight of missed invoices is a parent
+   * asking why nobody sent a bill.
+   *
+   * Each finding is one message per kind, at most one in three days, so a fault that takes a week to
+   * fix does not train the office to ignore the messages about it.
+   */
+  async watchdog(schoolId: string) {
+    const now = Date.now();
+    const findings: { kind: 'scheduled_job' | 'outbox' | 'backup' | 'storage' | 'notifications'; detail: string; count: number }[] = [];
+    const tell = async (kind: typeof findings[number]['kind'], title: string, body: string, count: number) => {
+      findings.push({ kind, detail: body, count });
+      const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 72, { channels: ['in_app', 'email'], eventKey: 'platform.stalled', title, body, entityType: 'platform.watchdog', entityId: kind });
+      // the event follows the message, not the check: a fault that lasts a week would otherwise put
+      // an event on the bus every hour, and every webhook and rule listening would hear all of them
+      if (sent.length) await this.outbox.emitNow({ type: 'automation.stalled', schoolId, aggregateType: 'platform.watchdog', aggregateId: kind, payload: { kind, detail: body.slice(0, 400), count } });
+    };
+
+    const added = await this.syncScheduledJobs(schoolId);
+
+    // 1. a job that failed, or one whose turn came and went. The watchdog never reports itself.
+    // "Overdue" also has to mean "and has not run since": on a shared host the scheduler is a
+    // heartbeat, so after a quiet weekend every job is overdue for the few seconds it takes the
+    // tick to work through them — and this pass is one of the jobs in that same tick. Only a job
+    // that has not run for a day at all is actually stopped.
+    const overdue = nowSql(new Date(now - 6 * 3600_000));
+    const silentFor = nowSql(new Date(now - 24 * 3600_000));
+    const stalled = await this.db.query<Row>(
+      `SELECT job_key, last_status, last_run_at, next_run_at FROM scheduled_jobs
+       WHERE school_id = ? AND is_active = TRUE AND job_key <> 'platform.watchdog'
+         AND (last_status = 'failed'
+              OR (next_run_at IS NOT NULL AND next_run_at < ? AND (last_run_at IS NULL OR last_run_at < ?)))
+       ORDER BY job_key LIMIT 20`, [schoolId, overdue, silentFor]);
+    if (stalled.length) {
+      const names = stalled.map(r => `${String(r.job_key)}${String(r.last_status) === 'failed' ? ' (failed)' : ' (overdue)'}`).join(', ');
+      await tell('scheduled_job', `${stalled.length} automation${stalled.length === 1 ? ' has' : 's have'} stopped running`, `${names}. Nothing they do is happening: the Automation page shows the error against each one.`, stalled.length);
+    }
+
+    // 2. events written but never published, and consumers that gave up on one
+    const [pending] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM outbox_events WHERE school_id = ? AND published_at IS NULL AND occurred_at < ?`, [schoolId, nowSql(new Date(now - 30 * 60_000))]);
+    if (Number(pending?.n ?? 0) > 0) await tell('outbox', 'Automation events are not being delivered', `${Number(pending!.n)} events have been waiting more than half an hour. The relay is not running, or one of them keeps failing.`, Number(pending!.n));
+    const [givenUp] = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM event_consumptions c JOIN outbox_events e ON e.event_uid = c.event_uid
+       WHERE e.school_id = ? AND c.consumer LIKE '%:failed' AND c.attempts >= 5 AND c.processed_at >= ?`, [schoolId, nowSql(new Date(now - 86_400_000))]);
+    if (Number(givenUp?.n ?? 0) > 0) await tell('outbox', 'Some automations gave up on an event', `${Number(givenUp!.n)} events were abandoned after five attempts in the last day. Whatever they were meant to do did not happen.`, Number(givenUp!.n));
+
+    // 3. the backup. A school that has never taken one is not warned; one that stopped taking them is.
+    const last = await this.db.findOne<Row>('backups', { school_id: schoolId, status: 'success' }, { orderBy: 'started_at DESC' });
+    const anyBackup = await this.db.findOne<Row>('backups', { school_id: schoolId }, { orderBy: 'started_at DESC' });
+    if (anyBackup && (!last || String(last.started_at) < nowSql(new Date(now - 48 * 3600_000)))) {
+      await tell('backup', 'The nightly backup has not worked', last ? `The last good backup was ${String(last.started_at).slice(0, 16)}. Everything since then is only in the database.` : 'No backup has ever finished successfully. Everything is only in the database.', 1);
+    }
+    await this.recordHealth(`backup:${schoolId}`, last && String(last.started_at) >= nowSql(new Date(now - 48 * 3600_000)) ? 'ok' : anyBackup ? 'fail' : 'warn', { lastAt: last ? String(last.started_at) : null });
+
+    // 4. messages queued and never sent — the delivery job was lost, or the process died holding it.
+    // This one is repaired rather than reported: re-queueing is exactly what a person would do.
+    const stuck = await this.db.query<{ id: string }>(
+      `SELECT id FROM notifications WHERE school_id = ? AND status = 'queued' AND scheduled_for < ? ORDER BY scheduled_for LIMIT 200`, [schoolId, nowSql(new Date(now - 30 * 60_000))]);
+    if (stuck.length) {
+      await this.adapters.queue.push({ name: 'notifications.deliver', queue: 'notifications', schoolId, payload: { ids: stuck.map(r => r.id) }, triggeredBy: 'platform.watchdog' });
+      // told only when it keeps happening: one lost tick is noise, a hundred stuck messages is not
+      if (stuck.length >= 100) await tell('notifications', 'Messages are queued and not going out', `${stuck.length} messages have been waiting more than half an hour. They have been queued again; if this repeats, the SMS or email provider is refusing them.`, stuck.length);
+    }
+
+    // 5. the disk. On shared hosting this is the failure that takes the whole site down at 2 a.m.
+    // Walking every uploaded file is the one expensive thing in this pass, and a disk does not fill
+    // up in an hour, so it is measured four times a day rather than twenty-four.
+    const lastCheck = await this.db.findOne<Row>('system_health', { check_key: `storage:${schoolId}` });
+    if (lastCheck && String(lastCheck.checked_at) > nowSql(new Date(now - 6 * 3600_000))) return { catalogueAdded: added, findings };
+    const uploads = path.join(this.rootDir, 'uploads');
+    const usedMb = Math.round((fs.existsSync(uploads) ? dirSize(uploads) : 0) / 1_048_576);
+    const warnMb = Number((await this.settings.get<number>(schoolId, 'platform.storage_warn_mb')) ?? 2048);
+    const free = await this.adapters.storage.freeBytes().catch(() => null);
+    const freeMb = free == null ? null : Math.round(free / 1_048_576);
+    if (usedMb >= warnMb || (freeMb != null && freeMb < 200)) {
+      await tell('storage', 'Storage is filling up', `Uploads are ${usedMb} MB${freeMb == null ? '' : ` and ${freeMb} MB is free on the host`}. Old files and backups are worth clearing before the disk is full.`, usedMb);
+    }
+    await this.recordHealth(`storage:${schoolId}`, usedMb >= warnMb ? 'warn' : 'ok', { usedMb, warnMb, freeMb });
+    return { catalogueAdded: added, findings };
+  }
+
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // N10's other half: a nightly backup, kept for as long as the school asked
+      /**
+       * Hourly: is the machinery itself alive? Repairs what it can (missing job rows, messages stuck
+       * in the queue) and reports — once every three days per kind — what only a person can fix.
+       */
+      'platform.watchdog': async ({ schoolId }) => this.watchdog(schoolId),
+      // N10's other half: a nightly backup, read back before it is trusted, kept for as long as the
+      // school asked. A backup that cannot be written is told to the office rather than left in a
+      // job row nobody opens — it is the one failure that is only discovered when it is too late.
       'platform.backup': async ({ schoolId }) => {
         const target = (await this.settings.get<string>(schoolId, 'backup.target')) ?? 'local';
-        const r = await this.backup(schoolId, { kind: 'database', target: target as 'local' });
+        let r: Awaited<ReturnType<PlatformService['backup']>>;
+        try {
+          r = await this.backup(schoolId, { kind: 'database', target: target as 'local' });
+        } catch (e) {
+          await this.recordHealth(`backup:${schoolId}`, 'fail', { error: (e as Error).message.slice(0, 300), at: nowSql() });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 20, {
+            channels: ['in_app', 'email'], eventKey: 'platform.backup_failed', title: 'Tonight\'s backup did not work',
+            body: `${(e as Error).message.slice(0, 200)}. Until this is fixed the school's records exist in one place only.`,
+            entityType: 'platform.backup', entityId: schoolId,
+          });
+          throw e;
+        }
         const keep = Number((await this.settings.get<number>(schoolId, 'backup.keep_days')) ?? 14);
         const cutoff = new Date(Date.now() - keep * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
         const old = await this.db.query<Row>(`SELECT * FROM backups WHERE school_id = ? AND started_at < ? AND status = 'success'`, [schoolId, cutoff]);
@@ -259,7 +422,8 @@ export class PlatformService {
           if (p && !p.startsWith('dropbox:') && fs.existsSync(p)) fs.rmSync(p, { force: true });
           await this.db.delete('backups', { id: String(b.id) });
         }
-        return { backupId: r.id, sizeBytes: r.sizeBytes, pruned: old.length };
+        await this.recordHealth(`backup:${schoolId}`, 'ok', { at: nowSql(), sizeBytes: r.sizeBytes, tables: r.tables, rows: r.rows, target });
+        return { backupId: r.id, sizeBytes: r.sizeBytes, tables: r.tables, rows: r.rows, pruned: old.length };
       },
     };
   }

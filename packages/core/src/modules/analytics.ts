@@ -170,6 +170,34 @@ export class AnalyticsService {
     }
     return { day, anomalies: found };
   }
+  /**
+   * Closes the alerts whose metric has come back to what this school normally does.
+   *
+   * An alert nobody closes is the same problem as an alert nobody reads. Attendance dipping on the
+   * day of a strike raises one correctly; three weeks later it is still open, sitting at the top of
+   * every dashboard, and the next real one arrives underneath it. Being back inside the tolerance on
+   * the most recent day is the machine's own test that the departure is over, so the machine closes
+   * its own alert — and says in the row that it did, rather than pretending a person looked.
+   */
+  async resolveRecoveredAlerts(schoolId: string, day = nowSql().slice(0, 10)) {
+    const open = await this.db.findMany<Row>('anomaly_alerts', { school_id: schoolId, status: 'open' }, { limit: 100 });
+    let resolved = 0;
+    for (const a of open) {
+      const history = await this.series(schoolId, String(a.metric_key), 15);
+      const latest = history[history.length - 1];
+      if (!latest || latest.period < String(a.detected_at).slice(0, 10)) continue;   // no newer reading than the alert
+      const past = history.filter(h => h.period !== latest.period).map(h => h.value);
+      if (past.length < 5) continue;
+      const baseline = AnalyticsService.median(past)!;
+      const spread = AnalyticsService.median(past.map(v => Math.abs(v - baseline)))!;
+      const tolerance = Math.max(spread * 3, Math.abs(baseline) * 0.15, 1);
+      if (Math.abs(latest.value - baseline) > tolerance) continue;
+      const details = { ...(json<Record<string, unknown>>(a.details) ?? {}), resolvedOn: latest.period, resolvedValue: latest.value, resolvedBy: 'analytics: back within the usual range' };
+      await this.db.update('anomaly_alerts', { status: 'resolved', details: details as never, updated_at: nowSql() }, { id: String(a.id) });
+      resolved++;
+    }
+    return { day, resolved };
+  }
   async resolveAlert(schoolId: string, alertId: string, status: 'acknowledged' | 'resolved') {
     if (!(await this.db.update('anomaly_alerts', { status, updated_at: nowSql() }, { id: alertId, school_id: schoolId }))) throw notFound('alert');
     return { id: alertId, status };
@@ -327,18 +355,51 @@ export class AnalyticsService {
     return { period, cohort: String(school.institution_type), metrics: out };
   }
 
+  /**
+   * Fills in the days nobody computed. On shared hosting the scheduler is a heartbeat: a school
+   * whose site nobody opened over Eid has no `kpi_daily` rows for those days, and the group total,
+   * the anomaly baseline and every chart quietly read that absence as a bad week. The register still
+   * holds what happened, so the days can be worked out afterwards — up to a fortnight, which is more
+   * than a holiday and less than a request can afford.
+   */
+  async backfill(schoolId: string, days = 14) {
+    const missing: string[] = [];
+    for (let back = days; back >= 1; back--) {
+      const day = new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10);
+      if (await this.db.findOne('kpi_daily', { school_id: schoolId, day })) continue;
+      missing.push(day);
+    }
+    for (const day of missing) await this.computeDay(schoolId, day);
+    return { filled: missing.length, days: missing };
+  }
+
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
       // the day's numbers, then what departs from this school's own habits, then who is slipping
       'analytics.daily': async ({ schoolId }) => {
         const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+        // days the heartbeat never woke for come first: an anomaly baseline built on a fortnight
+        // with holes in it compares today against a median of whatever days happened to be recorded
+        const filled = await this.backfill(schoolId);
         await this.computeDay(schoolId, yesterday);
         const today = await this.computeDay(schoolId);
         const anomalies = await this.detectAnomalies(schoolId, yesterday);
-        return { day: today.day, anomalies: anomalies.anomalies.length };
+        const recovered = await this.resolveRecoveredAlerts(schoolId, yesterday);
+        return { day: today.day, backfilled: filled.filled, anomalies: anomalies.anomalies.length, resolved: recovered.resolved };
       },
       'analytics.risk_scores': async ({ schoolId }) => this.computeRisks(schoolId),
+      /**
+       * Monthly: the cohort quartiles every school's benchmark page reads. They were only ever built
+       * when somebody called the endpoint, so the page was empty in every school that never did.
+       * The snapshot spans the whole installation, so only the school it was installed with builds
+       * it — the others would compute the same rows again for nothing.
+       */
+      'analytics.benchmarks': async ({ schoolId }) => {
+        const first = await this.db.findOne<Row>('schools', {}, { orderBy: 'created_at ASC, id ASC' });
+        if (!first || String(first.id) !== schoolId) return { skipped: 'not the founding school of this installation' };
+        return this.buildBenchmarks();
+      },
     };
   }
 

@@ -17,7 +17,8 @@ export default function Website() {
   const [drawer, setDrawer] = useState<'notice' | 'page' | null>(null); const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   const notice = (e: React.FormEvent<HTMLFormElement>) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/cms/notices', { method: 'POST', json: { title: f.title, body: f.body, noticeType: f.noticeType, isPinned: f.isPinned === 'on', publishAt: f.publishAt ? f.publishAt.replace('T', ' ') + ':00' : null } })); };
-  const page = (e: React.FormEvent<HTMLFormElement>) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/cms/pages', { method: 'POST', json: { title: f.title, slug: f.slug || undefined, locale: 'bn', status: 'published', blocks: [{ type: 'text', title: f.title, body: f.body, bodyBn: f.bodyBn }] } })); };
+  // a go-live date is the author's own confirmation: the page waits as a draft and publishes itself
+  const page = (e: React.FormEvent<HTMLFormElement>) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/cms/pages', { method: 'POST', json: { title: f.title, slug: f.slug || undefined, locale: 'bn', status: 'published', publishAt: f.publishAt ? f.publishAt.replace('T', ' ') + ':00' : null, blocks: [{ type: 'text', title: f.title, body: f.body, bodyBn: f.bodyBn }] } })); };
   return (
     <div>
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -44,6 +45,7 @@ export default function Website() {
         <form className="grid gap-3" onSubmit={page}>
           <Field label={tr('common.name')}><Input name="title" required /></Field><Field label="Slug" hint="e.g. about"><Input name="slug" className="num" /></Field>
           <Field label="Text (English)"><Textarea name="body" rows={5} /></Field><Field label="Text (Bangla)"><Textarea name="bodyBn" rows={5} lang="bn" /></Field>
+          <Field label="Go live (optional)" hint="Leave empty to publish now; a date keeps it a draft until then and the site publishes it itself."><Input name="publishAt" type="datetime-local" /></Field>
           <Button disabled={busy}>{tr('common.save')}</Button>
         </form>
       </Drawer>

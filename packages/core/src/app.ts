@@ -109,7 +109,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const people = new PeopleService(db, outbox, numbering, auth);
   const timetable = new TimetableService(db, outbox, academic);
   const curriculum = new CurriculumService(db, outbox, notifications);
-  const cms = new CmsService(db, outbox);
+  const cms = new CmsService(db, outbox, notifications);
   const portal = new PortalService(db, timetable, cms, files);
   const attendance = new AttendanceService(db, outbox, notifications, academic, approvals, adapters);
   const communication = new CommunicationService(db, outbox, notifications, adapters);
@@ -137,12 +137,12 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const analytics = new AnalyticsService(db, outbox, notifications);
   const forecast = new ForecastService(db, outbox, notifications, academic, analytics);
   const saas = new SaasService(db, outbox, notifications, numbering, adapters);
-  const marketplace = new MarketplaceService(db, outbox, log);
-  const ai = new AiService(db, outbox, settings, adapters);
+  const marketplace = new MarketplaceService(db, outbox, log, notifications);
+  const ai = new AiService(db, outbox, settings, adapters, notifications);
   // year 4: the only service that reads across tenants, and every crossing is gated inside it
   const groups = new GroupsService(db, outbox, notifications, people, analytics);
   // the voice line: an inbound IVR gateway drives it, so it needs the modules that hold the answers
-  const ivr = new IvrService(db, settings, outbox, people, frontOffice, attendance, assessment, ai, config.appKey, config.env);
+  const ivr = new IvrService(db, settings, outbox, people, frontOffice, attendance, assessment, ai, notifications, config.appKey, config.env);
   const college = new CollegeService(db, outbox, notifications, academic, people, fees, lms, assessment, documents);
   const adaptive = new AdaptiveService(db, outbox, notifications, academic, assessment, lms);
   const platform = new PlatformService(db, outbox, notifications, settings, adapters, config.rootDir, log);
@@ -206,6 +206,14 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(saas.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(college.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
+  // year-2+ services that had no scheduled work until the automation pass gave them some
+  for (const [key, fn] of Object.entries(cms.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(alumni.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(marketplace.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(ai.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(ivr.jobs())) adapters.scheduler.register(key, fn);
+  // groups is the only cross-tenant service: its nightly pass runs per head school, through its own gate
+  for (const [key, fn] of Object.entries(groups.jobs())) adapters.scheduler.register(key, fn);
   // a plugin's webhook is somebody else's server: the relay posts to it and gives up quickly
   marketplace.registerHooks(handlers, ['student.enrolled', 'payment.received', 'attendance.absent', 'result.published', 'invoice.created', 'staff.joined']);
   registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce, college });

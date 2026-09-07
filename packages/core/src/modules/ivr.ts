@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Db, Row } from '@pathshala/db';
 import { nowSql } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
+import type { NotificationService } from '../notifications.js';
 import type { SettingsService } from '../settings.js';
 import { decryptSecret, encryptSecret, normalizeBdPhone } from '../util.js';
 import { HttpError, badRequest } from '../context.js';
@@ -142,9 +144,47 @@ export class IvrService {
     private attendance: AttendanceService,
     private assessment: AssessmentService,
     private ai: AiService,
+    private notifications: NotificationService,
     private appKey: string,
     private env: NodeJS.ProcessEnv = process.env,
   ) {}
+
+  // ---------- scheduled ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      /**
+       * Weekly: a line that has gone quiet.
+       *
+       * An IVR fails in the one way nobody notices from inside the building. The gateway's number
+       * stops pointing here, or the shared secret is rotated at their end, and the school hears
+       * nothing at all — no error, no failed job, no complaint, because the guardians who use this
+       * line are the ones least likely to ring the office and say the automated line is broken. A
+       * week of silence on a line the school deliberately turned on is a broken line until somebody
+       * checks, so the office is told once and not again until it speaks.
+       */
+      'ivr.line_watch': async ({ schoolId }) => {
+        const configured = await this.settings.get<{ enc?: string }>(schoolId, 'ivr.webhook_secret');
+        if (!configured?.enc) return { configured: false };            // the school never turned the line on
+        const since = nowSql(new Date(Date.now() - 7 * 86_400_000));
+        const [calls] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM call_logs WHERE school_id = ? AND related_type = 'ivr.call' AND called_at >= ?`, [schoolId, since]);
+        const heard = Number(calls?.n ?? 0);
+        const alerted = await this.settings.get<string>(schoolId, 'ivr.silence_alerted_on');
+        if (heard > 0) {
+          if (alerted) await this.settings.set(schoolId, 'ivr.silence_alerted_on', null);   // it speaks again
+          return { configured: true, calls: heard, silent: false };
+        }
+        // one message per stretch of silence, not one a week for ever
+        if (alerted) return { configured: true, calls: 0, silent: true, alreadyTold: true };
+        await this.settings.set(schoolId, 'ivr.silence_alerted_on', nowSql().slice(0, 10));
+        await this.notifications.notifyRole(schoolId, 'admin', {
+          channels: ['in_app', 'email'], eventKey: 'ivr.line_silent', title: 'The voice line has had no calls for a week',
+          body: 'Nobody has reached the automated phone line in seven days. Ring it yourself: a line that answers nothing looks exactly like a line nobody uses, and guardians who cannot read have no other way in.',
+          entityType: 'ivr.line', entityId: schoolId,
+        });
+        return { configured: true, calls: 0, silent: true, alreadyTold: false };
+      },
+    };
+  }
 
   // ---------- the gateway's credentials ----------
   /**

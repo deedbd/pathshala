@@ -1,26 +1,36 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
+import type { NotificationService } from '../notifications.js';
 import { badRequest, notFound } from '../context.js';
 import { normalizeBdPhone, slugify } from '../util.js';
 
 export interface PageBlock { type: 'hero' | 'text' | 'notices' | 'admission_cta' | 'gallery' | 'contact' | 'stats' | 'results_lookup'; title?: string; titleBn?: string; body?: string; bodyBn?: string; image?: string | null; cta?: { label: string; labelBn?: string; href: string } | null; limit?: number }
-export interface PageInput { title: string; slug?: string; locale?: 'bn' | 'en'; blocks: PageBlock[]; seo?: { description?: string; image?: string } | null; isHome?: boolean; status?: 'draft' | 'published' }
+export interface PageInput { title: string; slug?: string; locale?: 'bn' | 'en'; blocks: PageBlock[]; seo?: { description?: string; image?: string } | null; isHome?: boolean; status?: 'draft' | 'published'; publishAt?: string | null }
 export interface EnquiryInput { studentName: string; guardianName: string; phone: string; email?: string | null; classId?: string | null; notes?: string | null; source?: string }
 
 /** School website: pages made of blocks, menus, published notices/posts, contact and admission-enquiry forms. */
 export class CmsService {
-  constructor(private db: Db, private outbox: OutboxService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService) {}
 
+  /**
+   * A page. `publishAt` in the future keeps it a draft with the date it should appear on: the
+   * scheduled pass publishes it when the day comes, exactly as a notice already worked. It is not
+   * the machine deciding to publish — the person who wrote the page said when, which is the whole of
+   * the confirmation a public page needs — and nothing else on the site is ever changed by a job.
+   */
   async savePage(schoolId: string, p: PageInput, id?: string) {
     const locale = p.locale ?? 'bn';
     const slug = p.slug ? slugify(p.slug) : slugify(p.title);
-    const row: Row = { title: p.title, slug, locale, blocks: p.blocks as never, seo: (p.seo ?? null) as never, is_home: !!p.isHome, status: p.status ?? 'draft', published_at: p.status === 'published' ? nowSql() : null };
+    const scheduled = !!p.publishAt && p.publishAt > nowSql();
+    const status = scheduled ? 'draft' : p.status ?? 'draft';
+    const row: Row = { title: p.title, slug, locale, blocks: p.blocks as never, seo: (p.seo ?? null) as never, is_home: !!p.isHome, status, published_at: scheduled ? p.publishAt! : status === 'published' ? nowSql() : null };
     await this.db.transaction(async tx => {
       if (p.isHome) await tx.update('cms_pages', { is_home: false }, { school_id: schoolId, locale });
       if (id) { const n = await tx.update('cms_pages', { ...row, updated_at: nowSql() }, { id, school_id: schoolId }); if (!n) throw notFound('page'); }
       else { id = ulid(); await tx.insert('cms_pages', { id, school_id: schoolId, ...row, author_id: null }); }
-      if (p.status === 'published') await this.outbox.emit(tx, { type: 'page.published', schoolId, aggregateType: 'cms.page', aggregateId: id, payload: { pageId: id, slug, locale } });
+      if (status === 'published') await this.outbox.emit(tx, { type: 'page.published', schoolId, aggregateType: 'cms.page', aggregateId: id, payload: { pageId: id, slug, locale } });
     });
     return id!;
   }
@@ -90,6 +100,51 @@ export class CmsService {
       await this.outbox.emit(tx, { type: 'contact.received', schoolId, aggregateType: 'cms.contact', aggregateId: id, payload: { messageId: id, name: m.name, phone: m.phone ?? null } });
     });
     return id;
+  }
+
+  // ---------- scheduled ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      /**
+       * Every ten minutes: the website keeps its own appointments.
+       *
+       * A notice could already be scheduled; a page could not, so "put the exam routine up on Sunday
+       * morning" meant somebody being at a desk on Sunday morning. A page whose author set a date is
+       * published on that date, and nothing else — no wording, no new page, no change to what is
+       * already up. The other two are things the office finds out about too late: a message from the
+       * website that nobody opened, and a domain whose certificate never came through.
+       */
+      'cms.scheduled_publish': async ({ schoolId }) => {
+        const now = nowSql();
+        const out = { pages: 0, posts: 0, chased: 0 };
+        const due = await this.db.query<Row>(`SELECT id, slug, locale, title FROM cms_pages WHERE school_id = ? AND status = 'draft' AND published_at IS NOT NULL AND published_at <= ? AND deleted_at IS NULL LIMIT 50`, [schoolId, now]);
+        for (const p of due) {
+          await this.db.transaction(async tx => {
+            await tx.update('cms_pages', { status: 'published', updated_at: now }, { id: String(p.id) });
+            await this.outbox.emit(tx, { type: 'page.published', schoolId, aggregateType: 'cms.page', aggregateId: String(p.id), payload: { pageId: String(p.id), slug: String(p.slug), locale: String(p.locale) } });
+          });
+          out.pages++;
+        }
+        const posts = await this.db.query<Row>(`SELECT id, slug, title FROM cms_posts WHERE school_id = ? AND status = 'draft' AND published_at IS NOT NULL AND published_at <= ? AND deleted_at IS NULL LIMIT 50`, [schoolId, now]);
+        for (const p of posts) { await this.db.update('cms_posts', { status: 'published', updated_at: now }, { id: String(p.id) }); out.posts++; }
+
+        // a message left on the website two days ago that nobody has opened. The person who wrote it
+        // is a parent deciding where to send their child, and silence is the answer they take away.
+        const [waiting] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM cms_contact_messages WHERE school_id = ? AND status = 'new' AND created_at < ?`, [schoolId, nowSql(new Date(Date.now() - 2 * 86_400_000))]);
+        if (Number(waiting?.n ?? 0) > 0) {
+          const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 48, { channels: ['in_app'], eventKey: 'cms.contact_waiting', title: `${Number(waiting!.n)} website message${Number(waiting!.n) === 1 ? '' : 's'} unanswered`, body: 'They have been waiting more than two days. Open Website → Contact.', entityType: 'cms.contact', entityId: schoolId });
+          if (sent.length) out.chased++;
+        }
+        // a custom domain whose certificate never arrived: the site is unreachable and the school
+        // has no way of knowing, because everyone inside uses the old address
+        const domains = await this.db.query<Row>(`SELECT * FROM cms_domains WHERE school_id = ? AND (ssl_status = 'failed' OR (ssl_status = 'pending' AND created_at < ?))`, [schoolId, nowSql(new Date(Date.now() - 3 * 86_400_000))]);
+        for (const dmn of domains) {
+          const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 168, { channels: ['in_app', 'email'], eventKey: 'cms.domain_ssl', title: `${String(dmn.domain)} has no certificate`, body: String(dmn.ssl_status) === 'failed' ? 'The certificate request failed, so visitors reach a security warning instead of the school.' : 'The certificate has been pending for three days. Check the DNS record points at this server.', entityType: 'cms.domain', entityId: String(dmn.id) });
+          if (sent.length) out.chased++;
+        }
+        return out;
+      },
+    };
   }
 
   /** The school a public request belongs to: custom domain → cms_domains/schools, else the first (single-tenant) school. */

@@ -21,6 +21,12 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | A7 | ⏰ hourly | offer expired, unpaid | Revoke offer; promote next waitlisted applicant; notify both | `admission_offers`, `admission_applications`, `notifications` |
 | A8 | 🔒 `payment.received` | invoice is admission fee | **Enrol**: create `students`, `student_enrollments`, guardians (+ sibling link via phone), user accounts with OTP invite, auto section by capacity/gender/shift, `admission_no`, roll, ID card job, library membership, welcome SMS | `students`, `student_enrollments`, `guardians`, `users`, `id_cards`, `library_members` |
 | A9 | ⚙️ `applicant.enrolled` | shared guardian phone with active student | Propose sibling discount for approval | `student_discounts (is_auto)` |
+| A10 | ⏰ daily 07:00 | campaign requires a test and an application has no seat | Allocate the test seat and issue the admit card — A4 only fires on a form-fee payment, so a free admission never reached it | `admission_applications`, `issued_documents` |
+| A11 | ⏰ daily 07:00 | interview or mixed selection, free slots, applicant with no interview | Book the next free slot and tell the guardian the time; when the slots run out the office is told once | `admission_interviews`, `notifications` |
+| A12 | ⏰ daily 07:00 | campaign closed, applicants still unranked | Compute the merit list where the campaign asks for it, otherwise tell the admissions desk it is ready to draw; render the notice-board PDF once per class | `admission_applications`, `files` |
+| A13 | ⏰ daily 07:00 | offer unpaid, expires within 2 days | One SMS to the guardian before the place is lost — never a daily one | `notifications` |
+| A14 | ⏰ daily 07:00 | offered applicant missing a required document | Tell the office once a week which papers are missing, by name | `notifications` |
+| A15 | ⏰ daily 07:00 | shortlisted applicants and the campaign does not offer automatically | Everything around the offer is done — ranked, seats counted, sheet rendered — and the desk is told once that it is one button away. An offer is a promise to a family, so a person makes it | `notifications` |
 
 ## 2. Academic structure & timetable
 
@@ -197,6 +203,13 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | N10 | ⏰ nightly | — | Backups (PITR + object storage), retention purge of OTPs/expired sessions, outbox archive | — |
 | N11 | ⚙️ `rule.failed` ×3 | — | Alert school admin + platform ops | `notifications` |
 | N12 | 🔒 `import.finished` | — | Summary with error file link | `import_jobs`, `notifications` |
+| N13 | ⏰ hourly | a scheduled job failed or is more than 6 h overdue | Name the jobs that have stopped, once every three days — a job that throws otherwise writes `failed` into its own row and tells nobody | `notifications`, `outbox_events` |
+| N14 | ⏰ hourly | a job in the seed catalogue has no row for this school | Create it: seeds run when a school is provisioned, so an update would otherwise ship automations nothing ever calls | `scheduled_jobs` |
+| N15 | ⏰ hourly | events unpublished for 30 min, or a consumer that gave up after 5 attempts | Say the automation queue has stalled and how many events it is holding | `notifications` |
+| N16 | ⏰ hourly | messages queued and unsent for 30 min | Queue them again (a lost delivery job is repaired, not reported); tell the office only when 100+ are stuck | `notifications`, `background_jobs` |
+| N17 | ⏰ hourly | uploads over the warning size, or under 200 MB free on the host | One warning before the disk fills — on shared hosting a full disk takes the whole site down | `system_health`, `notifications` |
+| N18 | ⏰ nightly 02:00 | the backup ran | Read the file back before trusting it (gunzip, header, row count); a backup that fails is told to the office, and a school with no good backup for 48 h is told again | `backups`, `system_health` |
+| N19 | ⏰ daily | a plugin webhook failed 10 times in a row, or a school webhook 20 | Switch it off and say so — never retry somebody else's dead server for ever | `plugin_installs`, `webhooks` |
 
 ---
 
@@ -246,6 +259,15 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `college.registration_watch` | `0 8 * * *` | R1 |
 | `admissions.offer_expiry` | `0 * * * *` | A7 |
 | `admissions.followup_reminders` | `0 9 * * *` | A2 |
+| `admissions.campaign_watch` | `0 7 * * *` | A10–A15 |
+| `platform.watchdog` | `15 * * * *` | N13–N17 |
+| `analytics.benchmarks` | `0 4 2 * *` | P28 |
+| `groups.consolidate` | `30 1 * * *` | P29 |
+| `marketplace.health` | `0 3 * * *` | N19, P31 |
+| `ai.budget_watch` | `0 9 * * *` | P32 |
+| `ivr.line_watch` | `0 9 * * 6` | P33 |
+| `alumni.job_board` | `0 8 * * *` | P34 |
+| `cms.scheduled_publish` | `*/10 * * * *` | P35 |
 
 ---
 
@@ -279,3 +301,12 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | P24 | Forecast | ⏰ monthly, after the billing run | Cash-flow projection for the next 3–6 months from this school's own collection rate; a projected shortfall raises a message with its assumptions, never an invoice |
 | P25 | Forecast | ⏰ monthly | Staffing forecast from the published timetable and the leavers on record; subjects with periods nobody is timetabled to teach are listed with the count |
 | P26 | Forecast | ⏰ weekly | Wellbeing early-warning scores refreshed into `risk_scores`; welfare involvement adds weight but never scores alone, and the alert never says what is in the record |
+| P27 | Analytics | ⏰ nightly | Days the heartbeat never woke for are computed from the register (up to a fortnight back) before anything is compared against them, and an alert whose metric is back inside the usual range closes itself |
+| P28 | Analytics | ⏰ monthly | Cohort benchmark quartiles built for the whole installation by its founding school — they were only ever built when somebody called the endpoint |
+| P29 | Groups | ⏰ nightly | Per head school, through the same gate a request goes through: refresh the members' own daily rows, then say which school sent no figures and which currency has no rate. Nothing is recomputed and no total is invented |
+| P30 | SaaS | ⏰ daily | A trial with a week left is announced, one that ends moves to `past_due` (new work stops, records never do), an unpaid invoice is chased at 7, 14 and 30 days, a plan at nine tenths of its student or SMS limit is flagged, and a reseller's closed-month commission is put in front of the owner to pay |
+| P31 | Marketplace | ⏰ daily | An integration that has stopped working is switched off and named — a plugin after 10 consecutive webhook failures, a school's own webhook after 20 |
+| P32 | AI | ⏰ daily | At nine tenths of the monthly cap the school is told once; drafting pauses at the cap, and the questions answered from its own rows keep working |
+| P33 | IVR | ⏰ weekly | A configured voice line with no call in seven days is reported once — the guardians who use it are the least likely to ring and say it is broken |
+| P34 | Alumni | ⏰ daily | A job post is closed on the date its author set, and they are told three days before rather than discovering it by accident |
+| P35 | CMS | ⏰ every 10 min | A page or post whose author set a go-live date is published on it; a website message unanswered for two days, and a custom domain with no certificate after three, are reported once |

@@ -1,5 +1,6 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { PeopleService } from './people.js';
@@ -112,9 +113,14 @@ export class GroupsService {
       (SELECT COUNT(*) FROM school_group_members x WHERE x.group_id = g.id) AS schools
       FROM school_groups g JOIN school_group_members m ON m.group_id = g.id WHERE m.school_id = ? ORDER BY g.name, g.id`, [schoolId]);
   }
-  /** Member schools with the name, code and currency each row's figures are expressed in. */
+  /**
+   * Member schools with the name, code and currency each row's figures are expressed in — and the
+   * day each one joined, which `consolidated` needs and was not being given: without it the window
+   * silently fell back to the whole period, so a head school could add a school, read its entire
+   * history and remove it again. The guard was written; the column was missing from the query.
+   */
   async memberSchools(groupId: string) {
-    return this.db.query<Row>(`SELECT m.school_id, m.is_head, s.name, s.code, s.currency, s.status FROM school_group_members m JOIN schools s ON s.id = m.school_id WHERE m.group_id = ? ORDER BY m.is_head DESC, s.name, s.id`, [groupId]);
+    return this.db.query<Row>(`SELECT m.school_id, m.is_head, m.joined_on, s.name, s.code, s.currency, s.status FROM school_group_members m JOIN schools s ON s.id = m.school_id WHERE m.group_id = ? ORDER BY m.is_head DESC, s.name, s.id`, [groupId]);
   }
   private async requireGroup(groupId: string) {
     const g = await this.db.findOne<Row>('school_groups', { id: groupId });
@@ -458,6 +464,58 @@ export class GroupsService {
     if (inverse[0] && Number(inverse[0].rate) > 0) return { from: a, to: b, rate: 1 / Number(inverse[0].rate), asOf: String(inverse[0].as_of).slice(0, 10), source: String(inverse[0].source ?? 'recorded'), inverted: true };
     return null;
   }
+  // ---------- scheduled ----------
+  /**
+   * The nightly pass for a trust, and the one job in the system that touches more than one tenant.
+   *
+   * It runs per school like every other scheduled job, and a school that heads no group does nothing
+   * at all. Where it does head one it goes through `consolidated`, which goes through `requireHead`:
+   * the crossing is gated by exactly the same code a request is, so a job cannot read what a page
+   * could not. Nothing is recomputed and nothing is written — it refreshes the member schools' own
+   * daily rows and then tells the head office the two things that make the total a lie: a school
+   * whose nightly pass did not run, and a currency with no rate on file. Both were previously only
+   * visible to somebody who happened to open the group page and read the small print.
+   */
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      'groups.consolidate': async ({ schoolId }) => {
+        const mine = await this.groups(schoolId);
+        const headed = mine.filter(g => Number(g.is_head) && String(g.status) === 'active');
+        const out = { groups: headed.length, silent: 0, missingRates: 0 };
+        const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+        for (const g of headed) {
+          // today's pass refreshes every member's own daily row, so the trust's page is never a day
+          // behind whichever school was last opened
+          const view = await this.consolidated(String(g.id), schoolId);
+          // yesterday's is the honest test of whether a member school's nightly pass ran at all:
+          // today's row was just written by the line above, so today can never look silent
+          const past = await this.consolidated(String(g.id), schoolId, { day: yesterday, days: 1 });
+          // a school that joined this morning has no figures from before it joined, and never should
+          const joined = new Map((await this.memberSchools(String(g.id))).map(m => [String(m.school_id), String(m.joined_on ?? '9999-12-31').slice(0, 10)]));
+          const silent = past.silent.filter(s => (joined.get(s.schoolId) ?? '9999-12-31') <= yesterday);
+          if (silent.length) {
+            out.silent += silent.length;
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 72, {
+              channels: ['in_app'], eventKey: 'groups.school_silent', title: `${silent.length} school${silent.length === 1 ? '' : 's'} sent no figures`,
+              body: `${silent.map(s => s.schoolName).join(', ')} produced nothing for ${yesterday}, so ${String(g.name)} has no group total for that day. Their own dashboards are stale too.`,
+              entityType: 'core.school_group', entityId: String(g.id),
+            });
+          }
+          const missing = (view.money as { missingRates?: { from: string; to: string }[] }).missingRates ?? [];
+          if (missing.length) {
+            out.missingRates += missing.length;
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 168, {
+              channels: ['in_app'], eventKey: 'groups.missing_rate', title: 'A group total needs an exchange rate',
+              body: `${String(g.name)} cannot be added up until a rate is recorded for ${missing.map(m => `${m.from}→${m.to}`).join(', ')}.`,
+              entityType: 'core.school_group', entityId: String(g.id),
+            });
+          }
+        }
+        return out;
+      },
+    };
+  }
+
   /** Converts, or refuses. Nothing in this module silently treats one currency as another. */
   async convert(amount: number, from: string, to: string, onOrBefore?: string) {
     const rate = await this.rateFor(from, to, onOrBefore);
