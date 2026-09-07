@@ -1,8 +1,12 @@
 import type { Db, Row } from '@pathshala/db';
 import { nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import { notFound } from '../context.js';
+
+/** A teacher told the same thing every Sunday stops reading it; the ratings behind it move termly. */
+const REPEAT_AFTER_DAYS = 14;
 
 export interface SyllabusInput { classSubjectId: string; title: string; termId?: string | null; units: { title: string; plannedPeriods?: number; plannedEndDate?: string | null }[] }
 export interface LessonPlanInput { teacherId: string; sectionId: string; classSubjectId: string; unitId?: string | null; planDate: string; topic: string; objectives?: string | null; activities?: string | null; homework?: string | null; resources?: unknown }
@@ -67,18 +71,41 @@ export class CurriculumService {
       WHERE u.school_id = ? AND u.planned_end_date IS NOT NULL AND u.planned_end_date < ? AND NOT EXISTS (SELECT 1 FROM lesson_plans lp WHERE lp.unit_id = u.id AND lp.section_id = sec.id AND lp.status = 'taught')`, [schoolId, today]);
     const bySection = new Map<string, Row[]>();
     for (const o of overdue) { const k = `${o.syllabus_id}:${o.section_id}`; bySection.set(k, [...(bySection.get(k) ?? []), o]); }
-    let alerts = 0;
+    let alerts = 0, quiet = 0;
+    const since = nowSql(new Date(Date.now() - REPEAT_AFTER_DAYS * 86_400_000));
     for (const [, list] of bySection) {
       const o = list[0];
       await this.refreshProgress(schoolId, String(o.class_subject_id), String(o.section_id));
-      const prog = await this.db.findOne<{ pct: number }>('syllabus_progress', { syllabus_id: String(o.syllabus_id), section_id: String(o.section_id) });
+      const prog = await this.db.findOne<{ id: string; pct: number }>('syllabus_progress', { syllabus_id: String(o.syllabus_id), section_id: String(o.section_id) });
+      // One section of one syllabus is the thing that is behind, so that row is what the alert is
+      // about and what the "have we said this already" guard is keyed on. A syllabus stays behind
+      // every week until it is caught up, and repeating it every Sunday is how a school learns to
+      // ignore the message; the guard is on what was actually delivered, because the scheduler is
+      // at-least-once and a recycled process runs the whole pass again.
+      const entityId = String(prog?.id ?? o.syllabus_id);
+      if (await this.toldRecently(schoolId, entityId, since)) { quiet++; continue; }
       const teachers = await this.db.query<{ user_id: string | null }>(`SELECT st.user_id FROM section_subject_teachers t JOIN staff st ON st.id = t.teacher_id WHERE t.section_id = ? AND t.class_subject_id = ?`, [o.section_id, o.class_subject_id]);
       const body = `${o.class_name} ${o.section_name} · ${o.subject_name}: ${list.length} unit(s) behind schedule (${Number(prog?.pct ?? 0)}% done). First: ${o.title}`;
-      for (const t of teachers) if (t.user_id) await this.notifications.notify({ schoolId, userId: t.user_id, channels: ['push', 'in_app'], eventKey: 'academic.syllabus_lag', title: 'Syllabus behind schedule', body, entityType: 'curriculum.syllabus', entityId: String(o.syllabus_id) });
-      await this.notifications.notifyRole(schoolId, 'principal', { channels: ['in_app'], eventKey: 'academic.syllabus_lag', title: 'Syllabus behind schedule', body, entityType: 'curriculum.syllabus', entityId: String(o.syllabus_id) });
+      for (const t of teachers) if (t.user_id) await this.notifications.notify({ schoolId, userId: t.user_id, channels: ['push', 'in_app'], eventKey: 'academic.syllabus_lag', title: 'Syllabus behind schedule', body, entityType: 'curriculum.syllabus', entityId });
+      for (const role of ['principal', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app'], eventKey: 'academic.syllabus_lag', title: 'Syllabus behind schedule', body, entityType: 'curriculum.syllabus', entityId });
       await this.outbox.emitNow({ type: 'syllabus.behind', schoolId, aggregateType: 'curriculum.syllabus', aggregateId: String(o.syllabus_id), payload: { syllabusId: String(o.syllabus_id), sectionId: String(o.section_id), pct: Number(prog?.pct ?? 0), overdueUnits: list.length } });
       alerts++;
     }
-    return { overdueUnits: overdue.length, alerts };
+    return { overdueUnits: overdue.length, alerts, quiet };
+  }
+
+  /** Whether this section's syllabus was already flagged inside the repeat window, whichever run did it. */
+  private async toldRecently(schoolId: string, entityId: string, since: string) {
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = 'academic.syllabus_lag' AND entity_id = ? AND created_at >= ?`, [schoolId, entityId, since]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
+  // ---------- scheduled ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // B6: units whose planned end date passed without being taught
+      'academic.syllabus_lag': async ({ schoolId, payload }) => this.syllabusLagCheck(schoolId, String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10)),
+    };
   }
 }

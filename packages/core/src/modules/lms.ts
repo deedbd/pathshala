@@ -5,6 +5,7 @@ import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { DocumentService } from './documents.js';
+import type { TaskService } from '../tasks.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -41,7 +42,7 @@ const MAX_SUBMISSIONS_COMPARED = 300;
  * Reminders for unsubmitted work run hourly as one job.
  */
 export class LmsService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private documents: DocumentService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private documents: DocumentService, private tasks: TaskService) {}
 
   // ---------- courses ----------
   async courses(schoolId: string, f: { status?: string; teacherId?: string } = {}) {
@@ -689,7 +690,42 @@ export class LmsService {
         }
         return { reminded, classes: classes.length };
       },
+      /**
+       * E3, the half that was only ever written down. Three days past the deadline, work that has been
+       * handed in and not marked goes to the teacher who set it — one task per assignment, named,
+       * rather than a number on a dashboard nobody opens. A child who wrote an essay a fortnight ago
+       * and has heard nothing has learnt something, and it is not the subject.
+       *
+       * An assignment that refuses late work is closed at the same time, because "published" on a
+       * deadline three days gone is a lie the submission form keeps telling. Assignments that do take
+       * late work stay open — that is what allowing it means.
+       */
+      'lms.marking_backlog': async ({ schoolId, payload }) => {
+        const now = String((payload as { now?: string }).now ?? nowSql());
+        const cutoff = nowSql(new Date(Date.parse(now.replace(' ', 'T') + 'Z') - 3 * 86400_000));
+        const stale = await this.db.query<Row>(`SELECT a.*, sub.name AS subject_name, sec.name AS section_name, st.user_id AS teacher_user_id,
+            (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id = a.id AND s.status <> 'graded') AS unmarked
+          FROM assignments a JOIN class_subjects cs ON cs.id = a.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN sections sec ON sec.id = a.section_id LEFT JOIN staff st ON st.id = a.teacher_id
+          WHERE a.school_id = ? AND a.status = 'published' AND a.due_at <= ?`, [schoolId, cutoff]);
+        let chased = 0, closed = 0;
+        for (const a of stale) {
+          const unmarked = Number(a.unmarked);
+          if (unmarked && !(await this.taskPending(schoolId, 'lms.marking_backlog', String(a.id)))) {
+            const title = `Mark ${unmarked} submission(s): ${String(a.title)}`;
+            await this.tasks.create({ schoolId, title, description: `${a.section_name} · ${a.subject_name} — due ${String(a.due_at).slice(0, 16)}, still unmarked.`, taskType: 'lms.marking_backlog', assignedTo: (a.teacher_user_id as string) ?? null, assignedRole: a.teacher_user_id ? null : 'admin', entityType: 'lms.assignment', entityId: String(a.id), priority: 'normal' });
+            chased++;
+          }
+          if (!Number(a.allow_late)) { await this.db.update('assignments', { status: 'closed', updated_at: nowSql() }, { id: String(a.id) }); closed++; }
+        }
+        return { chased, closed };
+      },
     };
+  }
+
+  /** Whether a task of this kind is already waiting on this thing, whichever run left it there. */
+  private async taskPending(schoolId: string, taskType: string, entityId: string) {
+    const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM tasks WHERE school_id = ? AND task_type = ? AND entity_id = ? AND status = 'open'`, [schoolId, taskType, entityId]);
+    return Number(rows[0]?.n ?? 0) > 0;
   }
 }
 

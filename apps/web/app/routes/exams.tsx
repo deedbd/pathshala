@@ -18,7 +18,11 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     examId ? context.app.assessment.seatPlan(sid, examId) : [],
     scheduleId ? context.app.assessment.marksGrid(sid, scheduleId).catch(() => null) : null,
   ]);
-  return { locale: (user.locale as Locale) || context.locale, yearId, exams, examId, scheduleId, types, scales, classes, schedules, results, seats, grid };
+  // what the nightly pass has already prepared and left for a person: publishing a result, applying a
+  // promotion, the papers that never got their marks. The button is here, so the sentence is too.
+  const prepared = await context.app.db.query<{ id: string; title: string; description: string | null; task_type: string }>(
+    `SELECT id, title, description, task_type FROM tasks WHERE school_id = ? AND status = 'open' AND task_type IN ('assessment.publish','assessment.promote','assessment.marks_overdue') ORDER BY created_at DESC LIMIT 5`, [sid]);
+  return { locale: (user.locale as Locale) || context.locale, yearId, exams, examId, scheduleId, types, scales, classes, schedules, results, seats, grid, prepared };
 }
 export function meta() { return [{ title: 'Pathshala — Exams' }]; }
 
@@ -71,6 +75,13 @@ export default function Exams() {
       </div>}
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
       {msg && <div className="mt-4"><Banner kind="ok">{msg}</Banner></div>}
+      {d.prepared.filter(p => p.task_type !== 'assessment.marks_overdue').map(p => (
+        <div className="mt-4" key={p.id}><Banner kind="warn"><strong>{tr('ex.readyToPublish')}:</strong> {p.title}{p.description ? ` — ${p.description}` : ''}</Banner></div>
+      ))}
+      {d.prepared.filter(p => p.task_type === 'assessment.marks_overdue').map(p => (
+        <div className="mt-4" key={p.id}><Banner kind="bad">{p.title}{p.description ? ` — ${p.description.split('\n').join(' · ')}` : ''}</Banner></div>
+      ))}
+      {exam && <p className="mt-4 text-sm" style={{ color: 'var(--muted)' }}>{tr('ex.autoNote')}</p>}
       {exam && <div className="mt-4 flex flex-wrap gap-2">
         <Button size="sm" variant="secondary" onClick={() => run(async () => { const r = await api<{ seated: number; ineligible: number }>(`/api/exams/${d.examId}/seat-plan`, { method: 'POST', json: {} }); setMsg(`${r.seated} seated, ${r.ineligible} not eligible`); })} disabled={busy}>{tr('ex.buildSeats')}</Button>
         <Button size="sm" variant="secondary" onClick={() => run(async () => { const r = await api<{ students: number; passed: number; failed: number }>(`/api/exams/${d.examId}/compute`, { method: 'POST', json: {} }); setMsg(`${r.students} results · ${r.passed} passed · ${r.failed} failed`); })} disabled={busy}>{tr('ex.compute')}</Button>

@@ -8,6 +8,7 @@ import type { AcademicService } from './academic.js';
 import type { FileService } from '../files.js';
 import type { DocumentService } from './documents.js';
 import type { FeesService } from './fees.js';
+import type { TaskService } from '../tasks.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface ExamInput { academicYearId?: string | null; termId?: string | null; examTypeId?: string | null; gradingScaleId?: string | null; name: string; startDate: string; endDate: string; classIds?: string[]; requireFeeClearance?: boolean; minAttendancePct?: number | null; rankScope?: 'section' | 'class' | 'both'; tieRule?: 'share_rank' | 'dense' | 'by_total' }
@@ -20,7 +21,28 @@ export interface MarkInput { studentId: string; theory?: number | null; practica
  * promotion. The engine is deterministic: recomputing an exam gives the same numbers.
  */
 export class AssessmentService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService, private fees?: FeesService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService, private tasks: TaskService, private fees?: FeesService) {}
+
+  /**
+   * Whether a task of this kind is already waiting on this thing. Every "the system has prepared
+   * something, a person presses the button" step goes through it: the scheduler is at-least-once and
+   * a Passenger process recycled mid-job runs the whole day's pass again, so a second run must find
+   * the task it left behind rather than raise a duplicate.
+   */
+  private async taskPending(schoolId: string, taskType: string, entityId: string) {
+    const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM tasks WHERE school_id = ? AND task_type = ? AND entity_id = ? AND status = 'open'`, [schoolId, taskType, entityId]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+  /**
+   * Whether a chunked batch of this kind is still in flight (queued or running). `triggeredBy` is how
+   * one exam's batch is told from another's: the payload is a JSON column and every engine wants a
+   * different syntax to look inside one, so the exam id rides in the varchar the queue already keeps.
+   */
+  private async batchInFlight(schoolId: string, jobName: string, triggeredBy?: string) {
+    const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM background_jobs WHERE school_id = ? AND job_name = ? AND status IN ('pending','running')${triggeredBy ? ' AND triggered_by = ?' : ''}`,
+      triggeredBy ? [schoolId, jobName, triggeredBy] : [schoolId, jobName]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
 
   // ---------- setup ----------
   async gradingScales(schoolId: string) {
@@ -96,16 +118,7 @@ export class AssessmentService {
     const students = await this.db.query<Row>(`SELECT s.id, s.first_name, s.last_name, s.current_roll_no, s.current_section_id, e.class_id FROM student_enrollments e JOIN students s ON s.id = e.student_id
       WHERE e.school_id = ? AND e.academic_year_id = ? AND e.status = 'active' AND s.status = 'active' AND e.class_id IN (${classIds.map(() => '?').join(',')}) ORDER BY e.class_id, LENGTH(e.roll_no), e.roll_no`, [schoolId, String(exam.academic_year_id), ...classIds]);
     const rooms = await this.db.findMany<Row>('rooms', { school_id: schoolId, room_type: 'classroom' }, { orderBy: 'name ASC' });
-    const dues = new Map<string, number>();
-    if (Number(exam.require_fee_clearance)) {
-      const rows = await this.db.query<{ student_id: string; due: number }>(`SELECT student_id, SUM(balance) AS due FROM invoices WHERE school_id = ? AND balance > 0 GROUP BY student_id`, [schoolId]);
-      for (const r of rows) dues.set(String(r.student_id), Number(r.due));
-    }
-    const attendance = new Map<string, number>();
-    if (exam.min_attendance_pct) {
-      const rows = await this.db.query<{ student_id: string; pct: number }>(`SELECT student_id, AVG(pct) AS pct FROM attendance_monthly_summary WHERE school_id = ? GROUP BY student_id`, [schoolId]);
-      for (const r of rows) attendance.set(String(r.student_id), Number(r.pct));
-    }
+    const reasonFor = await this.eligibility(schoolId, exam);
     let seated = 0, ineligible = 0, roomIndex = 0, overCapacity = 0;
     const capacity = (r: Row) => Number(r.capacity ?? 40);
     // Seats are numbered per room, so the count of a room is also its next seat number. When every
@@ -127,9 +140,7 @@ export class AssessmentService {
       await tx.delete('exam_seat_plans', { exam_id: examId });
       const rows: Row[] = [];
       for (const st of students) {
-        let reason: string | null = null;
-        if (dues.has(String(st.id))) reason = `fees due: ${dues.get(String(st.id))}`;
-        else if (exam.min_attendance_pct && (attendance.get(String(st.id)) ?? 100) < Number(exam.min_attendance_pct)) reason = `attendance below ${exam.min_attendance_pct}%`;
+        const reason = reasonFor(String(st.id));
         const useRoom = reason ? null : nextRoom();
         let seatNo = '—';
         if (useRoom) { const n = (used.get(String(useRoom.id)) ?? 0) + 1; used.set(String(useRoom.id), n); seatNo = String(n); }
@@ -145,6 +156,85 @@ export class AssessmentService {
     return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no, s.current_roll_no, r.name AS room_name, c.name AS class_name FROM exam_seat_plans p JOIN students s ON s.id = p.student_id LEFT JOIN rooms r ON r.id = p.room_id LEFT JOIN classes c ON c.id = s.current_class_id WHERE p.school_id = ? AND p.exam_id = ? ORDER BY c.numeric_level, LENGTH(p.seat_no), p.seat_no`, [schoolId, examId]);
   }
 
+  /** The exam's own eligibility rules, read once and answered per student. */
+  private async eligibility(schoolId: string, exam: Row): Promise<(studentId: string) => string | null> {
+    const dues = new Map<string, number>();
+    if (Number(exam.require_fee_clearance)) {
+      const rows = await this.db.query<{ student_id: string; due: number }>(`SELECT student_id, SUM(balance) AS due FROM invoices WHERE school_id = ? AND balance > 0 GROUP BY student_id`, [schoolId]);
+      for (const r of rows) dues.set(String(r.student_id), Number(r.due));
+    }
+    const attendance = new Map<string, number>();
+    if (exam.min_attendance_pct) {
+      const rows = await this.db.query<{ student_id: string; pct: number }>(`SELECT student_id, AVG(pct) AS pct FROM attendance_monthly_summary WHERE school_id = ? GROUP BY student_id`, [schoolId]);
+      for (const r of rows) attendance.set(String(r.student_id), Number(r.pct));
+    }
+    return (studentId: string) => {
+      if (dues.has(studentId)) return `fees due: ${dues.get(studentId)}`;
+      if (exam.min_attendance_pct && (attendance.get(studentId) ?? 100) < Number(exam.min_attendance_pct)) return `attendance below ${exam.min_attendance_pct}%`;
+      return null;
+    };
+  }
+
+  /**
+   * D2, the night before: a seat plan built a week ahead is stale the moment a child is admitted or a
+   * family clears its dues. `buildSeatPlan` cannot be re-run to fix that — it deletes the rows, and
+   * the admit cards already issued go with them — so this tops the existing plan up instead.
+   *
+   * Two things change and nothing else. A student on the roll with no seat gets one. A student who was
+   * blocked for a reason that has since gone (the fees are paid, the attendance rose) becomes eligible
+   * and is seated, so their card is issued by the same pass. The reverse is deliberately not done: a
+   * card already in a child's hand is not withdrawn by a scheduled job the night before an exam —
+   * turning somebody away at the hall door is a decision for the office, with a name on it.
+   */
+  async refreshSeatPlan(schoolId: string, examId: string) {
+    const exam = await this.db.findOne<Row>('exams', { id: examId, school_id: schoolId });
+    if (!exam) throw notFound('exam');
+    const existing = await this.db.findMany<Row>('exam_seat_plans', { school_id: schoolId, exam_id: examId });
+    if (!existing.length) return { added: 0, cleared: 0, stillBlocked: 0, note: 'no seat plan yet' as string | null };
+    const classIds = [...new Set((await this.schedules(schoolId, examId)).map(s => String(s.class_id)))];
+    if (!classIds.length) return { added: 0, cleared: 0, stillBlocked: 0, note: 'no papers scheduled' as string | null };
+    const students = await this.db.query<Row>(`SELECT s.id FROM student_enrollments e JOIN students s ON s.id = e.student_id
+      WHERE e.school_id = ? AND e.academic_year_id = ? AND e.status = 'active' AND s.status = 'active' AND e.class_id IN (${classIds.map(() => '?').join(',')}) ORDER BY e.class_id, LENGTH(e.roll_no), e.roll_no`, [schoolId, String(exam.academic_year_id), ...classIds]);
+    const seatOf = new Map(existing.map(r => [String(r.student_id), r]));
+    const rooms = await this.db.findMany<Row>('rooms', { school_id: schoolId, room_type: 'classroom' }, { orderBy: 'name ASC' });
+    const reasonFor = await this.eligibility(schoolId, exam);
+
+    // seat numbers continue from what the room already holds, so the (exam, room, seat) key stays unique
+    const used = new Map<string, number>();
+    for (const r of existing) if (r.room_id) used.set(String(r.room_id), Math.max(used.get(String(r.room_id)) ?? 0, Number(r.seat_no) || 0));
+    let roomIndex = 0;
+    const nextSeat = (): { roomId: string; seatNo: string } | null => {
+      if (!rooms.length) return null;
+      for (let i = 0; i < rooms.length; i++) {
+        const r = rooms[(roomIndex + i) % rooms.length] as Row;
+        const n = (used.get(String(r.id)) ?? 0) + 1;
+        if (n <= Number(r.capacity ?? 40)) { roomIndex = (roomIndex + i) % rooms.length; used.set(String(r.id), n); return { roomId: String(r.id), seatNo: String(n) }; }
+      }
+      const r = rooms[roomIndex++ % rooms.length] as Row;   // every room full: spill rather than refuse a candidate
+      const n = (used.get(String(r.id)) ?? 0) + 1; used.set(String(r.id), n);
+      return { roomId: String(r.id), seatNo: String(n) };
+    };
+
+    let added = 0, cleared = 0, stillBlocked = 0;
+    for (const st of students) {
+      const id = String(st.id);
+      const row = seatOf.get(id);
+      const reason = reasonFor(id);
+      if (!row) {
+        const seat = reason ? null : nextSeat();
+        await this.db.insert('exam_seat_plans', { id: ulid(), school_id: schoolId, exam_id: examId, student_id: id, room_id: seat?.roomId ?? null, seat_no: seat?.seatNo ?? '—', admit_card_file_id: null, is_eligible: !reason, ineligible_reason: reason });
+        added++; if (reason) stillBlocked++;
+        continue;
+      }
+      if (Number(row.is_eligible)) continue;
+      if (reason) { stillBlocked++; continue; }
+      const seat = nextSeat();
+      await this.db.update('exam_seat_plans', { is_eligible: true, ineligible_reason: null, room_id: seat?.roomId ?? null, seat_no: seat?.seatNo ?? '—', updated_at: nowSql() }, { id: String(row.id) });
+      cleared++;
+    }
+    return { added, cleared, stillBlocked, note: null as string | null };
+  }
+
   /**
    * D2: admit cards for everyone the seat plan found eligible. Queued and chunked like the report
    * cards, because 1,500 cards is 1,500 PDFs and no request may take that long. A candidate who is
@@ -155,7 +245,10 @@ export class AssessmentService {
     if (!exam) throw notFound('exam');
     const pending = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM exam_seat_plans WHERE exam_id = ? AND is_eligible = TRUE AND admit_card_file_id IS NULL`, [examId]);
     if (!Number(pending[0]?.n ?? 0)) return { queued: false, pending: 0 };
-    await this.adapters.queue.push({ name: 'assessment.admit_cards', queue: 'batch', schoolId, payload: { examId }, triggeredBy: 'assessment.seat_plan' });
+    // a nightly pass must not stack a second render for this exam behind the one still walking its cursor
+    const tag = `assessment.seat_plan:${examId}`;
+    if (await this.batchInFlight(schoolId, 'assessment.admit_cards', tag)) return { queued: false, pending: Number(pending[0]!.n) };
+    await this.adapters.queue.push({ name: 'assessment.admit_cards', queue: 'batch', schoolId, payload: { examId }, triggeredBy: tag });
     return { queued: true, pending: Number(pending[0]!.n) };
   }
   async renderAdmitCards(payload: Record<string, unknown>, ctx: JobContext) {
@@ -320,12 +413,16 @@ export class AssessmentService {
     await this.db.update('marks', { status: 'verified', updated_at: nowSql() }, { schedule_id: scheduleId, school_id: schoolId });
     return { locked: false };
   }
-  /** Which subjects still owe marks — drives the D3 deadline reminders. */
+  /**
+   * Which subjects still owe marks — drives the D3 deadline reminders and the decision to compute.
+   * "Expected" is this school's roll for this exam's own year: counting every enrolment a class ever
+   * had would make a finished paper look permanently incomplete, and nothing would ever compute.
+   */
   async missingMarks(schoolId: string, examId: string) {
-    return this.db.query<Row>(`SELECT s.id AS schedule_id, sub.name AS subject_name, c.name AS class_name,
-        (SELECT COUNT(*) FROM student_enrollments e WHERE e.class_id = cs.class_id AND e.status = 'active') AS expected,
+    return this.db.query<Row>(`SELECT s.id AS schedule_id, s.marks_entry_locked, sub.name AS subject_name, c.name AS class_name,
+        (SELECT COUNT(*) FROM student_enrollments e JOIN students st ON st.id = e.student_id WHERE e.school_id = s.school_id AND e.academic_year_id = e2.academic_year_id AND e.class_id = cs.class_id AND e.status = 'active' AND st.status = 'active') AS expected,
         (SELECT COUNT(*) FROM marks m WHERE m.schedule_id = s.id) AS entered
-      FROM exam_schedules s JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id
+      FROM exam_schedules s JOIN exams e2 ON e2.id = s.exam_id JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id
       WHERE s.school_id = ? AND s.exam_id = ?`, [schoolId, examId]);
   }
 
@@ -499,12 +596,16 @@ export class AssessmentService {
     }
     const rules = await this.db.findMany<Row>('promotion_rules', { school_id: schoolId, academic_year_id: yearId });
     const defaultRule = { min_gpa: 1, max_failed_subjects: 0, min_attendance_pct: 0 };
+    // every child's class in one query rather than one query per child: this runs nightly through the
+    // last month of the year, and on a 1,500-student school the round trips were the whole cost
+    const classOf = new Map((await this.db.query<{ id: string; current_class_id: string | null }>(
+      `SELECT id, current_class_id FROM students WHERE school_id = ?`, [schoolId])).map(r => [String(r.id), r.current_class_id]));
     let count = 0;
     for (const [studentId, v] of per) {
       const gpa = v.weight ? round2(v.gpa / v.weight) : 0;
       const pct = v.weight ? round2(v.pct / v.weight) : 0;
-      const student = await this.db.findOne<Row>('students', { id: studentId });
-      const rule = rules.find(r => r.class_id === student?.current_class_id) ?? rules.find(r => !r.class_id) ?? defaultRule as unknown as Row;
+      const currentClassId = classOf.get(studentId) ?? null;
+      const rule = rules.find(r => r.class_id === currentClassId) ?? rules.find(r => !r.class_id) ?? defaultRule as unknown as Row;
       const decision = gpa >= Number(rule.min_gpa) && v.failed <= Number(rule.max_failed_subjects) ? 'promoted' : 'retained';
       const ex = await this.db.findOne<{ id: string }>('annual_results', { academic_year_id: yearId, student_id: studentId });
       const row = { school_id: schoolId, academic_year_id: yearId, student_id: studentId, weighted_gpa: gpa, weighted_pct: pct, rank_in_class: null, decision, computed_at: nowSql() };
@@ -539,6 +640,131 @@ export class AssessmentService {
       if (r.decision === 'promoted') promoted++; else retained++;
     }
     return { promoted, retained, applied: !!opts.apply };
+  }
+
+  // ---------- the result pipeline, without a person driving it ----------
+  /**
+   * D5: an exam whose marks are all in computes itself.
+   *
+   * Nobody has to remember to press Compute. The engine is deterministic — the same marks give the
+   * same numbers — and it writes only `exam_results`, which no guardian can see until somebody
+   * publishes, so running it early costs nothing and running it twice changes nothing. The gate is
+   * that every paper has a mark for every child on the roll: half a cohort computed is a rank order
+   * that is wrong for everybody, and a teacher who is still typing would find their class ranked
+   * against the empty rows of the class next door.
+   *
+   * An exam moves to `processing` when it computes, which takes it out of this pass. Correcting a
+   * mark later and recomputing stays a deliberate act, because the results are by then the thing a
+   * report card was printed from.
+   */
+  async autoCompute(schoolId: string, opts: { onDate?: string } = {}) {
+    const today = opts.onDate ?? nowSql().slice(0, 10);
+    const exams = await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status IN ('ongoing','marks_entry') AND end_date <= ? ORDER BY end_date`, [schoolId, today]);
+    const computed: { examId: string; name: string; students: number }[] = [];
+    let waiting = 0;
+    for (const e of exams) {
+      const papers = await this.missingMarks(schoolId, String(e.id));
+      if (!papers.length) continue;
+      if (papers.some(p => Number(p.entered) < Number(p.expected))) { waiting++; continue; }
+      const r = await this.computeResults(schoolId, String(e.id));
+      if (!r.students) continue;
+      computed.push({ examId: String(e.id), name: String(e.name), students: r.students });
+      await this.prepareResultRelease(schoolId, String(e.id));
+    }
+    // an exam computed by hand last week and never published is chased too, or it sits for ever
+    for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'processing' AND (publish_at IS NULL OR publish_at > ?)`, [schoolId, nowSql()])) {
+      if (!computed.some(c => c.examId === String(e.id))) await this.prepareResultRelease(schoolId, String(e.id));
+    }
+    return { computed, waiting };
+  }
+
+  /**
+   * D6, the half a machine may not do. Publishing is what a family sees as final — a GPA in an SMS
+   * cannot be unsent — so the system does everything up to the button and stops there: the results are
+   * computed, the papers that are still unlocked are named, the students with no result are counted,
+   * and one task carries the whole picture to whoever signs it off.
+   *
+   * A school that would rather set a date can: `publish_at` in the future is a decision already made,
+   * and `exams.publish_due` carries it out on the day.
+   */
+  async prepareResultRelease(schoolId: string, examId: string) {
+    const exam = await this.db.findOne<Row>('exams', { id: examId, school_id: schoolId });
+    if (!exam) throw notFound('exam');
+    const results = await this.db.count('exam_results', { exam_id: examId });
+    if (!results) return { prepared: false, reason: 'nothing computed yet' as string | null };
+    if (await this.taskPending(schoolId, 'assessment.publish', examId)) return { prepared: false, reason: 'already waiting for sign-off' as string | null };
+    const papers = await this.missingMarks(schoolId, examId);
+    const unlocked = papers.filter(p => !Number(p.marks_entry_locked));
+    const short = papers.filter(p => Number(p.entered) < Number(p.expected));
+    // one row per child, not one per paper: joining the schedules in would count a student in a
+    // six-subject class six times and report a shortfall six times the size of the real one
+    const onRoll = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM student_enrollments e JOIN students s ON s.id = e.student_id
+      WHERE e.school_id = ? AND e.academic_year_id = ? AND e.status = 'active' AND s.status = 'active'
+        AND e.class_id IN (SELECT cs.class_id FROM exam_schedules sc JOIN class_subjects cs ON cs.id = sc.class_subject_id WHERE sc.exam_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM exam_results r WHERE r.exam_id = ? AND r.student_id = e.student_id)`, [schoolId, String(exam.academic_year_id), examId, examId]);
+    const noResult = Number(onRoll[0]?.n ?? 0);
+    const outstanding = [
+      short.length ? `${short.length} paper(s) still short of marks` : null,
+      unlocked.length ? `${unlocked.length} paper(s) not locked` : null,
+      noResult ? `${noResult} student(s) on the roll with no result` : null,
+    ].filter(Boolean) as string[];
+    const description = `${results} result(s) computed for ${exam.name}. ${outstanding.length ? `Before publishing: ${outstanding.join('; ')}.` : 'Nothing is outstanding.'} Publishing renders every report card and sends each guardian the GPA — it cannot be undone.`;
+    await this.tasks.create({ schoolId, title: `Publish results: ${exam.name}`, description, taskType: 'assessment.publish', assignedRole: 'admin', entityType: 'assessment.exam', entityId: examId, priority: outstanding.length ? 'normal' : 'high' });
+    await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'assessment.results_ready', title: 'Results ready to publish', body: description, entityType: 'assessment.exam', entityId: examId });
+    return { prepared: true, results, outstanding, reason: null as string | null };
+  }
+
+  /**
+   * D6: the date a school already chose. `publish(examId, { publishAt })` only wrote the date down —
+   * nothing ever came back for it, so a scheduled publication never happened. This is what comes back.
+   * The same pass finishes any report card the render job never reached (a recycled Passenger process
+   * mid-batch is the ordinary way a shared-hosting job dies), which is safe because the renderer skips
+   * every result that already has a file.
+   */
+  async publishDue(schoolId: string) {
+    const now = nowSql();
+    const due = await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'processing' AND publish_at IS NOT NULL AND publish_at <= ?`, [schoolId, now]);
+    let published = 0;
+    for (const e of due) { await this.publish(schoolId, String(e.id)); published++; }
+    let resumed = 0;
+    if (!(await this.batchInFlight(schoolId, 'assessment.report_cards'))) {
+      const gaps = await this.db.query<Row>(`SELECT e.id, e.name, COUNT(r.id) AS missing FROM exams e JOIN exam_results r ON r.exam_id = e.id AND r.report_card_file_id IS NULL
+        WHERE e.school_id = ? AND e.status = 'published' GROUP BY e.id, e.name ORDER BY e.start_date DESC`, [schoolId]);
+      const worst = gaps[0];
+      if (worst) { await this.adapters.queue.push({ name: 'assessment.report_cards', queue: 'pdf', schoolId, payload: { examId: String(worst.id) }, triggeredBy: 'exams.publish_due' }); resumed = Number(worst.missing); }
+    }
+    return { published, resumed };
+  }
+
+  /**
+   * D10: the year's own arithmetic, done before anybody asks for it. The weighted annual result is a
+   * sum over exams that are already published — no judgement, nothing a family sees — so it is
+   * recomputed nightly through the last weeks of the year and is always current when the meeting
+   * happens.
+   *
+   * Promotion is the other half and is not applied. Moving a child into next year's class is the most
+   * consequential thing this system does, so the pass runs it as a dry run and hands the office the
+   * numbers plus the names it could not place; somebody presses Apply.
+   */
+  async yearEnd(schoolId: string, opts: { onDate?: string; withinDays?: number } = {}) {
+    const today = opts.onDate ?? nowSql().slice(0, 10);
+    const year = await this.academic.currentYear(schoolId);
+    if (!year) return { skipped: 'no current year' as string | null, computed: 0 };
+    const endsIn = Math.round((Date.parse(`${String(year.end_date).slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+    if (endsIn > (opts.withinDays ?? 30)) return { skipped: `the year still has ${endsIn} days` as string | null, computed: 0 };
+    // a school that never moved off a year that ended a season ago is not mid-rollover any more, and
+    // recomputing its annual results every night for ever is work nobody is waiting for
+    if (endsIn < -90) return { skipped: `${year.name} ended ${-endsIn} days ago` as string | null, computed: 0 };
+    const annual = await this.computeAnnual(schoolId, String(year.id));
+    if (!annual.students) return { skipped: 'no published exam results yet' as string | null, computed: 0 };
+    const next = (await this.db.query<Row>(`SELECT * FROM academic_years WHERE school_id = ? AND start_date > ? ORDER BY start_date LIMIT 1`, [schoolId, String(year.start_date).slice(0, 10)]))[0];
+    if (!next) return { skipped: 'no next year to promote into' as string | null, computed: annual.students };
+    if (await this.taskPending(schoolId, 'assessment.promote', String(next.id))) return { skipped: 'already waiting for sign-off' as string | null, computed: annual.students };
+    const dry = await this.promote(schoolId, String(year.id), String(next.id), { apply: false });
+    const description = `${year.name} → ${next.name}: ${dry.promoted} promoted, ${dry.retained} retained, from ${annual.students} annual results. Nothing has moved yet — applying creates next year's enrolments and cannot be undone in one step.`;
+    await this.tasks.create({ schoolId, title: `Apply promotion: ${year.name} → ${next.name}`, description, taskType: 'assessment.promote', assignedRole: 'admin', entityType: 'academic.year', entityId: String(next.id), priority: 'high' });
+    await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'assessment.promotion_ready', title: 'Promotion ready to apply', body: description, entityType: 'academic.year', entityId: String(next.id) });
+    return { skipped: null as string | null, computed: annual.students, promoted: dry.promoted, retained: dry.retained, toYearId: String(next.id) };
   }
 
   // ---------- competency-based assessment ----------
@@ -819,27 +1045,68 @@ export class AssessmentService {
     const id = ulid(); await this.db.insert('online_exam_attempts', { id, started_at: nowSql(), ...row }); return { id, score };
   }
 
-  /** Scheduled handlers: D2 pre-exam prep and D3 marks-deadline reminders. */
+  /** Scheduled handlers: D2 pre-exam prep, D3 marks deadline, D5/D6 the result pipeline, D10 year end. */
   jobs(): Record<string, ScheduledFn> {
     return {
-      'exams.pre_exam_prep': async ({ schoolId }) => {
-        const soon = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10);
-        const exams = await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'draft' AND start_date <= ? AND start_date >= ?`, [schoolId, soon, nowSql().slice(0, 10)]);
-        let prepared = 0;
-        for (const e of exams) { await this.buildSeatPlan(schoolId, String(e.id)); prepared++; }
-        return { prepared };
+      /**
+       * D2. A week out, a draft exam gets its seat plan, its admit cards and the `exam.scheduled`
+       * event the routine and the calendar hang off — the button on the exams page did all three, and
+       * the job used to do only the first, so an exam nobody touched went to the hall with no cards.
+       * The night before, the plan is topped up instead of rebuilt: see `refreshSeatPlan`.
+       */
+      'exams.pre_exam_prep': async ({ schoolId, payload }) => {
+        const today = String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10);
+        const soon = addDays(today, 7);
+        let prepared = 0, refreshed = 0, cards = 0;
+        for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'draft' AND start_date <= ? AND start_date >= ?`, [schoolId, soon, today])) {
+          const r = await this.buildSeatPlan(schoolId, String(e.id));
+          await this.outbox.emitNow({ type: 'exam.scheduled', schoolId, aggregateType: 'assessment.exam', aggregateId: String(e.id), payload: { examId: String(e.id), seated: r.seated, ineligible: r.ineligible } });
+          const c = await this.issueAdmitCards(schoolId, String(e.id));
+          if (c.queued) cards++;
+          prepared++;
+        }
+        for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'scheduled' AND start_date >= ? AND start_date <= ?`, [schoolId, today, addDays(today, 1)])) {
+          const r = await this.refreshSeatPlan(schoolId, String(e.id));
+          if (r.added || r.cleared) { refreshed += r.added + r.cleared; const c = await this.issueAdmitCards(schoolId, String(e.id)); if (c.queued) cards++; }
+        }
+        return { prepared, refreshed, cards };
       },
+      /**
+       * D3. Before the deadline the subject teachers are chased. At the deadline the papers that are
+       * complete lock themselves — the school chose that date, and a paper still open a week later is
+       * how a mark gets changed after the ranks were struck — and the papers that are short go to the
+       * office by name, once, as a task rather than as the same message every morning.
+       */
       'exams.marks_deadline_reminders': async ({ schoolId }) => {
-        const exams = await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status IN ('ongoing','marks_entry') AND (marks_entry_deadline IS NULL OR marks_entry_deadline >= ?)`, [schoolId, nowSql()]);
+        const now = nowSql();
+        const exams = await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status IN ('ongoing','marks_entry') AND (marks_entry_deadline IS NULL OR marks_entry_deadline >= ?)`, [schoolId, now]);
         let reminded = 0;
         for (const e of exams) {
           const missing = (await this.missingMarks(schoolId, String(e.id))).filter(m => Number(m.entered) < Number(m.expected));
           if (!missing.length) continue;
-          await this.notifications.notifyRole(schoolId, 'principal', { channels: ['in_app', 'push'], eventKey: 'assessment.marks_pending', title: 'Marks still pending', body: `${e.name}: ${missing.length} subject(s) have not been entered yet.`, entityType: 'assessment.exam', entityId: String(e.id) });
+          for (const role of ['principal', 'admin']) await this.notifications.notifyRole(schoolId, role, { channels: ['in_app', 'push'], eventKey: 'assessment.marks_pending', title: 'Marks still pending', body: `${e.name}: ${missing.length} subject(s) have not been entered yet.`, entityType: 'assessment.exam', entityId: String(e.id) });
           reminded++;
         }
-        return { reminded };
+        let locked = 0, escalated = 0;
+        for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status IN ('ongoing','marks_entry') AND marks_entry_deadline IS NOT NULL AND marks_entry_deadline <= ?`, [schoolId, now])) {
+          const papers = await this.missingMarks(schoolId, String(e.id));
+          for (const p of papers) {
+            if (Number(p.marks_entry_locked) || Number(p.entered) < Number(p.expected)) continue;
+            await this.lockMarks(schoolId, String(p.schedule_id)); locked++;
+          }
+          const short = papers.filter(p => Number(p.entered) < Number(p.expected));
+          if (!short.length || await this.taskPending(schoolId, 'assessment.marks_overdue', String(e.id))) continue;
+          await this.tasks.create({ schoolId, title: `Marks overdue: ${e.name}`, description: short.map(p => `${p.class_name} · ${p.subject_name}: ${Number(p.entered)} of ${Number(p.expected)}`).join('\n'), taskType: 'assessment.marks_overdue', assignedRole: 'admin', entityType: 'assessment.exam', entityId: String(e.id), priority: 'high' });
+          escalated++;
+        }
+        return { reminded, locked, escalated };
       },
+      // D5 + D6 prep: marks all in → results computed → one task carrying the publish decision
+      'exams.auto_compute': async ({ schoolId, payload }) => this.autoCompute(schoolId, payload as { onDate?: string }),
+      // D6: the publication date a school already set, and any report card the render job never reached
+      'exams.publish_due': async ({ schoolId }) => this.publishDue(schoolId),
+      // D10: the weighted annual result, and the promotion prepared for somebody to apply
+      'exams.year_end': async ({ schoolId, payload }) => this.yearEnd(schoolId, payload as { onDate?: string }),
     };
   }
 }
@@ -847,3 +1114,9 @@ export class AssessmentService {
 /** JSON columns must hold valid JSON on every engine, so a bare scalar is encoded too. */
 const jsonCol = (v: unknown) => (v == null ? null : (JSON.stringify(v) as never));
 const round2 = (n: number) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+/** Date arithmetic on a plain 'YYYY-MM-DD', in UTC, so a job answers the same on every host. */
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}

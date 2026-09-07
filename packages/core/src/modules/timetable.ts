@@ -1,6 +1,9 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
+import type { NotificationService } from '../notifications.js';
+import type { TaskService } from '../tasks.js';
 import type { AcademicService } from './academic.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -15,7 +18,7 @@ export interface Clash { kind: 'teacher' | 'room' | 'section'; dayOfWeek: number
  * substitution suggestions for a teacher on a date (free that period, teaches the subject, lowest load).
  */
 export class TimetableService {
-  constructor(private db: Db, private outbox: OutboxService, private academic: AcademicService) {}
+  constructor(private db: Db, private outbox: OutboxService, private academic: AcademicService, private notifications: NotificationService, private tasks: TaskService) {}
 
   async versions(schoolId: string, yearId: string) { return this.db.findMany<Row>('timetable_versions', { school_id: schoolId, academic_year_id: yearId }, { orderBy: 'created_at DESC' }); }
   async createVersion(schoolId: string, yearId: string, name: string, effectiveFrom: string, generatedBy: 'manual' | 'auto' = 'manual') {
@@ -213,6 +216,98 @@ export class TimetableService {
     return this.db.query<Row>(`SELECT s.*, ts.day_of_week, ts.section_id, p.name AS period_name, sec.name AS section_name, c.name AS class_name, o.first_name AS original_first, o.last_name AS original_last, sub.first_name AS sub_first, sub.last_name AS sub_last FROM timetable_substitutions s JOIN timetable_slots ts ON ts.id = s.slot_id JOIN periods p ON p.id = ts.period_id JOIN sections sec ON sec.id = ts.section_id JOIN classes c ON c.id = sec.class_id LEFT JOIN staff o ON o.id = s.original_teacher_id LEFT JOIN staff sub ON sub.id = s.substitute_teacher_id WHERE s.school_id = ? AND s.on_date = ? ORDER BY p.sequence`, [schoolId, onDate]);
   }
   parseConstraints(v: Row) { return json(v.constraints); }
+
+  // ---------- scheduled ----------
+  /** Whether a task of this kind is already waiting on this thing, whichever run left it there. */
+  private async taskPending(schoolId: string, taskType: string, entityId: string) {
+    const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM tasks WHERE school_id = ? AND task_type = ? AND entity_id = ? AND status = 'open'`, [schoolId, taskType, entityId]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
+  /**
+   * B3, the half that had no trigger. An approved leave already proposes substitutes, but a teacher
+   * who is simply absent — the register says so, no leave form was ever filled in — left their classes
+   * uncovered until somebody noticed at the bell. This proposes cover for them on the same terms.
+   *
+   * It proposes; it does not appoint. `suggestSubstitutes` writes rows with status `suggested`, and a
+   * head of department approves them — telling a teacher by SMS that they are now covering period 3 is
+   * not something a cron job gets to decide.
+   */
+  async coverToday(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    if (await this.academic.isHoliday(schoolId, onDate)) return { skipped: 'holiday' as string | null, teachers: 0, slots: 0 };
+    const year = await this.academic.currentYear(schoolId);
+    if (!year) return { skipped: 'no year' as string | null, teachers: 0, slots: 0 };
+    const version = await this.publishedVersion(schoolId, String(year.id));
+    if (!version) return { skipped: 'no published timetable' as string | null, teachers: 0, slots: 0 };
+    const away = await this.db.query<Row>(`SELECT DISTINCT a.staff_id FROM staff_attendance a JOIN staff s ON s.id = a.staff_id
+      WHERE a.school_id = ? AND a.on_date = ? AND a.status IN ('absent','excused') AND s.staff_category = 'teaching' AND s.status IN ('active','probation')`, [schoolId, onDate]);
+    let teachers = 0, slots = 0;
+    for (const t of away) {
+      const made = await this.suggestSubstitutes(schoolId, String(version.id), String(t.staff_id), onDate);
+      if (!made.length) continue;
+      teachers++; slots += made.filter(m => m.substitutionId).length;
+    }
+    return { skipped: null as string | null, teachers, slots };
+  }
+
+  /**
+   * B8: the two ways a timetable quietly stops being true.
+   *
+   * A section-subject with nobody teaching it is a period no one turns up to, and a week into term
+   * that is not an oversight anybody is still going to catch. `autoAssignTeachers` fills it the way the
+   * generator already does — by the teacher's own subject preference, then by lightest load — and only
+   * ever where the slot is empty; an assignment somebody made is never overwritten. What it cannot
+   * fill (no teacher in the school teaches that subject) becomes a task, because that is a hiring
+   * problem and not a scheduling one.
+   *
+   * A draft version that validates clean and whose start date has come is prepared, not published:
+   * publishing rewrites everybody's week and archives the timetable the school is running on today, so
+   * it waits for a person. The task says it is clean and ready, which is the whole point.
+   */
+  async watch(schoolId: string, opts: { onDate?: string; settleDays?: number } = {}) {
+    const today = opts.onDate ?? nowSql().slice(0, 10);
+    const year = await this.academic.currentYear(schoolId);
+    if (!year) return { skipped: 'no year' as string | null, assigned: 0, unassigned: 0, drafts: 0 };
+    // a week's grace after the year opens: on day one half the staff are not on the system yet
+    const settled = addDays(String(year.start_date).slice(0, 10), opts.settleDays ?? 7);
+    if (today < settled) return { skipped: `the year is still settling until ${settled}` as string | null, assigned: 0, unassigned: 0, drafts: 0 };
+
+    const r = await this.autoAssignTeachers(schoolId, String(year.id));
+    if (r.unassigned && !(await this.taskPending(schoolId, 'curriculum.unassigned_subjects', String(year.id)))) {
+      await this.tasks.create({ schoolId, title: `${r.unassigned} class-subject(s) have no teacher`, description: `Nobody in the school teaches them, so they could not be assigned automatically. Add the subject to a teacher's profile, or hire.`, taskType: 'curriculum.unassigned_subjects', assignedRole: 'admin', entityType: 'academic.year', entityId: String(year.id), priority: 'high' });
+    }
+
+    let drafts = 0;
+    const published = await this.publishedVersion(schoolId, String(year.id));
+    for (const v of await this.db.query<Row>(`SELECT * FROM timetable_versions WHERE school_id = ? AND academic_year_id = ? AND status = 'draft' AND effective_from <= ? ORDER BY effective_from DESC`, [schoolId, String(year.id), today])) {
+      if (published && String(published.created_at) > String(v.created_at)) continue;   // an older draft the school moved past
+      if (await this.taskPending(schoolId, 'curriculum.publish_timetable', String(v.id))) continue;
+      const clashes = await this.validate(schoolId, String(v.id));
+      if (clashes.length) continue;                                                     // not ready; publishing would be refused anyway
+      const slots = await this.db.count('timetable_slots', { version_id: String(v.id) });
+      if (!slots) continue;
+      await this.tasks.create({ schoolId, title: `Publish the timetable: ${String(v.name)}`, description: `${slots} periods, no clashes, effective from ${String(v.effective_from).slice(0, 10)}. Publishing archives the timetable in use today and tells every teacher.`, taskType: 'curriculum.publish_timetable', assignedRole: 'admin', entityType: 'curriculum.timetable', entityId: String(v.id), priority: 'normal' });
+      await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'timetable.ready_to_publish', title: 'A timetable is ready to publish', body: `${String(v.name)}: ${slots} periods, no clashes, effective from ${String(v.effective_from).slice(0, 10)}.`, entityType: 'curriculum.timetable', entityId: String(v.id) });
+      drafts++;
+    }
+    return { skipped: null as string | null, assigned: r.assigned, unassigned: r.unassigned, drafts };
+  }
+
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // B3b: cover proposed for every teacher the register says is away today
+      'timetable.cover_today': async ({ schoolId, payload }) => this.coverToday(schoolId, String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10)),
+      // B8: subjects with no teacher assigned, and a clean draft nobody published
+      'timetable.watch': async ({ schoolId, payload }) => this.watch(schoolId, payload as { onDate?: string }),
+    };
+  }
+}
+
+/** Date arithmetic on a plain 'YYYY-MM-DD', in UTC, so a job answers the same on every host. */
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 function mulberry32(a: number) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }

@@ -5,6 +5,7 @@ import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { ApprovalService } from '../approvals.js';
+import { localHHMM } from '../util.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export type StudentStatus = 'present' | 'absent' | 'late' | 'half_day' | 'excused' | 'holiday';
@@ -257,10 +258,41 @@ export class AttendanceService {
     return { month: first, students: written };
   }
 
+  /** The school's own wall clock as HH:MM. Cut-offs are local times; the server may be anywhere. */
+  private async schoolClock(schoolId: string) {
+    const school = await this.db.findOne<{ timezone: string | null }>('schools', { id: schoolId });
+    return localHHMM(new Date(), String(school?.timezone ?? 'Asia/Dhaka'));
+  }
+
+  /**
+   * B5: a holiday declared after the fact. Schools announce a mourning day or a strike closure the
+   * same morning, by which time the register is already marked and the auto-absent pass has sent a
+   * hundred families an SMS. The rows the system wrote itself are turned into `holiday`; a mark a
+   * teacher made by hand is left exactly as it is, because a teacher who saw the children in front of
+   * them knows something the calendar does not.
+   */
+  async applyHoliday(schoolId: string, fromDate: string, toDate: string) {
+    const days: string[] = [];
+    for (let d = Date.parse(`${fromDate}T00:00:00Z`); d <= Date.parse(`${toDate}T00:00:00Z`); d += 86400_000) days.push(new Date(d).toISOString().slice(0, 10));
+    let cleared = 0;
+    for (const day of days) {
+      cleared += await this.db.update('student_attendance', { status: 'holiday', late_minutes: null, updated_at: nowSql() }, { school_id: schoolId, on_date: day, source: 'system' });
+      await this.db.update('staff_attendance', { status: 'holiday', updated_at: nowSql() }, { school_id: schoolId, on_date: day, source: 'system' });
+    }
+    // an online class on a day the school is shut is cancelled rather than left to ring out
+    const cancelled = await this.db.execute(`UPDATE online_classes SET status = 'cancelled', updated_at = ? WHERE school_id = ? AND status = 'scheduled' AND starts_at >= ? AND starts_at <= ?`,
+      [nowSql(), schoolId, `${fromDate} 00:00:00`, `${toDate} 23:59:59`]);
+    return { days: days.length, cleared, cancelled: cancelled.affectedRows };
+  }
+
   /** Scheduled handlers: C4 auto-absent + SMS, C11 summary refresh, C6 monthly threshold alert. */
   jobs(): Record<string, ScheduledFn> {
     return {
-      'attendance.auto_absent': async ({ schoolId }) => this.autoAbsent(schoolId),
+      // C4: runs on the half hour and marks only the shifts whose own cut-off has gone by
+      'attendance.auto_absent': async ({ schoolId, payload }) => {
+        const p = payload as { onDate?: string; asOf?: string | null };
+        return this.autoAbsent(schoolId, p.onDate ?? nowSql().slice(0, 10), 'asOf' in p ? { asOf: p.asOf } : {});
+      },
       'attendance.refresh_summary': async ({ schoolId }) => this.refreshMonthly(schoolId, nowSql().slice(0, 10)),
       'attendance.monthly_threshold': async ({ schoolId }) => this.monthlyThreshold(schoolId),
     };
@@ -270,21 +302,48 @@ export class AttendanceService {
    * C4: at the cut-off, everyone in an active section with no mark today becomes absent and their
    * guardians get an SMS. Runs in chunks so 5,000 students still finish inside a shared-hosting request.
    */
-  async autoAbsent(schoolId: string, onDate = nowSql().slice(0, 10)) {
+  async autoAbsent(schoolId: string, onDate = nowSql().slice(0, 10), opts: { asOf?: string | null } = {}) {
     if (await this.academic.isHoliday(schoolId, onDate)) return { skipped: 'holiday', absent: 0 };
     const year = await this.academic.currentYear(schoolId);
     if (!year) return { skipped: 'no year', absent: 0 };
-    const missing = await this.db.query<Row>(`SELECT e.student_id, e.section_id, s.current_class_id FROM student_enrollments e JOIN students s ON s.id = e.student_id
+    // The clock the cut-offs are written in. The job ticks every half hour so that a shift closing at
+    // 09:00 is not marked at 10:30 with everybody else, which means most ticks have nothing to do:
+    // the earliest cut-off in the school answers that before the roll is ever read. `asOf` is null for
+    // a caller that wants the whole roll regardless of the clock (a backfill, or a test).
+    const asOf = opts.asOf === undefined ? await this.schoolClock(schoolId) : opts.asOf;
+    const policies = (await this.policies(schoolId)).filter(p => p.audience === 'student');
+    if (asOf && policies.length) {
+      const earliest = policies.map(p => (p.auto_absent_at ? String(p.auto_absent_at).slice(0, 5) : '00:00')).sort()[0] as string;
+      if (asOf < earliest) return { absent: 0, waiting: null as number | null, before: earliest };
+    }
+    const missing = await this.db.query<Row>(`SELECT e.student_id, e.section_id, s.current_class_id, sec.shift_id FROM student_enrollments e JOIN students s ON s.id = e.student_id LEFT JOIN sections sec ON sec.id = e.section_id
       WHERE e.school_id = ? AND e.academic_year_id = ? AND e.status = 'active' AND s.status = 'active'
         AND NOT EXISTS (SELECT 1 FROM student_attendance a WHERE a.student_id = e.student_id AND a.on_date = ?)
         AND NOT EXISTS (SELECT 1 FROM leave_applications l WHERE l.student_id = e.student_id AND l.status = 'approved' AND l.from_date <= ? AND l.to_date >= ?)`, [schoolId, String(year.id), onDate, onDate, onDate]);
-    if (!missing.length) return { absent: 0 };
+    if (!missing.length) return { absent: 0, waiting: 0, before: null as string | null };
+    // and then, child by child, only the ones whose own class-and-shift policy has closed its register
+    let waiting = 0;
+    if (asOf) {
+      const passed = new Map<string, boolean>();
+      for (const m of missing) {
+        const key = `${m.current_class_id ?? ''}:${m.shift_id ?? ''}`;
+        if (!passed.has(key)) {
+          const policy = await this.policyFor(schoolId, 'student', (m.current_class_id as string) ?? null, (m.shift_id as string) ?? null);
+          const cutoff = policy.auto_absent_at ? String(policy.auto_absent_at).slice(0, 5) : null;
+          passed.set(key, !cutoff || asOf >= cutoff);
+        }
+      }
+      const due = missing.filter(m => passed.get(`${m.current_class_id ?? ''}:${m.shift_id ?? ''}`));
+      waiting = missing.length - due.length;
+      missing.length = 0; missing.push(...due);
+      if (!missing.length) return { absent: 0, waiting, before: null as string | null };
+    }
     const rows = missing.map(m => ({ id: ulid(), school_id: schoolId, student_id: m.student_id, section_id: m.section_id, on_date: onDate, status: 'absent', source: 'system', marked_by: null }));
     await this.db.insertMany('student_attendance', rows);
     await this.outbox.emitNow({ type: 'attendance.marked', schoolId, aggregateType: 'attendance.auto_absent', aggregateId: onDate, payload: { onDate, counts: { absent: rows.length }, source: 'auto' } as never });
     // notification fan-out goes through the queue so the cut-off job itself stays fast
     await this.adapters.queue.push({ name: 'attendance.notify_absent', queue: 'notifications', schoolId, payload: { onDate, studentIds: missing.map(m => String(m.student_id)) }, totalItems: missing.length, triggeredBy: 'attendance.auto_absent' });
-    return { absent: rows.length };
+    return { absent: rows.length, waiting, before: null as string | null };
   }
   /** Queue handler for the absent fan-out (chunked: 100 guardians per pass). */
   async notifyAbsentBatch(payload: Record<string, unknown>, ctx: { job: { cursor: unknown }; progress: (d: number, t?: number | null, c?: unknown) => Promise<void>; deadline: number }) {

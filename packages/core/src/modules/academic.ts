@@ -1,5 +1,6 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { SettingsService } from '../settings.js';
 import { HttpError, badRequest, notFound } from '../context.js';
@@ -268,6 +269,42 @@ export class AcademicService {
     for (const cid of classIds) { if (!(await this.db.findOne('sections', { school_id: schoolId, academic_year_id: yearId, class_id: cid }))) await this.createSection(schoolId, { academicYearId: yearId, classId: cid, name: 'A' }); }
     if (institutionType === 'school_college') await this.applyPreset(schoolId, 'college', yearId);
     return { classes: classIds.length, subjects: subjectIds.length };
+  }
+
+  // ---------- scheduled ----------
+  /**
+   * B9: next year, made before it is needed.
+   *
+   * Everything the year-end depends on needs a year to point at — the promotion that creates next
+   * year's enrolments, the fee structures cloned into it, the sections a promoted child lands in — and
+   * a school that has not created one in December finds that out in the first week of January, with
+   * the children in front of them. So the last month of the year builds it: the dates shifted by a
+   * year, the class-subject matrix and section skeletons cloned from this year (that is what
+   * `cloneYear` is for), the name taken from this year's if it is a plain number.
+   *
+   * It is created `planned`, never made current. Which year the school is *running* is the one
+   * decision here that changes what every page shows, and that stays a person's to make.
+   */
+  async ensureNextYear(schoolId: string, opts: { onDate?: string; withinDays?: number } = {}) {
+    const today = opts.onDate ?? nowSql().slice(0, 10);
+    const year = await this.currentYear(schoolId);
+    if (!year) return { created: null as string | null, skipped: 'no current year' as string | null };
+    const start = String(year.start_date).slice(0, 10), end = String(year.end_date).slice(0, 10);
+    const endsIn = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+    if (endsIn > (opts.withinDays ?? 30)) return { created: null as string | null, skipped: `the year still has ${endsIn} days` as string | null };
+    const already = await this.db.query<Row>(`SELECT id FROM academic_years WHERE school_id = ? AND start_date > ? LIMIT 1`, [schoolId, start]);
+    if (already.length) return { created: null as string | null, skipped: 'a later year already exists' as string | null };
+    const shift = (d: string) => { const x = new Date(`${d}T00:00:00Z`); x.setUTCFullYear(x.getUTCFullYear() + 1); return x.toISOString().slice(0, 10); };
+    const name = /^\d{4}$/.test(String(year.name)) ? String(Number(year.name) + 1) : `${year.name} (next)`;
+    const id = await this.createYear(schoolId, { name, startDate: shift(start), endDate: shift(end), setCurrent: false, cloneFromYearId: String(year.id) });
+    return { created: id, name, startDate: shift(start), endDate: shift(end), skipped: null as string | null };
+  }
+
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // B9: the next academic year, cloned and planned, before the current one runs out
+      'academic.year_rollover': async ({ schoolId, payload }) => this.ensureNextYear(schoolId, payload as { onDate?: string }),
+    };
   }
 
   async requireYear(schoolId: string, yearId?: string | null) {
