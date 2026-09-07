@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 352 tables · 4068 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 356 tables · 4106 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -126,6 +126,48 @@ User ↔ role, optionally limited to a campus.
 | user_id | ulid | required · → users |
 | role_id | ulid | required · → roles |
 | campus_id | ulid | → campuses |
+
+### `school_groups`
+A trust or owner running several schools in one installation. Consolidated dashboards and inter-school transfers are read through the group, never school-to-school.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| name | str(160) | required |
+| name_bn | str(160) |  |
+| owner_user_id | ulid | → users · the trust's own login, if it has one |
+| base_currency | str(3) | required · default 'BDT' · what a consolidated total is expressed in |
+| status | enum(active|closed) | required · default active |
+| settings | json |  |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
+
+### `school_group_members`
+Which schools belong to a group. is_head marks the one whose console may read the others — membership alone never grants cross-school reach.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| school_id | ulid | required · → schools · Tenant |
+| group_id | ulid | required · → school_groups |
+| is_head | bool | required · default false |
+| joined_on | date |  |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
+
+### `currency_rates`
+Rate used to add money from schools that do not share a currency. Installation-wide: no row means no consolidated total, never a silent sum.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| base_ccy | str(3) | required · the currency being converted from |
+| quote_ccy | str(3) | required · the currency being converted to |
+| rate | dec(18,8) | required · 1 base = <rate> quote |
+| as_of | date | required |
+| source | str(60) | who said so (Bangladesh Bank, a manual entry, a feed) |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
 
 ### `auth_sessions`
 Server sessions per device. Valid only while session.epoch == users.session_epoch.
@@ -1493,6 +1535,26 @@ Every status change (suspended, transferred…) with reason.
 | reason | str(255) |  |
 | changed_by | ulid | → users |
 | changed_at | dt | required · default now |
+
+### `student_transfers`
+A child moving between two schools of one group: the row they left, the row they arrived in, and what was outstanding on the day. Tenant is the school they left.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| school_id | ulid | required · → schools · Tenant |
+| group_id | ulid | → school_groups |
+| student_id | ulid | required · → students · the row in the school they left |
+| to_school_id | ulid | required · → schools |
+| to_student_id | ulid | → students · the row created in the school they joined |
+| to_class_id | ulid | → classes |
+| reason | str(255) |  |
+| dues_at_transfer | money | required · default 0 · carried, not hidden: the receiving school must know |
+| status | enum(completed|cancelled) | required · default completed |
+| transferred_by | ulid | → users |
+| transferred_at | dt | required |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
 
 ## Curriculum & timetable
 

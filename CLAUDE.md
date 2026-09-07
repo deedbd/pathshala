@@ -80,6 +80,17 @@ the school's own rows; drafting needs a provider and is always stored as a draft
 API: `apps/server/src/routes/phase13.ts`, plus the scoped public API at `/api/v1`. Exit criterion:
 `tests/year3a.test.mjs`.
 
+## Year 4 (in progress)
+`groups` (`packages/core/src/modules/groups.ts`) is the one service that reads across tenants, so
+every crossing is gated in it: only the founding school of an installation may build a group, only a
+group's head school reads the other members' figures, a transfer needs both schools in one group, and
+the parent super-app (`/api/portal/family`) is authorised by the guardian's own phone and refuses any
+account that is not a guardian. Consolidated numbers are AnalyticsService's `kpi_daily` rows added up,
+never recomputed, and money from schools with different `schools.currency` is refused until a
+`currency_rates` row exists — the total then carries the rate and the day it came from. New tables:
+`school_groups`, `school_group_members`, `currency_rates`, `student_transfers`. API:
+`apps/server/src/routes/phase16.ts`. Exit criterion: `tests/groups.test.mjs`.
+
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
 

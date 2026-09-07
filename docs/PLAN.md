@@ -261,6 +261,37 @@ exit criterion on all three engines.
 > OpenAI-compatible endpoint. Console page: none yet — the assistant lives at `/api/ai/*`.
 > Not yet: a chat panel in the console, the WhatsApp chatbot, and OCR of marks sheets.
 
+## Year 4 · Scale & ecosystem (after year 3)
+
+### Multi-school groups and the parent super-app — shipped
+
+> **Status (7 Sep 2026): implemented.** `groups`, the only service in the codebase that reads across
+> tenants, so every crossing is named and gated. A trust puts several schools of one installation into
+> a group; the consolidated dashboard gives roll, attendance, fees collected in the window, fees
+> outstanding and staff per school and then added up — from the same `kpi_daily` rows AnalyticsService
+> writes for each school's own dashboard, so the trust and the head teacher cannot arrive at the
+> meeting with different numbers, and every row states how many days it covers rather than reading
+> short. Only the group's *head* school sees the others: a member is a member, and a branch principal
+> who could read the next branch's collection would be a scandal, not a feature. Only the school the
+> installation was created with can make a group at all, or the gate would be decoration — any school
+> could otherwise group itself with its neighbour and appoint itself head. A shared staff pool shows
+> who works for the group and how many published periods they carry, which is the question head office
+> asks before it advertises a post. An inter-school transfer creates the child in the receiving school
+> first and closes the row they left second (the other order loses a child if it fails halfway),
+> carries the guardians over by phone so the family's login reaches the new school at once, lands them
+> on the same rung of the ladder or asks which class rather than guessing, records what was
+> outstanding without holding the child hostage to it, and returns the first transfer when it is asked
+> twice. And money that spans currencies is refused rather than guessed: a group whose schools bill in
+> BDT and USD gets its counts and no money total until a rate is recorded, then a total that carries
+> the rate and the day it was taken from. The parent super-app is one guardian login reaching their
+> children in every school of the installation, matched on the phone number they proved with an OTP,
+> served at `/api/portal/family` and refused outright to any account that is not a guardian — no
+> permission a school can grant reaches across the group. API: `apps/server/src/routes/phase16.ts`.
+> Exit criterion: `tests/groups.test.mjs`.
+> Not yet: a console page for the trust (the group lives at `/api/groups/*`), database-per-tenant and
+> read replicas for very large groups, a rate feed instead of a typed-in rate, VAT returns and the
+> auditor portal, and board/government API integrations.
+
 
 ---
 
