@@ -26,6 +26,7 @@ process.env.FONTS_DIR = 'packages/adapters/fonts';
 if (process.env.TEST_DB_URL) { process.env.DB_URL = process.env.TEST_DB_URL; delete process.env.DB_ENGINE; }
 else { process.env.DB_ENGINE = 'sqlite'; process.env.SQLITE_PATH = 'tests/.tmp/pathshala.db'; delete process.env.DB_URL; }
 
+const SCHEDULED_JOBS = JSON.parse(fs.readFileSync(path.join(root, 'db/seeds/scheduled_jobs.json'), 'utf8')).length;
 const core = await import('../packages/core/dist/index.js');
 const adapters = await import('../packages/adapters/dist/index.js');
 const serverMod = await import('../apps/server/dist/index.js');
@@ -63,7 +64,7 @@ test('installer: school + admin (step 8) with tenant seeds', async () => {
   schoolId = r.schoolId; adminId = r.userId;
   assert.ok(schoolId && adminId);
   assert.equal(await app.db.count('roles', { school_id: schoolId }), 10);
-  assert.equal(await app.db.count('scheduled_jobs', { school_id: schoolId }), 28);
+  assert.equal(await app.db.count('scheduled_jobs', { school_id: schoolId }), SCHEDULED_JOBS, 'one row per job in db/seeds/scheduled_jobs.json');
   assert.ok((await app.db.count('automation_rules', { school_id: schoolId })) >= 30);
   assert.ok((await app.db.count('gl_accounts', { school_id: schoolId })) > 40);
   assert.ok((await app.db.count('notification_templates', { school_id: schoolId })) >= 18);
@@ -189,7 +190,7 @@ test('http: /_health, login cookie, /api/auth/me, automation activity, /cron/tic
   assert.equal(me.user.displayName, 'Abu Sayed');
   assert.ok(me.roles.includes('super_admin'));
   const act = await (await fetch(`${baseUrl}/api/automation/activity`, { headers: { cookie } })).json();
-  assert.ok(act.runs.length >= 1 && act.scheduled.length === 28);
+  assert.ok(act.runs.length >= 1 && act.scheduled.length === SCHEDULED_JOBS);
   assert.equal((await fetch(`${baseUrl}/api/automation/activity`)).status, 401);
   assert.equal((await fetch(`${baseUrl}/cron/tick?key=nope`)).status, 403);
   const tick = await (await fetch(`${baseUrl}/cron/tick?key=cron-test`)).json();

@@ -212,6 +212,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `transport.document_expiry` | `0 8 * * *` | J7 |
 | `hostel.curfew_watch` | `*/15 * * * *` | K3 |
 | `inventory.maintenance_due` | `0 8 * * *` | L4 |
+| `frontoffice.sla_escalation` | `0 * * * *` | N8 |
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |
 | `comms.provider_balance` | `0 * * * *` | M3 |
 | `comms.weekly_digest` | `0 18 * * 6` | M5 |

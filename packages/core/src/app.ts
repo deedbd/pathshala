@@ -34,6 +34,11 @@ import { AssessmentService } from './modules/assessment.js';
 import { HrService } from './modules/hr.js';
 import { DocumentService } from './modules/documents.js';
 import { AdmissionsService } from './modules/admissions.js';
+import { LibraryService } from './modules/library.js';
+import { TransportService } from './modules/transport.js';
+import { HostelService } from './modules/hostel.js';
+import { InventoryService } from './modules/inventory.js';
+import { FrontOfficeService } from './modules/frontoffice.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -41,7 +46,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -96,6 +101,11 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const hr = new HrService(db, outbox, notifications, academic, accounting, approvals, tasks, files, people, adapters);
   const documents = new DocumentService(db, outbox, notifications, numbering, files, approvals, adapters);
   const admissions = new AdmissionsService(db, outbox, notifications, numbering, academic, people, fees, documents, adapters);
+  const library = new LibraryService(db, outbox, notifications, numbering, fees);
+  const transport = new TransportService(db, outbox, notifications, tasks, attendance);
+  const hostel = new HostelService(db, outbox, notifications, tasks, approvals);
+  const inventory = new InventoryService(db, outbox, notifications, numbering, tasks, approvals, accounting);
+  const frontOffice = new FrontOfficeService(db, outbox, notifications, numbering, tasks);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -117,6 +127,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
       await hr.ensureSalaryComponents(schoolId);
       await hr.ensureTaxSlabs(schoolId);
       await documents.ensureTemplates(schoolId);
+      await library.ensureCategories(schoolId);
+      await inventory.ensureSetup(schoolId);
     },
   });
 
@@ -135,12 +147,17 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(assessment.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(hr.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(admissions.jobs())) adapters.scheduler.register(key, fn);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions });
+  for (const [key, fn] of Object.entries(library.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(transport.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(hostel.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(inventory.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(frontOffice.jobs())) adapters.scheduler.register(key, fn);
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -167,7 +184,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -239,6 +256,11 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
     // wait for the last mark of the class: ranking half a cohort would hand out the wrong seats
     if (!(await d.admissions.readyForMerit(e.schoolId, e.payload.campaignId, e.payload.classId))) return;
     await d.admissions.computeMerit(e.schoolId, e.payload.campaignId, e.payload.classId);
+  });
+  // L3: an approved issue request empties the shelf onto somebody's name
+  h.on('approval.decided', 'inventory-approvals', async e => {
+    if (e.payload.decision === 'rejected') return;
+    if (e.payload.entityType === 'inventory.issue_request') await d.inventory.issueApproved(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`issue request: ${(err as Error).message}`));
   });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

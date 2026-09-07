@@ -35,6 +35,7 @@ export default function Console() {
           <NavLink to="/accounts" className={link} style={style}>{tr('nav.accounts')}</NavLink>
           <NavLink to="/hr" className={link} style={style}>{tr('nav.hr')}</NavLink>
           <NavLink to="/admissions" className={link} style={style}>{tr('nav.admissions')}</NavLink>
+          <NavLink to="/operations" className={link} style={style}>{tr('nav.operations')}</NavLink>
           <NavLink to="/diary" className={link} style={style}>{tr('nav.diary')}</NavLink>
           <NavLink to="/chat" className={link} style={style}>{tr('nav.chat')}</NavLink>
           <NavLink to="/syllabus" className={link} style={style}>{tr('nav.syllabus')}</NavLink>

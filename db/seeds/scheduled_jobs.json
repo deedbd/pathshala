@@ -95,6 +95,11 @@
     "rows": "L4"
   },
   {
+    "job_key": "frontoffice.sla_escalation",
+    "cron_expr": "0 * * * *",
+    "rows": "N8"
+  },
+  {
     "job_key": "comms.publish_scheduled_notices",
     "cron_expr": "*/10 * * * *",
     "rows": "M2"

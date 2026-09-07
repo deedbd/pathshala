@@ -24,6 +24,7 @@ export default [
     route('accounts', 'routes/accounts.tsx'),
     route('hr', 'routes/hr.tsx'),
     route('admissions', 'routes/admissions.tsx'),
+    route('operations', 'routes/operations.tsx'),
   ]),
   route('teach', 'routes/teach.tsx'),
   ...prefix('site', [

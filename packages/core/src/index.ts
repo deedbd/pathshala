@@ -34,6 +34,11 @@ export { CommunicationService, type MessageInput } from './modules/communication
 export { AccountingService, round, type JournalInput, type JournalLine } from './modules/accounting.js';
 export { FeesService, type PaymentInput, type StructureItemInput, type Frequency } from './modules/fees.js';
 export { AssessmentService, type ExamInput, type MarkInput as ExamMarkInput } from './modules/assessment.js';
+export { LibraryService, type BookInput } from './modules/library.js';
+export { TransportService, type RouteInput, type GpsPacket } from './modules/transport.js';
+export { HostelService } from './modules/hostel.js';
+export { InventoryService, type PoLine } from './modules/inventory.js';
+export { FrontOfficeService } from './modules/frontoffice.js';
 export { DocumentService, type IssueInput, type DocType } from './modules/documents.js';
 export { AdmissionsService, type CampaignInput, type ApplicationInput } from './modules/admissions.js';
 export { HrService, type StructureInput, type LoanInput, type ExitInput, type TaxSlab } from './modules/hr.js';
