@@ -180,6 +180,11 @@
     "rows": "B6"
   },
   {
+    "job_key": "college.registration_watch",
+    "cron_expr": "0 8 * * *",
+    "rows": "R1"
+  },
+  {
     "job_key": "admissions.offer_expiry",
     "cron_expr": "0 * * * *",
     "rows": "A7"

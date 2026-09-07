@@ -261,6 +261,39 @@ exit criterion on all three engines.
 > OpenAI-compatible endpoint. Console page: none yet — the assistant lives at `/api/ai/*`.
 > Not yet: a chat panel in the console, the WhatsApp chatbot, and OCR of marks sheets.
 
+### College and coaching modes — shipped
+
+> **Status (7 Sep 2026): implemented.** `college`: the same tables a school uses, read the way an
+> institution that counts credits rather than years needs them. A programme carries how many terms it
+> runs for and how many credits it takes to finish, and dividing one by the other is the credit ceiling
+> a semester registration is checked against — the load the timetable, the rooms and the teachers were
+> sized for. Registration is `course_registrations`, one row per student per term per subject, and the
+> credit is copied onto it rather than looked up later, so repricing a subject next year cannot rewrite
+> last year's GPA. Everything is validated before anything is written: a half-registered student would
+> have the ceiling enforced against a total nobody agreed to. A student may only register for what
+> their own class is offered, only while the semester is open, and a course that already carries a
+> grade can never be dropped. Results are struck against the school's own grading scale, and the GPA is
+> weighted by credit rather than by how many subjects happen to be on the sheet — a four-credit paper
+> moves the average four times as far as a one-credit lab. A retake replaces the attempt it repeats:
+> counting a failure and the pass that cancelled it would punish the student twice for one course. The
+> programme certificate is earned by credits, never by reaching the last semester, and the shortfall is
+> named so the office can say exactly what is left; `issued_documents` has no column pointing back at a
+> programme, so the snapshot it already keeps is what makes a second certificate impossible. Department
+> portals scope people, subjects, programmes and the registered credit load to one department, and only
+> a member of a department can head it. For coaching centres a batch is sold rather than admitted into:
+> the price becomes an instalment plan against a fee head of the course's own, so six batches are six
+> lines of the ledger, and the seat is handed over by `payment.received` when the first taka actually
+> arrives — a centre that enrols on the promise spends the term teaching people who never paid. Selling
+> the same batch to the same student twice is refused, and the course certificate waits for the last
+> instalment, billed or not. A nightly job chases a light semester exactly one week in, which is late
+> enough that the stragglers have had their chance and early enough that the timetable has not been
+> built around the wrong numbers — and firing on one day is what stops it messaging the same family
+> twenty times without a column to remember that it did. New table: `course_registrations`.
+> `tests/college.test.mjs` is the exit criterion.
+> Not yet: a console page (the API is `/api/college/*`), electives a student picks from a basket rather
+> than the whole class-subject list, an overload a registrar can approve above the ceiling, and a
+> transcript PDF.
+
 
 ---
 

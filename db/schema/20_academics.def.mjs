@@ -91,6 +91,21 @@ export default [
     class_subject_id ulid ! >class_subjects
     is_fourth        bool ! =false
   `, unique:[['student_id','class_subject_id']] },
+  course_registrations:{ desc:'Semester/credit mode: what a student registered for in one term, with the credit it carries and the grade it earned. A school never touches this; a college cannot work without it.', cols:`
+    academic_year_id ulid ! >academic_years
+    term_id          ulid ! >terms
+    student_id       ulid ! i
+    class_subject_id ulid ! >class_subjects
+    program_id       ulid >programs:null
+    credit           dec(4,2) ! =0     # snapshot: changing a subject's credit must not rewrite last semester's GPA
+    status           enum(registered|dropped|completed|failed) ! =registered
+    percent          pct
+    grade            str(5)
+    grade_point      dec(4,2)
+    registered_on    date !
+    dropped_on       date
+    completed_on     date
+  `, unique:[['student_id','term_id','class_subject_id']] },
   periods:{ desc:'Period grid per shift.', cols:`
     shift_id   ulid >shifts
     name       str(30) !

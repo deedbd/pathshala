@@ -32,6 +32,20 @@ export class FeesService {
 
   // ---------- structures ----------
   async heads(schoolId: string) { return this.db.findMany<Row>('fee_heads', { school_id: schoolId, status: 'active' }, { orderBy: 'name ASC' }); }
+  /**
+   * A head another module needs for its own billing — one coaching course, say — rather than one the
+   * office typed in. It is keyed on the code, so calling it again for the same thing hands back the
+   * head that already exists instead of splitting the income across two lines of the ledger.
+   */
+  async ensureHead(schoolId: string, h: { name: string; code: string; kind?: 'academic' | 'transport' | 'hostel' | 'fine' | 'misc' | 'course' | 'shop' | 'canteen'; glCode?: string }) {
+    const code = h.code.trim().toUpperCase().slice(0, 20);
+    const ex = await this.db.findOne<{ id: string }>('fee_heads', { school_id: schoolId, code });
+    if (ex) return ex.id;
+    const gl = await this.db.findOne<{ id: string }>('gl_accounts', { school_id: schoolId, code: h.glCode ?? '4100' });
+    const id = ulid();
+    await this.db.insert('fee_heads', { id, school_id: schoolId, name: h.name.slice(0, 80), code, head_kind: h.kind ?? 'misc', gl_account_id: gl ? gl.id : null, is_refundable: false, tax_pct: 0, status: 'active' });
+    return id;
+  }
   async createStructure(schoolId: string, s: { academicYearId: string; classId: string; name: string; items: StructureItemInput[] }) {
     const ex = await this.db.findOne<{ id: string }>('fee_structures', { school_id: schoolId, academic_year_id: s.academicYearId, class_id: s.classId, campus_id: null, shift_id: null, program_id: null });
     const id = ex?.id ?? ulid();

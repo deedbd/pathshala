@@ -79,6 +79,13 @@ webhooks, OAuth2 clients with scopes, template packs) and `ai` (data questions a
 the school's own rows; drafting needs a provider and is always stored as a draft a person applies).
 API: `apps/server/src/routes/phase13.ts`, plus the scoped public API at `/api/v1`. Exit criterion:
 `tests/year3a.test.mjs`.
+And `college` (semester/credit programmes: per-term course registration against a credit ceiling the
+programme itself sets, a GPA weighted by credit where a retake replaces the failure it repeats,
+department portals, a certificate that waits for the credits, and coaching batches sold on instalments
+whose seat is handed over by the payment, not by the plan). It owns `course_registrations` and reaches
+every other module through its service — `academic` for programmes and credits, `people` for
+departments, `fees` for the plan, `lms` for the seat and its certificate, `assessment` for the grade.
+API: `apps/server/src/routes/phase14.ts`. Exit criterion: `tests/college.test.mjs`.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
