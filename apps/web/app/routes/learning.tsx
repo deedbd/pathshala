@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { useLoaderData, useRevalidator } from 'react-router';
+import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/learning';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Kpi, Select, Tabs, api, formatDate, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
 
+/** A pick that needs server data is a search param, so a reload — or a shared link — lands on the same view. */
+const soft = <T,>(p: Promise<T>) => p.catch(() => null);
+
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request); const sid = user.school_id;
+  const url = new URL(request.url);
   const year = await context.app.academic.currentYear(sid);
   const yearId = year ? String(year.id) : null;
   const [courses, assignments, classes, incidents, categories, actions, surveys, newsletters, events, clubs, sections] = await Promise.all([
@@ -16,18 +20,48 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     yearId ? context.app.db.query(`SELECT s.id, s.name, c.name AS class_name FROM sections s JOIN classes c ON c.id = s.class_id WHERE s.school_id = ? AND s.academic_year_id = ? ORDER BY c.numeric_level, s.name LIMIT 200`, [sid, yearId]) : [],
   ]);
   const houses = await context.app.engagement.houseTable(sid);
-  return { locale: (user.locale as Locale) || context.locale, courses, assignments, classes, incidents, categories, actions, surveys, newsletters, events, clubs, houses, sections };
+  // the year-5 half: threads and the watch report follow the chosen course, the revision plan the
+  // chosen child, the class gaps the chosen class subject. Each is soft — a school with no term or
+  // no competency ratings yet must still get the rest of the page.
+  const courseId = url.searchParams.get('courseId') || (courses[0] ? String(courses[0].id) : null);
+  const studentId = url.searchParams.get('studentId') || null;
+  const classSubjectId = url.searchParams.get('classSubjectId') || null;
+  const [threads, watch, classSubjects, roll, gaps, plan] = await Promise.all([
+    courseId ? soft(context.app.lms.threads(sid, { courseId }, { userId: user.id, isStaff: true })) : null,
+    courseId ? soft(context.app.lms.watchReport(sid, courseId)) : null,
+    yearId ? context.app.academic.classSubjects(sid, yearId) : [],
+    context.app.people.students(sid, { limit: 200 }),
+    classSubjectId ? soft(context.app.adaptive.classGaps(sid, { classSubjectId })) : null,
+    studentId ? soft(context.app.adaptive.revisionPlan(sid, studentId)) : null,
+  ]);
+  return {
+    locale: (user.locale as Locale) || context.locale, courses, assignments, classes, incidents, categories, actions, surveys, newsletters, events, clubs, houses, sections,
+    courseId, studentId, classSubjectId, threads, watch, classSubjects, students: roll.rows, gaps, plan,
+  };
 }
 export function meta() { return [{ title: 'Pathshala — Learning & welfare' }]; }
 
+type Similarity = {
+  assignmentId: string; title: string; checked: number; reportAt: number; minWords: number; highestPct: number; truncated: string | null; note: string;
+  pairs: { similarityPct: number; a: { submissionId: string; name: string; roll: string | null }; b: { submissionId: string; name: string; roll: string | null }; sharedPhrases: string[] }[];
+  skipped: { submissionId: string; name: string; words: number; reason: string }[];
+};
+
 export default function Learning() {
-  const d = useLoaderData<typeof loader>(); const rv = useRevalidator();
+  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
-  const [tab, setTab] = useState<'courses' | 'assignments' | 'welfare' | 'engagement'>('courses');
-  const [drawer, setDrawer] = useState<null | 'course' | 'assignment' | 'class' | 'incident' | 'survey' | 'event'>(null);
+  const [tab, setTab] = useState<'courses' | 'assignments' | 'discussions' | 'adaptive' | 'welfare' | 'engagement'>('courses');
+  const [drawer, setDrawer] = useState<null | 'course' | 'assignment' | 'class' | 'incident' | 'survey' | 'event' | 'thread' | 'similarity'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [watchOpen, setWatchOpen] = useState(false);
+  const [sim, setSim] = useState<Similarity | null>(null);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
+  const setParam = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n); };
   const openTickets = d.actions.filter(a => String(a.status) === 'pending').length;
+  const threads = d.threads?.threads ?? [];
+  // a thread counts as answered when the question itself or any of its replies was marked
+  const answered = (post: { isAnswer: boolean; replies: { isAnswer: boolean }[] }) => post.isAnswer || post.replies.some(r => r.isAnswer);
 
   return (
     <div>
@@ -48,6 +82,8 @@ export default function Learning() {
       <div className="mt-6"><Tabs value={tab} onChange={setTab} tabs={[
         { key: 'courses', label: tr('lrn.courses'), count: d.courses.length },
         { key: 'assignments', label: tr('lrn.assignments'), count: d.assignments.length },
+        { key: 'discussions', label: tr('lrn.discussions'), count: threads.length },
+        { key: 'adaptive', label: tr('lrn.adaptive') },
         { key: 'welfare', label: tr('lrn.welfare'), count: d.incidents.length },
         { key: 'engagement', label: tr('lrn.engagement'), count: d.surveys.length + d.events.length },
       ]} /></div>
@@ -62,8 +98,34 @@ export default function Learning() {
           { key: 'lessons', label: tr('lrn.lessons'), className: 'num' },
           { key: 'students', label: tr('lrn.students'), className: 'num' },
           { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status) === 'published' ? 'active' : 'pending'}>{String(r.status)}</Chip> },
+          { key: 'watch', label: '', render: r => <Button size="sm" variant="secondary" onClick={() => { setParam('courseId', String(r.id)); setWatchOpen(true); }}>{tr('lrn.watchReport')}</Button> },
           { key: 'id', label: '', render: r => String(r.status) === 'published' ? null : <Button size="sm" onClick={() => run(async () => { const x = await api<{ enrolled: number }>(`/api/lms/courses/${r.id}/publish`, { method: 'POST', json: {} }); setMsg(`${x.enrolled} ${tr('lrn.enrolled')}`); })}>{tr('lrn.publish')}</Button> },
         ]} />
+
+        {watchOpen && <div className="mt-4 card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg">{tr('lrn.watchReport')}{d.watch ? ` — ${d.watch.title}` : ''}</h2>
+            <Button size="sm" variant="ghost" onClick={() => setWatchOpen(false)}>{tr('common.cancel')}</Button>
+          </div>
+          <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.watchNote')}{d.watch ? ` · ${tr('lrn.countsAt')} ${d.watch.requiredPct}%` : ''}</p>
+          {d.watch && <>
+            <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
+              <Kpi label={tr('lrn.enrolled')} value={d.watch.enrolled} locale={d.locale} />
+              <Kpi label={tr('lrn.lessons')} value={d.watch.lessons.length} locale={d.locale} />
+              <Kpi label={tr('lrn.watched')} value={d.watch.lessons.reduce((a, l) => a + l.completed, 0)} locale={d.locale} />
+            </div>
+            <div className="mt-3"><DataTable locale={d.locale} searchable={false} rows={d.watch.lessons.map(l => ({ id: l.lessonId, ...l }))} columns={[
+              { key: 'title', label: tr('lrn.lesson') },
+              { key: 'lessonType', label: tr('common.type') },
+              { key: 'durationMin', label: tr('lrn.runTime'), className: 'num', render: r => r.durationMin == null ? '—' : `${r.durationMin} ${tr('lrn.minutes')}` },
+              { key: 'started', label: tr('lrn.started'), className: 'num' },
+              { key: 'completed', label: tr('lrn.watched'), className: 'num' },
+              { key: 'notStarted', label: tr('lrn.notStarted'), className: 'num' },
+              { key: 'avgWatchedPct', label: tr('lrn.avgWatched'), className: 'num', render: r => r.avgWatchedPct == null ? '—' : <Chip status={r.avgWatchedPct >= 85 ? 'active' : r.avgWatchedPct >= 40 ? 'pending' : 'failed'}>{`${r.avgWatchedPct}%`}</Chip> },
+            ]} /></div>
+          </>}
+        </div>}
+
         <h2 className="mt-6 text-lg">{tr('lrn.liveClasses')}</h2>
         <DataTable locale={d.locale} rows={d.classes} columns={[
           { key: 'title', label: tr('common.name') },
@@ -83,7 +145,102 @@ export default function Learning() {
           { key: 'due_at', label: tr('lrn.due'), render: r => String(r.due_at).slice(0, 16) },
           { key: 'submissions', label: tr('lrn.handedIn'), className: 'num' },
           { key: 'max_marks', label: tr('ex.fullMarks'), className: 'num' },
+          { key: 'similarity', label: '', render: r => <Button size="sm" variant="secondary" disabled={busy} onClick={async () => {
+            setBusy(true); setErr(null);
+            try { setSim(await api<Similarity>(`/api/lms/assignments/${r.id}/similarity`, { method: 'POST', json: {} })); setDrawer('similarity'); }
+            catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+          }}>{tr('lrn.checkSimilarity')}</Button> },
         ]} />
+      </div>}
+
+      {tab === 'discussions' && <div className="mt-4">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-[240px]"><Field label={tr('lrn.pickCourse')}><Select value={d.courseId ?? ''} onChange={e => setParam('courseId', e.target.value)} options={d.courses.map(c => ({ value: String(c.id), label: String(c.title) }))} /></Field></div>
+          <Button size="sm" disabled={!d.courseId} onClick={() => { setReplyTo(null); setDrawer('thread'); }}>{tr('lrn.newThread')}</Button>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.discussionsNote')}</p>
+        <div className="mt-3 grid gap-3">
+          {threads.map(th => <div key={th.id} className="card p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <strong>{th.author}</strong>
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>{formatDate(th.createdAt, d.locale)}</span>
+              <Chip status={answered(th) ? 'active' : 'pending'}>{answered(th) ? tr('lrn.answered') : tr('lrn.unanswered')}</Chip>
+              <span className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>▲ {th.upvotes}</span>
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-sm">{th.body}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(() => api(`/api/lms/discussions/${th.id}/upvote`, { method: 'POST', json: {} }))}>{tr('lrn.upvote')}</Button>
+              <Button size="sm" variant="secondary" onClick={() => { setReplyTo(th.id); setDrawer('thread'); }}>{tr('lrn.reply')}</Button>
+            </div>
+            {th.replies.length > 0 && <ul className="mt-3 grid gap-3 border-l pl-3" style={{ borderColor: 'var(--line)' }}>
+              {th.replies.map(rp => <li key={rp.id}>
+                <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--muted)' }}>
+                  <strong style={{ color: 'var(--ink)' }}>{rp.author}</strong>
+                  <span>{formatDate(rp.createdAt, d.locale)}</span>
+                  <span>▲ {rp.upvotes}</span>
+                  {rp.isAnswer && <Chip status="active">{tr('lrn.answered')}</Chip>}
+                </div>
+                <p className="mt-1 whitespace-pre-wrap text-sm">{rp.body}</p>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(() => api(`/api/lms/discussions/${rp.id}/upvote`, { method: 'POST', json: {} }))}>{tr('lrn.upvote')}</Button>
+                  {!rp.isAnswer && <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(() => api(`/api/lms/discussions/${rp.id}/answer`, { method: 'POST', json: {} }))}>{tr('lrn.markAnswer')}</Button>}
+                </div>
+              </li>)}
+            </ul>}
+          </div>)}
+          {threads.length === 0 && <div className="card p-6 text-center text-sm" style={{ color: 'var(--muted)' }}>{tr('lrn.noThreads')}</div>}
+        </div>
+      </div>}
+
+      {tab === 'adaptive' && <div className="mt-4">
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.adaptiveNote')}</p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div className="min-w-[240px]"><Field label={tr('lrn.pickClassSubject')}><Select value={d.classSubjectId ?? ''} placeholder={tr('lrn.pickClassSubject')} onChange={e => setParam('classSubjectId', e.target.value)} options={d.classSubjects.map(cs => ({ value: String(cs.id), label: `${cs.class_name} — ${cs.subject_name}` }))} /></Field></div>
+          <div className="min-w-[240px]"><Field label={tr('lrn.pickStudent')}><Select value={d.studentId ?? ''} placeholder={tr('lrn.pickStudent')} onChange={e => setParam('studentId', e.target.value)} options={d.students.map(s => ({ value: String(s.id), label: `${s.first_name} ${s.last_name ?? ''} — ${s.class_name ?? ''} ${s.section_name ?? ''}`.trim() }))} /></Field></div>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => {
+            const x = await api<{ planned: number; sent: number; skipped: number; reason?: string }>('/api/adaptive/run', { method: 'POST', json: {} });
+            setMsg(x.reason ?? `${x.planned} ${tr('lrn.plansBuilt')} · ${x.sent} ${tr('lrn.planSent')}`);
+          })}>{tr('lrn.runAdaptive')}</Button>
+        </div>
+
+        <h2 className="mt-6 text-lg">{tr('lrn.classGaps')}</h2>
+        {d.gaps && <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.term')}: {d.gaps.term} · {d.gaps.students} {tr('lrn.students')}</p>}
+        <div className="mt-2"><DataTable locale={d.locale} searchable={false} rows={(d.gaps?.outcomes ?? []).map(o => ({ id: o.outcomeId, ...o }))} columns={[
+          { key: 'code', label: tr('lrn.indicator'), render: r => <span title={r.statement}>{r.code} — {r.statement}</span> },
+          { key: 'unitTitle', label: tr('lrn.unit'), render: r => r.unitTitle ?? '—' },
+          { key: 'assessed', label: tr('lrn.rated'), className: 'num' },
+          { key: 'notMet', label: tr('lrn.notMet'), className: 'num', render: r => <Chip status={r.notMetPct >= 50 ? 'failed' : 'pending'}>{`${r.notMet} (${r.notMetPct}%)`}</Chip> },
+          { key: 'teaches', label: tr('lrn.teaches'), render: r => r.covered ? r.teaches.map(x => x.title).join(', ') : <Chip status="failed">{tr('lrn.nothingCovers')}</Chip> },
+          { key: 'gap', label: tr('lrn.gaps'), render: r => r.gap ?? '—' },
+        ]} /></div>
+
+        <h2 className="mt-6 text-lg">{tr('lrn.revisionPlan')}</h2>
+        {d.plan ? <div className="mt-2 card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <strong>{d.plan.name}</strong>
+              <div className="text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.term')}: {d.plan.term} · {tr('lrn.rated')} {d.plan.assessed} · {tr('lrn.met')} {d.plan.met} · {tr('lrn.covered')} {d.plan.covered} · {tr('lrn.nothingCovers')} {d.plan.uncovered}</div>
+            </div>
+            <Button size="sm" disabled={busy || !d.plan.indicators.length} onClick={() => run(async () => {
+              const x = await api<{ sent: number; reason?: string }>(`/api/adaptive/plan/${d.studentId}/push`, { method: 'POST', json: {} });
+              setMsg(x.reason ?? `${x.sent} ${tr('lrn.planSent')}`);
+            })}>{tr('lrn.pushPlan')}</Button>
+          </div>
+          {d.plan.note && <div className="mt-3"><Banner kind="info">{d.plan.note}</Banner></div>}
+          <ul className="mt-3 grid gap-3">
+            {d.plan.indicators.map(i => <li key={i.outcomeId} className="border-t pt-3" style={{ borderColor: 'var(--line)' }}>
+              <div className="flex flex-wrap items-center gap-2">
+                <strong className="text-sm">{i.code}</strong>
+                <span className="text-sm">{i.statement}</span>
+                <Chip status={i.covered ? 'active' : 'failed'}>{i.covered ? tr('lrn.covered') : tr('lrn.nothingCovers')}</Chip>
+              </div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{i.subject} · {i.label} · {i.unitTitle ?? '—'}</div>
+              {i.covered
+                ? <div className="mt-1 text-sm">{tr('lrn.teaches')}: {[...i.lessons, ...i.quizzes, ...i.materials].map(x => x.title).join(', ')}</div>
+                : <div className="mt-1 text-sm" style={{ color: 'var(--bad)' }}>{i.gap}</div>}
+            </li>)}
+          </ul>
+        </div> : <div className="mt-2 card p-6 text-center text-sm" style={{ color: 'var(--muted)' }}>{tr('lrn.pickStudentHint')}</div>}
       </div>}
 
       {tab === 'welfare' && <div className="mt-4">
@@ -160,6 +317,32 @@ export default function Learning() {
           <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.jitsiHint')}</p>
           <Button disabled={busy}>{tr('common.save')}</Button>
         </form>
+      </Drawer>
+
+      <Drawer open={drawer === 'thread'} onClose={() => setDrawer(null)} title={replyTo ? tr('lrn.reply') : tr('lrn.newThread')}>
+        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/lms/discussions', { method: 'POST', json: replyTo ? { parentId: replyTo, body: f.body } : { courseId: d.courseId, body: f.body } })); }}>
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>{d.threads?.courseTitle ?? ''}</p>
+          <Field label={tr('lrn.threadBody')}><textarea name="body" className="input" rows={5} required maxLength={20000} /></Field>
+          <Button disabled={busy}>{tr('common.save')}</Button>
+        </form>
+      </Drawer>
+
+      <Drawer open={drawer === 'similarity'} onClose={() => setDrawer(null)} title={tr('lrn.similarity')}>
+        {sim && <div className="grid gap-3">
+          <Banner kind="warn">{tr('lrn.similarityNote')}</Banner>
+          <p className="text-sm"><strong>{sim.title}</strong></p>
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>{sim.checked} {tr('lrn.compared')} · {tr('lrn.similarityPct')} ≥ {sim.reportAt}%</p>
+          {sim.truncated && <Banner kind="info">{sim.truncated}</Banner>}
+          {sim.pairs.length === 0 && <Banner kind="ok">{tr('lrn.noPairs')}</Banner>}
+          {sim.pairs.map(p => <div key={`${p.a.submissionId}-${p.b.submissionId}`} className="card p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Chip status={p.similarityPct >= 60 ? 'failed' : 'pending'}>{`${p.similarityPct}%`}</Chip>
+              <span className="text-sm">{p.a.name}{p.a.roll ? ` (${p.a.roll})` : ''} · {p.b.name}{p.b.roll ? ` (${p.b.roll})` : ''}</span>
+            </div>
+            {p.sharedPhrases.length > 0 && <div className="mt-2 text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.sharedPhrases')}: {p.sharedPhrases.map(s => `“${s}”`).join(' · ')}</div>}
+          </div>)}
+          {sim.skipped.length > 0 && <div className="text-xs" style={{ color: 'var(--muted)' }}>{tr('lrn.tooShort')}: {sim.skipped.map(s => s.name).join(', ')}</div>}
+        </div>}
       </Drawer>
 
       <Drawer open={drawer === 'incident'} onClose={() => setDrawer(null)} title={tr('lrn.newIncident')}>
