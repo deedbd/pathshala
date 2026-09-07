@@ -403,6 +403,36 @@ exit criterion on all three engines.
 > Not yet: a console page (the API is `/api/college/*`), electives a student picks from a basket rather
 > than the whole class-subject list, an overload a registrar can approve above the ceiling, and a
 > transcript PDF.
+### Advanced LMS and adaptive learning — shipped
+> **Status (7 Sep 2026): implemented.** Video progress that means something: the player sends a
+> heartbeat, a beat may add at most three minutes, the total can never exceed the lesson's own
+> running time, and dragging the needle to the end moves only where the student resumes from — so a
+> lesson counts as done at 85% because 85% of it actually went past, not because somebody scrubbed to
+> the credits for the certificate. A lesson with no running time says it cannot be measured instead
+> of inventing a percentage. Discussion threads on a course or a lesson, replies flattened one level
+> so a thread stays readable on a phone, the asker told when somebody answers, and the same rule the
+> rest of the app uses: a student — or the guardian reading for them — sees their own course's
+> threads and nobody else's; a reply takes its course from the post it answers, so a thread cannot be
+> dragged into another class. Similarity between text answers is word-shingle Jaccard, computed here
+> with no service and no model, working the same in Bangla as in English: answers under forty words
+> are not compared at all, because a percentage over "the mitochondrion is the powerhouse of the
+> cell" measures the language and not the student. It reports "these two are 78% alike, and here is
+> the wording they share" to the teacher who set the work, stores the number beside the submission,
+> and does nothing else — no mark moves, no status changes, and no guardian hears about it.
+> Adaptive learning turns the competency ratings into a revision plan: the indicators still to meet,
+> weakest first, each with the lessons, quizzes and materials published on that syllabus unit and
+> whether the child can open them and has already been through them. Where nothing covers an
+> indicator the plan says so by name — the teacher's list of what to write next — rather than sending
+> a child to the nearest chapter it could find. The same question asked of a class-subject gives the
+> teacher the indicator most of the room is stuck on. A weekly job pushes the top three home, once,
+> to the child and their guardians. Nothing is stored: a plan is derived from ratings that change and
+> lessons published this afternoon, so it is built when it is asked for.
+> API: `apps/server/src/routes/phase15.ts`, including `/portal/lessons/:id/watch`,
+> `/portal/discussions` and `/portal/revision/:studentId`. Exit criterion:
+> `tests/lms-advanced.test.mjs` (12 tests).
+> Not yet: a console page for threads and the watch report (both live at `/api/lms/*`), similarity
+> against last year's submissions rather than only within one assignment, and a plan that also reads
+> exam marks rather than competency ratings alone.
 
 ---
 

@@ -119,6 +119,14 @@ holds no state between steps (the gateway hands back every key pressed), the ans
 owning services and `AiService`'s own queries, and each call is one line in `call_logs` through
 `FrontOfficeService.recordCall`. API: `apps/server/src/routes/phase18.ts`. Exit criterion:
 `tests/ivr.test.mjs`.
+Also advanced LMS + adaptive learning (year 5 brought forward): watch time a beat cannot fake (a
+heartbeat adds at most 3 min, seeking never counts, 85% watched completes the lesson), discussion
+threads a student sees only for their own course, word-shingle Jaccard similarity between text
+answers that skips anything under 40 words and only ever asks the teacher to look — no mark moves —
+and `adaptive` (`packages/core/src/modules/adaptive.ts`), which turns competency ratings into a
+per-child revision plan naming the lessons on each unmet indicator's syllabus unit and saying
+plainly when nothing covers one. Plans are derived, never stored. API:
+`apps/server/src/routes/phase15.ts`; exit criterion `tests/lms-advanced.test.mjs`.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:

@@ -65,6 +65,17 @@ export class AcademicService {
     await this.db.insert('terms', { id, school_id: schoolId, academic_year_id: yearId, name: t.name, sequence: t.sequence, start_date: t.startDate, end_date: t.endDate, kind: t.kind ?? 'term' });
     return id;
   }
+  /**
+   * The term today falls inside. In the gap between two terms — the fortnight around the exams, when
+   * a school still wants a report — no term contains the date, so the most recent one stands in
+   * rather than the caller getting nothing back and quietly doing nothing.
+   */
+  async currentTerm(schoolId: string, onDate?: string) {
+    const day = onDate ?? new Date().toISOString().slice(0, 10);
+    const hit = await this.db.query<Row>(`SELECT * FROM terms WHERE school_id = ? AND start_date <= ? AND end_date >= ? ORDER BY start_date DESC, id DESC LIMIT 1`, [schoolId, day, day]);
+    if (hit[0]) return hit[0];
+    return (await this.db.findMany<Row>('terms', { school_id: schoolId }, { orderBy: 'start_date DESC', limit: 1 }))[0] ?? null;
+  }
 
   // ---------- programmes ----------
   /**
