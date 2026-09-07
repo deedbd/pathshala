@@ -76,6 +76,26 @@ export default [
     role_id   ulid ! >roles
     campus_id ulid >campuses:null
   `, unique:[['user_id','role_id','campus_id']] },
+  school_groups:{ tenant:false, desc:'A trust or owner running several schools in one installation. Consolidated dashboards and inter-school transfers are read through the group, never school-to-school.', cols:`
+    name           str(160) !
+    name_bn        str(160)
+    owner_user_id  ulid >users:null       # the trust's own login, if it has one
+    base_currency  str(3) ! ='BDT'        # what a consolidated total is expressed in
+    status         enum(active|closed) ! =active
+    settings       json
+  `},
+  school_group_members:{ desc:'Which schools belong to a group. is_head marks the one whose console may read the others — membership alone never grants cross-school reach.', cols:`
+    group_id   ulid ! >school_groups
+    is_head    bool ! =false
+    joined_on  date
+  `, unique:[['group_id','school_id']] },
+  currency_rates:{ tenant:false, desc:'Rate used to add money from schools that do not share a currency. Installation-wide: no row means no consolidated total, never a silent sum.', cols:`
+    base_ccy   str(3) !                   # the currency being converted from
+    quote_ccy  str(3) !                   # the currency being converted to
+    rate       dec(18,8) !                # 1 base = <rate> quote
+    as_of      date !
+    source     str(60)                    # who said so (Bangladesh Bank, a manual entry, a feed)
+  `, unique:[['base_ccy','quote_ccy','as_of']] },
   auth_sessions:{ tenant:false, desc:'Server sessions per device. Valid only while session.epoch == users.session_epoch.', cols:`
     user_id     ulid ! >users
     token_hash  str(128) ! u

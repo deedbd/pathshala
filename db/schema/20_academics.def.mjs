@@ -292,6 +292,18 @@ export default [
     changed_by  ulid >users:null
     changed_at  dt ! =now
   `},
+  student_transfers:{ desc:'A child moving between two schools of one group: the row they left, the row they arrived in, and what was outstanding on the day. Tenant is the school they left.', cols:`
+    group_id         ulid >school_groups:null
+    student_id       ulid ! >students          # the row in the school they left
+    to_school_id     ulid ! >schools
+    to_student_id    ulid >students:null       # the row created in the school they joined
+    to_class_id      ulid >classes:null
+    reason           str(255)
+    dues_at_transfer money ! =0                # carried, not hidden: the receiving school must know
+    status           enum(completed|cancelled) ! =completed
+    transferred_by   ulid >users:null
+    transferred_at   dt !
+  `, index:[['to_school_id','transferred_at']] },
 }},
 
 { key:'curriculum', group:'Academics', title:'Curriculum & timetable', color:'#4C7C59', year:1,
