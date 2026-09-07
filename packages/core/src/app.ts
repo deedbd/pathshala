@@ -107,7 +107,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const numbering = new NumberingService(db);
   const academic = new AcademicService(db, outbox, settings);
   const people = new PeopleService(db, outbox, numbering, auth);
-  const timetable = new TimetableService(db, outbox, academic);
+  const timetable = new TimetableService(db, outbox, academic, notifications, tasks);
   const curriculum = new CurriculumService(db, outbox, notifications);
   const cms = new CmsService(db, outbox);
   const portal = new PortalService(db, timetable, cms, files);
@@ -116,7 +116,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const accounting = new AccountingService(db, outbox, numbering, approvals);
   const documents = new DocumentService(db, outbox, notifications, numbering, files, approvals, adapters);
   const fees = new FeesService(db, outbox, notifications, numbering, academic, accounting, documents, adapters, config.appKey);
-  const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters, documents, fees);
+  const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters, documents, tasks, fees);
   const hr = new HrService(db, outbox, notifications, academic, accounting, approvals, tasks, files, people, settings, adapters);
   const importer = new ImportService(db, adapters, outbox, files, people, attendance, hr);
   const admissions = new AdmissionsService(db, outbox, notifications, numbering, academic, people, fees, documents, files, settings, adapters);
@@ -126,7 +126,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const inventory = new InventoryService(db, outbox, notifications, numbering, tasks, approvals, accounting);
   const frontOffice = new FrontOfficeService(db, outbox, notifications, numbering, tasks);
   const welfare = new WelfareService(db, outbox, notifications, tasks, approvals, inventory, config.appKey);
-  const lms = new LmsService(db, outbox, notifications, academic, documents);
+  const lms = new LmsService(db, outbox, notifications, academic, documents, tasks);
   const engagement = new EngagementService(db, outbox, notifications, documents);
   const commerce = new CommerceService(db, outbox, notifications, numbering, accounting, fees, settings);
   const giving = new GivingService(db, outbox, notifications, accounting, fees, academic, documents);
@@ -143,7 +143,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const groups = new GroupsService(db, outbox, notifications, people, analytics);
   // the voice line: an inbound IVR gateway drives it, so it needs the modules that hold the answers
   const ivr = new IvrService(db, settings, outbox, people, frontOffice, attendance, assessment, ai, config.appKey, config.env);
-  const college = new CollegeService(db, outbox, notifications, academic, people, fees, lms, assessment, documents);
+  const college = new CollegeService(db, outbox, notifications, academic, people, fees, lms, assessment, documents, tasks);
   const adaptive = new AdaptiveService(db, outbox, notifications, academic, assessment, lms);
   const platform = new PlatformService(db, outbox, notifications, settings, adapters, config.rootDir, log);
 
@@ -183,7 +183,9 @@ export function createApp(opts: CreateAppOptions = {}): App {
   adapters.queue.register('payroll.payslips', (payload, ctx) => hr.renderPayslips(payload, ctx));
   adapters.queue.register('documents.print_job', (payload, ctx) => documents.runPrintJob(payload, ctx));
   adapters.queue.register('admissions.merit', (payload, ctx) => admissions.runMeritJob(payload, ctx));
-  adapters.scheduler.register('academic.syllabus_lag', async ({ schoolId }) => curriculum.syllabusLagCheck(schoolId));
+  for (const [key, fn] of Object.entries(academic.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(curriculum.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(timetable.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(attendance.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(fees.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(assessment.jobs())) adapters.scheduler.register(key, fn);
@@ -208,7 +210,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
   // a plugin's webhook is somebody else's server: the relay posts to it and gives up quickly
   marketplace.registerHooks(handlers, ['student.enrolled', 'payment.received', 'attendance.absent', 'result.published', 'invoice.created', 'staff.joined']);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce, college });
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce, college, attendance });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
@@ -241,7 +243,12 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService; attendance: AttendanceService }) {
+  // B5: a holiday declared after the register was already marked. Only the rows the system wrote
+  // itself become `holiday` — a mark a teacher made by hand stands, because they saw the children.
+  h.on('calendar.holiday_added', 'clear-attendance', async e => {
+    await d.attendance.applyHoliday(e.schoolId, e.payload.startDate, e.payload.endDate);
+  });
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;

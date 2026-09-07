@@ -7,7 +7,7 @@ import { requireUser } from '~/lib';
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request); const sid = user.school_id; const url = new URL(request.url);
   const year = await context.app.academic.currentYear(sid);
-  if (!year) return { locale: (user.locale as Locale) || context.locale, year: null, versions: [], version: null, sections: [], grid: [], periods: [], clashes: [], staff: [], days: [], sectionId: null, subs: [] };
+  if (!year) return { locale: (user.locale as Locale) || context.locale, year: null, versions: [], version: null, sections: [], grid: [], periods: [], clashes: [], staff: [], days: [], sectionId: null, subs: [], prepared: [] as { id: string; title: string; description: string | null }[] };
   const yid = String(year.id);
   const versions = await context.app.timetable.versions(sid, yid);
   const version = versions.find(v => v.id === url.searchParams.get('versionId')) ?? versions.find(v => v.status === 'published') ?? versions[0] ?? null;
@@ -18,7 +18,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const [grid, clashes, periods, staff, subs] = await Promise.all([
     version && sectionId ? context.app.timetable.grid(sid, String(version.id), sectionId) : [], version ? context.app.timetable.validate(sid, String(version.id)) : [], context.app.academic.periods(sid), context.app.people.staff(sid, { teachingOnly: true }), context.app.timetable.substitutions(sid, url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10)),
   ]);
-  return { locale: (user.locale as Locale) || context.locale, year, versions, version, sections, grid, periods, clashes, staff, days, sectionId, subs };
+  // the draft the nightly pass found clean, and the subjects it could not fill: prepared, not done
+  const prepared = await context.app.db.query<{ id: string; title: string; description: string | null }>(
+    `SELECT id, title, description FROM tasks WHERE school_id = ? AND status = 'open' AND task_type IN ('curriculum.publish_timetable','curriculum.unassigned_subjects') ORDER BY created_at DESC LIMIT 5`, [sid]);
+  return { locale: (user.locale as Locale) || context.locale, year, versions, version, sections, grid, periods, clashes, staff, days, sectionId, subs, prepared };
 }
 export function meta() { return [{ title: 'Pathshala — Timetable' }]; }
 
@@ -47,6 +50,8 @@ export default function Timetable() {
         </div>
       </div>
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
+      {d.prepared.map(p => <div className="mt-4" key={p.id}><Banner kind="warn"><strong>{tr('tt.readyToPublish')}:</strong> {p.title}{p.description ? ` — ${p.description}` : ''}</Banner></div>)}
+      {d.year && <p className="mt-4 text-sm" style={{ color: 'var(--muted)' }}>{tr('tt.autoNote')}</p>}
       {last && <div className="mt-4"><Banner kind={last.clashes ? 'bad' : 'ok'}>{formatNumber(last.placed, d.locale)} {tr('tt.placed')} · {formatNumber(last.unplaced, d.locale)} {tr('tt.unplaced')} · {formatNumber(last.clashes, d.locale)} {tr('tt.clashes')} · {formatNumber(last.sections, d.locale)} {tr('acad.sections').toLowerCase()} · score {formatNumber(last.score, d.locale)}</Banner></div>}
       {d.clashes.length > 0 && <div className="mt-4"><Banner kind="bad">{tr('tt.clashes')}: {d.clashes.length}</Banner></div>}
       {!d.year && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href="/academic">{tr('nav.academic')}</a></Banner></div>}

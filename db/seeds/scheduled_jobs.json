@@ -1,7 +1,7 @@
 [
   {
     "job_key": "attendance.auto_absent",
-    "cron_expr": "30 10 * * 0-4",
+    "cron_expr": "0,30 * * * 0-4",
     "rows": "C4"
   },
   {
@@ -195,9 +195,49 @@
     "rows": "B6"
   },
   {
+    "job_key": "academic.year_rollover",
+    "cron_expr": "0 4 * * *",
+    "rows": "B9"
+  },
+  {
+    "job_key": "timetable.cover_today",
+    "cron_expr": "30 6 * * 0-4",
+    "rows": "B10"
+  },
+  {
+    "job_key": "timetable.watch",
+    "cron_expr": "30 7 * * *",
+    "rows": "B8"
+  },
+  {
+    "job_key": "exams.auto_compute",
+    "cron_expr": "0 20 * * *",
+    "rows": "D5b, D6b"
+  },
+  {
+    "job_key": "exams.publish_due",
+    "cron_expr": "10 * * * *",
+    "rows": "D6c"
+  },
+  {
+    "job_key": "exams.year_end",
+    "cron_expr": "0 5 * * *",
+    "rows": "D10b"
+  },
+  {
+    "job_key": "lms.marking_backlog",
+    "cron_expr": "30 9 * * *",
+    "rows": "E3b"
+  },
+  {
     "job_key": "college.registration_watch",
     "cron_expr": "0 8 * * *",
     "rows": "R1"
+  },
+  {
+    "job_key": "college.term_watch",
+    "cron_expr": "0 9 * * *",
+    "rows": "R2"
   },
   {
     "job_key": "admissions.offer_expiry",

@@ -33,6 +33,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | B5 | ⚙️ `calendar.holiday_added` | — | Mark attendance `holiday` for range; skip reminders/notifications on those days; cancel online classes | `student_attendance`, `staff_attendance` |
 | B6 | ⏰ weekly Sun 08:00 | unit `planned_end_date` passed, not taught | Syllabus-behind alert to teacher + HOD with % completion | `tasks`, `notifications` |
 | B7 | ⚙️ timetable published | school enables auto online class | Create `online_classes` from slots for remote days | `online_classes` |
+| B8 | ⏰ daily 07:30 | a class-subject with no teacher a week into the year; a clean draft version whose `effective_from` has passed | Assign the empty section-subjects by subject preference then lightest load (never over an existing assignment) and raise a task for what nobody in the school teaches; a clean draft is **prepared, not published** — one task and one message say it is ready | `section_subject_teachers`, `tasks`, `notifications` |
+| B9 | ⏰ daily 04:00 | current year ends within 30 days and no later year exists | Create next year (dates shifted by a year, class-subject matrix and section skeletons cloned) as `planned`; which year is *current* stays a person’s decision | `academic_years`, `class_subjects`, `sections` |
+| B10 | ⏰ daily 06:30 | a teacher the register marks absent today has periods in the published timetable | Suggest cover for each period (free that period, teaches the subject, lowest load); status stays `suggested` for a person to approve — B3 without a leave form | `timetable_substitutions` |
 
 ## 3. Attendance & leave
 
@@ -41,7 +44,8 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | C1 | 🔒 `punch.received` | identifier resolves | Upsert daily attendance: present / late (policy minutes); first punch = check-in, last = check-out | `student_attendance`, `staff_attendance` |
 | C2 | ⚙️ `attendance.marked` | status late, `notify_on_late` | SMS/push to guardians: "arrived 08:47, 17 min late" | `notifications` |
 | C3 | ⚙️ `attendance.marked` | status present, `notify_on_arrival` | Arrival push (SMS optional) | `notifications` |
-| C4 | ⏰ `auto_absent_at` daily | no row for active student, not holiday, no approved leave | Mark `absent` (source system); SMS guardian; stamp `guardian_notified_at` | `student_attendance`, `notifications` |
+| C4 | ⏰ half-hourly | no row for active student, not holiday, no approved leave, **and that child’s own policy cut-off has passed in the school’s timezone** | Mark `absent` (source system); SMS guardian; stamp `guardian_notified_at` | `student_attendance`, `notifications` |
+| C4b | 🔒 `calendar.holiday_added` (B5) | the range covers days already marked | Rows the system wrote itself become `holiday`; a mark a teacher made by hand is left alone; scheduled online classes in the range are cancelled | `student_attendance`, `staff_attendance`, `online_classes` |
 | C5 | ⚙️ `attendance.absent` | 3rd consecutive absent | Task to class teacher; call-log task for front office | `tasks` |
 | C6 | ⏰ monthly 1st | `attendance_pct < min_attendance_pct` | Warning letter (PDF) + SMS to guardian; flag on report card; if `block_exam_below_min`, set seat plan ineligible | `issued_documents`, `exam_seat_plans` |
 | C7 | 🔒 staff attendance marked | late count in month ≥ `late_count_to_lop` | Add LOP day to payroll input | `payslips.lop_days` (at run time) |
@@ -56,14 +60,20 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 |---|---|---|---|---|
 | D1 | 🔒 exam → `scheduled` | — | Generate routine PDF per class; calendar events; notify students/guardians/teachers | `calendar_events`, `issued_documents`, `notifications` |
 | D2 | ⚙️ 7 days before exam | — | Seat plan (room capacity, alternate sections), invigilator roster (load-balanced), admit cards **only if** fees clear & attendance OK; list ineligible to accounts | `exam_seat_plans`, `exam_invigilators`, `issued_documents`, `tasks` |
+| D2b | ⏰ the night before | seat plan exists; the roll has changed or a blocked candidate has cleared their reason | Top the plan up rather than rebuild it: new students seated, cleared candidates made eligible and their cards issued. Nothing already eligible is withdrawn — turning a child away at the hall door is the office’s decision, with a name on it | `exam_seat_plans`, `issued_documents` |
 | D3 | ⚙️ marks entry deadline −2d | schedules with missing marks | Reminder to subject teachers; escalation to exam controller at deadline | `notifications`, `tasks` |
+| D3b | ⏰ at `marks_entry_deadline` | every mark of a paper is in | Lock that paper; papers still short go to the office once as a task naming class, subject and the count — not the same message every morning | `marks`, `exam_schedules.marks_entry_locked`, `tasks` |
 | D4 | 🔒 marks `submitted` | — | Validate ranges vs `full_marks`; compute total, grade, GP from `grading_bands`; flag anomalies (e.g. 0 with not absent) | `marks` |
 | D5 | 🔒 all schedules `locked` | — | **Result engine**: per student total, %, GPA (credit-weighted, F ⇒ GPA 0 when board rule on), pass/fail, rank in section & class (ties per setting), attendance %; write `exam_results`; tabulation sheet PDF | `exam_results`, `report_snapshots` |
+| D5b | ⏰ daily 20:00 | exam ended and every paper has a mark for every child on the roll | **Compute** the results. Deterministic and invisible to guardians until somebody publishes, so it needs no confirmation; the exam moves to `processing` | `exam_results` |
 | D6 | ⚙️ `result.computed` | `exams.publish_at` reached or `auto_publish` | Publish; report card PDF per student; SMS "GPA 4.83, rank 5" + app link; teacher remark placeholder tasks before publish | `exam_results.published_at`, `issued_documents`, `notifications` |
+| D6b | ⏰ daily 20:00 | results computed, nothing published | **Prepared, confirmed by a person**: one task carrying what is still outstanding (papers short of marks, papers not locked, students with no result) and what publishing does — report cards and a GPA in every guardian’s SMS, which cannot be unsent | `tasks`, `notifications` |
+| D6c | ⏰ hourly | `exams.publish_at` has arrived, or a published exam has results with no report card | Publish (the date was the person’s decision); re-queue the chunked render for report cards the batch never reached — the renderer skips every result that already has a file | `exam_results.published_at`, `issued_documents`, `notifications` |
 | D7 | ⚙️ `result.published` | GPA drop ≥ 1.0 vs previous exam | Refer to counsellor; notify class teacher | `counselling_sessions`, `tasks` |
 | D8 | ⚙️ `result.published` | GPA ≥ scheme `auto_rule.min_gpa` | Propose merit scholarship discount | `student_discounts (is_auto)` |
 | D9 | 🔒 online exam `ends_at` | — | Auto-submit open attempts; auto-grade MCQ/true-false; queue manual grading for others; sync to `marks` if linked | `online_exam_attempts`, `marks` |
 | D10 | ⏰ year-end (year `closed`) | `promotion_rules` | Weighted annual GPA; promote / retain / graduate; create next-year enrollments; graduates → `alumni`; notify guardians; trigger B1 for fees | `promotions`, `student_enrollments`, `alumni` |
+| D10b | ⏰ daily 05:00, last 30 days of the year | published exam results exist | Recompute the weighted annual result nightly; **prepare** the promotion as a dry run and raise one task with the promoted/retained counts. Nothing moves until somebody applies it | `annual_results`, `tasks`, `notifications` |
 
 ## 5. LMS
 
@@ -72,6 +82,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | E1 | ⚙️ `assignment.published` | — | Push to students & guardians of the section | `notifications` |
 | E2 | ⏰ hourly | `due_at − 24h`, not submitted | Reminder to student; stamp `reminder_sent_at` | `notifications` |
 | E3 | 🔒 `due_at` passed | — | Mark late submissions; apply `late_penalty_pct` on grading; grading-pending task for teacher after 3 days | `assignment_submissions.is_late`, `tasks` |
+| E3b | ⏰ daily 09:30 | due 3+ days ago with submissions still ungraded | One task to the teacher who set it, naming the assignment and the count; an assignment that refuses late work is closed, one that allows it stays open | `tasks`, `assignments.status` |
 | E4 | ⚙️ `online_class.starting` (−15 min) | — | Push with join link; create meeting via Zoom/Meet API if missing | `online_classes.join_url`, `notifications` |
 | E5 | 🔒 platform webhook (participant joined/left) | — | Write `online_class_attendance`; feed period attendance | `online_class_attendance`, `student_period_attendance` |
 | E6 | 🔒 player heartbeat on a video lesson | watched ≥ 85% of `duration_min` (a beat may add at most 3 min; seeking never counts) | Complete the lesson; roll the course percentage up; emit `lesson.completed` | `lesson_progress`, `course_enrollments` |
@@ -204,7 +215,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 
 | job_key | cron (Asia/Dhaka) | Rows above |
 |---|---|---|
-| `attendance.auto_absent` | `30 10 * * 0-4` | C4 |
+| `attendance.auto_absent` | `0,30 * * * 0-4` | C4 |
 | `attendance.refresh_summary` | `0 1 * * *` | C11 |
 | `attendance.monthly_threshold` | `0 7 1 * *` | C6 |
 | `leave.accrue` | `5 0 1 * *` | C10 |
@@ -243,7 +254,15 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `platform.housekeeping` | `0 3 * * *` | N10 |
 | `platform.backup` | `0 2 * * *` | N10 |
 | `academic.syllabus_lag` | `0 8 * * 0` | B6 |
+| `academic.year_rollover` | `0 4 * * *` | B9 |
+| `timetable.cover_today` | `30 6 * * 0-4` | B10 |
+| `timetable.watch` | `30 7 * * *` | B8 |
+| `exams.auto_compute` | `0 20 * * *` | D5b, D6b |
+| `exams.publish_due` | `10 * * * *` | D6c |
+| `exams.year_end` | `0 5 * * *` | D10b |
+| `lms.marking_backlog` | `30 9 * * *` | E3b |
 | `college.registration_watch` | `0 8 * * *` | R1 |
+| `college.term_watch` | `0 9 * * *` | R2 |
 | `admissions.offer_expiry` | `0 * * * *` | A7 |
 | `admissions.followup_reminders` | `0 9 * * *` | A2 |
 
@@ -279,3 +298,5 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | P24 | Forecast | ⏰ monthly, after the billing run | Cash-flow projection for the next 3–6 months from this school's own collection rate; a projected shortfall raises a message with its assumptions, never an invoice |
 | P25 | Forecast | ⏰ monthly | Staffing forecast from the published timetable and the leavers on record; subjects with periods nobody is timetabled to teach are listed with the count |
 | P26 | Forecast | ⏰ weekly | Wellbeing early-warning scores refreshed into `risk_scores`; welfare involvement adds weight but never scores alone, and the alert never says what is in the record |
+| R1 | College | ⏰ a week into every semester | Students carrying less than half a load are chased, once per family per day, whichever run finds them |
+| R2 | College | ⏰ daily | A term that closed with registrations still `registered` goes to the registrar by name — nobody may be graded automatically; and a per-term load over the programme's ceiling (the ceiling moved, not the register) is flagged without unwinding anything |

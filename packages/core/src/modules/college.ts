@@ -9,6 +9,7 @@ import type { FeesService } from './fees.js';
 import type { LmsService } from './lms.js';
 import type { AssessmentService } from './assessment.js';
 import type { DocumentService } from './documents.js';
+import type { TaskService } from '../tasks.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -42,6 +43,7 @@ export class CollegeService {
     private db: Db, private outbox: OutboxService, private notifications: NotificationService,
     private academic: AcademicService, private people: PeopleService, private fees: FeesService,
     private lms: LmsService, private assessment: AssessmentService, private documents: DocumentService,
+    private tasks: TaskService,
   ) {}
 
   // ---------- programmes ----------
@@ -512,7 +514,58 @@ export class CollegeService {
         }
         return { terms: due.length, chased };
       },
+      /**
+       * R2: the two ways a semester register stops telling the truth.
+       *
+       * A term that ended with rows still `registered` is a transcript that will never close: the
+       * transcript counts them as in progress, the term GPA stays null, and the certificate that waits
+       * on credits waits for ever. Nobody can be graded automatically — a percentage is a result a
+       * person enters — so the registrar gets the list, by name, once.
+       *
+       * And the credit ceiling can be breached without anybody registering for anything. A
+       * registration copies the credit it was worth on the day, which protects it from a subject being
+       * repriced, but the ceiling itself is `total_credits ÷ duration_terms` on the **programme** —
+       * edit either and every register already taken against the old ceiling is suddenly over it. The
+       * rows are never unwound (a student who sat the course sat it); the registrar is told, so the
+       * next conversation is about the programme rather than about a form that quietly refuses.
+       */
+      'college.term_watch': async ({ schoolId, payload }) => {
+        const today = String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10);
+        const terms = await this.db.query<Row>(`SELECT t.* FROM terms t JOIN academic_years y ON y.id = t.academic_year_id WHERE t.school_id = ? AND y.is_current = TRUE`, [schoolId]);
+        let openRegisters = 0, overCeiling = 0;
+        // a term that closed inside the last month: older than that and the office has moved on
+        for (const term of terms.filter(t => String(t.end_date).slice(0, 10) < today && addDays(String(t.end_date).slice(0, 10), 30) >= today)) {
+          if (await this.taskPending(schoolId, 'college.open_register', String(term.id))) continue;
+          const open = await this.db.query<Row>(`SELECT r.student_id, s.first_name, s.last_name, s.admission_no, sub.name AS subject_name
+            FROM course_registrations r JOIN students s ON s.id = r.student_id JOIN class_subjects cs ON cs.id = r.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id
+            WHERE r.school_id = ? AND r.term_id = ? AND r.status = 'registered' ORDER BY s.admission_no LIMIT 200`, [schoolId, String(term.id)]);
+          if (!open.length) continue;
+          const lines = open.slice(0, 40).map(o => `${o.admission_no} ${o.first_name} ${o.last_name ?? ''} · ${o.subject_name}`);
+          await this.tasks.create({ schoolId, title: `${open.length} course(s) still open in ${String(term.name)}`, description: `${String(term.name)} ended on ${String(term.end_date).slice(0, 10)} and these carry no result, so no term GPA can be struck:\n${lines.join('\n')}${open.length > lines.length ? `\n… and ${open.length - lines.length} more` : ''}`, taskType: 'college.open_register', assignedRole: 'admin', entityType: 'college.term', entityId: String(term.id), priority: 'high' });
+          await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'college.open_register', title: 'A semester closed with results outstanding', body: `${String(term.name)}: ${open.length} registration(s) have no result.`, entityType: 'college.term', entityId: String(term.id) });
+          openRegisters++;
+        }
+        for (const term of terms.filter(t => String(t.start_date).slice(0, 10) <= today && String(t.end_date).slice(0, 10) >= today)) {
+          const loads = await this.db.query<Row>(`SELECT r.student_id, r.program_id, s.first_name, s.last_name, s.admission_no, p.name AS program_name, p.total_credits, p.duration_terms, SUM(r.credit) AS credits
+            FROM course_registrations r JOIN students s ON s.id = r.student_id JOIN programs p ON p.id = r.program_id
+            WHERE r.school_id = ? AND r.term_id = ? AND r.status <> 'dropped' GROUP BY r.student_id, r.program_id, s.first_name, s.last_name, s.admission_no, p.name, p.total_credits, p.duration_terms`, [schoolId, String(term.id)]);
+          for (const l of loads) {
+            const ceiling = this.termCeiling(l);
+            if (ceiling == null || round(Number(l.credits)) <= ceiling) continue;
+            if (await this.taskPending(schoolId, 'college.over_ceiling', String(l.student_id))) continue;
+            await this.tasks.create({ schoolId, title: `${l.first_name} ${l.last_name ?? ''} is over the credit ceiling`.trim(), description: `${l.admission_no} carries ${round(Number(l.credits))} credits in ${String(term.name)}; ${l.program_name} allows ${ceiling}. Nothing has been unwound — the programme's total credits or its number of terms has moved since these were registered.`, taskType: 'college.over_ceiling', assignedRole: 'admin', entityType: 'people.student', entityId: String(l.student_id), priority: 'high' });
+            overCeiling++;
+          }
+        }
+        return { openRegisters, overCeiling };
+      },
     };
+  }
+
+  /** Whether a task of this kind is already waiting on this thing, whichever run left it there. */
+  private async taskPending(schoolId: string, taskType: string, entityId: string) {
+    const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM tasks WHERE school_id = ? AND task_type = ? AND entity_id = ? AND status = 'open'`, [schoolId, taskType, entityId]);
+    return Number(rows[0]?.n ?? 0) > 0;
   }
 
   /** Whether this family has already been chased about registration today, whichever run did it. */
