@@ -83,6 +83,9 @@ export interface PushSubscription { endpoint: string; keys: { p256dh: string; au
 export interface PushPayload { title: string; body: string; url?: string; icon?: string; tag?: string; data?: Record<string, unknown> }
 export interface PushAdapter { readonly kind: string; send(sub: PushSubscription, payload: PushPayload): Promise<{ statusCode?: number }>; publicKey(): string | null }
 
+import type { VoiceAdapter, WhatsAppAdapter } from './voice.js';
+import type { AiAdapter } from './ai.js';
+
 export interface Adapters {
   queue: QueueAdapter;
   scheduler: SchedulerAdapter;
@@ -92,6 +95,9 @@ export interface Adapters {
   mail: MailAdapter;
   sms: SmsAdapter;
   push: PushAdapter;
+  whatsapp: WhatsAppAdapter;
+  voice: VoiceAdapter;
+  ai: AiAdapter;
 }
 
 export interface Logger { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void; error(msg: string, meta?: unknown): void; debug(msg: string, meta?: unknown): void }

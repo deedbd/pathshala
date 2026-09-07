@@ -9,6 +9,8 @@ import { PdfmakePdf } from './pdf/pdfmake.js';
 import { SseRealtime } from './realtime/sse.js';
 import { LogMail, SmtpMail } from './mail.js';
 import { HttpSms, LogSms } from './sms.js';
+import { HttpVoice, LogVoice, LogWhatsApp, MetaWhatsApp } from './voice.js';
+import { HttpAi, NoAi } from './ai.js';
 import { LogPush, WebPush } from './push.js';
 import { BullmqQueue, ChromiumPdf, FcmPush, S3Storage, WebsocketRealtime } from './stubs.js';
 
@@ -21,6 +23,10 @@ export { PdfmakePdf } from './pdf/pdfmake.js';
 export { SseRealtime } from './realtime/sse.js';
 export { LogMail, SmtpMail } from './mail.js';
 export { HttpSms, LogSms } from './sms.js';
+export { HttpVoice, LogVoice, LogWhatsApp, MetaWhatsApp } from './voice.js';
+export { HttpAi, NoAi } from './ai.js';
+export type { AiAdapter, AiMessage, AiReply, AiRequest } from './ai.js';
+export type { VoiceAdapter, VoiceCall, WhatsAppAdapter, WhatsAppMessage } from './voice.js';
 export { LogPush, WebPush } from './push.js';
 export * from './stubs.js';
 
@@ -53,9 +59,14 @@ export function createAdapters(env: AdapterEnv, deps: { db: Db; rootDir: string;
   const realtime = rt === 'websocket' ? new WebsocketRealtime() : new SseRealtime();
   const mail = env.SMTP_HOST ? new SmtpMail({ host: env.SMTP_HOST, port: Number(env.SMTP_PORT) || 465, user: env.SMTP_USER, pass: env.SMTP_PASS, from: env.MAIL_FROM || `Pathshala <no-reply@${hostOf(env.APP_URL)}>` }) : new LogMail(log);
   const sms = env.SMS_PROVIDER === 'http' && env.SMS_HTTP_URL ? new HttpSms({ url: env.SMS_HTTP_URL, method: (env.SMS_HTTP_METHOD as 'GET' | 'POST') || 'GET', senderId: env.SMS_SENDER_ID, body: env.SMS_HTTP_BODY, balanceUrl: env.SMS_BALANCE_URL, costPerSms: Number(env.SMS_COST) || undefined }) : new LogSms(log);
+  // a school that has not connected WhatsApp or an IVR gateway still sees what would have gone out
+  const whatsapp = env.WHATSAPP_URL && env.WHATSAPP_TOKEN ? new MetaWhatsApp({ url: env.WHATSAPP_URL, token: env.WHATSAPP_TOKEN, defaultTemplate: env.WHATSAPP_TEMPLATE, languageCode: env.WHATSAPP_LANG || 'bn', costPerMessage: Number(env.WHATSAPP_COST) || undefined }) : new LogWhatsApp(log);
+  const voice = env.VOICE_URL ? new HttpVoice({ url: env.VOICE_URL, method: (env.VOICE_METHOD as 'GET' | 'POST') || 'GET', body: env.VOICE_BODY, costPerCall: Number(env.VOICE_COST) || undefined }) : new LogVoice(log);
+  // any OpenAI-compatible endpoint; without one the assistant answers from data and refuses to draft
+  const ai = env.AI_URL ? new HttpAi({ url: env.AI_URL, apiKey: env.AI_KEY, model: env.AI_MODEL, costPer1kIn: Number(env.AI_COST_IN) || undefined, costPer1kOut: Number(env.AI_COST_OUT) || undefined }) : new NoAi(log);
   const push = env.PUSH_PROVIDER === 'fcm' ? new FcmPush() : env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY ? new WebPush({ publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject: env.VAPID_SUBJECT }) : new LogPush();
 
-  return { queue, scheduler, storage, pdf, realtime, mail, sms, push, mode };
+  return { queue, scheduler, storage, pdf, realtime, mail, sms, push, whatsapp, voice, ai, mode };
 }
 
 function hostOf(url?: string) { try { return new URL(url || 'http://localhost').hostname; } catch { return 'localhost'; } }

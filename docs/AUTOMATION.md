@@ -153,6 +153,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | L6 | ⏰ daily 09:00 | work order past the deadline its priority set | Chase the assignee and the office; overdue safety drills are named too | `work_orders`, `safety_drills` |
 | O1 | ⏰ daily 09:00 | a resolution's due date has passed | Remind its owner (or the office if it has none); an election past its closing time counts itself | `resolutions`, `elections` |
 | O2 | ⏰ monthly | records older than a retention rule, or a return generated a fortnight ago and still unsent | Report what retention would touch — never delete — and name the unsent returns | `retention_policies`, `govt_reports` |
+| P1 | ⏰ daily 00:30 | a metric departs from this school's own recent median by more than three deviations | One open alert per metric (never a daily duplicate) to the office, with the usual figure beside the actual one | `metric_values`, `kpi_daily`, `anomaly_alerts` |
+| P2 | ⏰ weekly | attendance, fees and results together put a student above the risk threshold | Name the student to their class teacher once, with the reasons — not a score on its own | `risk_scores`, `notifications` |
+| Q1 | ⏰ daily 02:00 | a subscription is a fortnight from its end, or an invoice is past its due date | Raise the next invoice; mark the overdue ones and pause new students and messages — never access to what the school already has | `saas_invoices`, `saas_subscriptions` |
 
 ## 12. Inventory & assets
 
@@ -223,6 +226,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `facilities.sla_watch` | `0 9 * * *` | L6 |
 | `governance.resolution_watch` | `0 9 * * *` | O1 |
 | `compliance.review` | `0 4 1 * *` | O2 |
+| `analytics.daily` | `30 0 * * *` | P1 |
+| `analytics.risk_scores` | `0 5 * * 1` | P2 |
+| `saas.billing` | `0 2 * * *` | Q1 |
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |
 | `comms.provider_balance` | `0 * * * *` | M3 |
 | `comms.weekly_digest` | `0 18 * * 6` | M5 |

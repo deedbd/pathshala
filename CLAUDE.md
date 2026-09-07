@@ -64,9 +64,21 @@ mentorship, job board) and the co-curricular half of `engagement` (competitions,
 volunteers). Also `facilities` (room bookings, work orders with an SLA, cleaning, meters, drills), `governance`
 (committees, minutes whose resolutions become tasks, policies with acknowledgements, secret-ballot
 elections) and `compliance` (BANBEIS census, stipends, consent, data requests, retention review).
-Their API is `apps/server/src/routes/phase10.ts` and `phase11.ts`, the console pages are
-`apps/web/app/routes/community.tsx` and `institution.tsx`, and `tests/year2a.test.mjs` and
-`tests/year2b.test.mjs` are their exit criteria.
+And `analytics` (metrics from the register, anomalies against the school's own median, risk scores
+that carry their reasons, cohort benchmarks), broadcasts on every channel — WhatsApp and voice
+adapters joined SMS/email/push — and assessment+ (competency scales and outcomes, OMR with a
+human check, board registration and result import).
+Their API is `apps/server/src/routes/phase10.ts` … `phase12.ts`, the console pages are
+`apps/web/app/routes/community.tsx`, `institution.tsx` and `insights.tsx`, and
+`tests/year2a.test.mjs` … `year2c.test.mjs` are their exit criteria.
+
+## Year 3 (in progress)
+`saas` (plans, subscriptions, metering, invoices, resellers — `saas.*` is super-admin only, and a
+past-due school loses new work, never access to its records), `marketplace` (plugins behind signed
+webhooks, OAuth2 clients with scopes, template packs) and `ai` (data questions answered by code from
+the school's own rows; drafting needs a provider and is always stored as a draft a person applies).
+API: `apps/server/src/routes/phase13.ts`, plus the scoped public API at `/api/v1`. Exit criterion:
+`tests/year3a.test.mjs`.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:

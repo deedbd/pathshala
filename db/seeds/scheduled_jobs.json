@@ -125,6 +125,21 @@
     "rows": "O2"
   },
   {
+    "job_key": "analytics.daily",
+    "cron_expr": "30 0 * * *",
+    "rows": "P1"
+  },
+  {
+    "job_key": "analytics.risk_scores",
+    "cron_expr": "0 5 * * 1",
+    "rows": "P2"
+  },
+  {
+    "job_key": "saas.billing",
+    "cron_expr": "0 2 * * *",
+    "rows": "Q1"
+  },
+  {
     "job_key": "comms.publish_scheduled_notices",
     "cron_expr": "*/10 * * * *",
     "rows": "M2"

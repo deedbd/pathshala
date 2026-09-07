@@ -7,6 +7,7 @@ import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { FileService } from '../files.js';
 import type { DocumentService } from './documents.js';
+import type { FeesService } from './fees.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface ExamInput { academicYearId?: string | null; termId?: string | null; examTypeId?: string | null; gradingScaleId?: string | null; name: string; startDate: string; endDate: string; classIds?: string[]; requireFeeClearance?: boolean; minAttendancePct?: number | null; rankScope?: 'section' | 'class' | 'both'; tieRule?: 'share_rank' | 'dense' | 'by_total' }
@@ -19,7 +20,7 @@ export interface MarkInput { studentId: string; theory?: number | null; practica
  * promotion. The engine is deterministic: recomputing an exam gives the same numbers.
  */
 export class AssessmentService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService, private fees?: FeesService) {}
 
   // ---------- setup ----------
   async gradingScales(schoolId: string) {
@@ -525,6 +526,191 @@ export class AssessmentService {
       if (r.decision === 'promoted') promoted++; else retained++;
     }
     return { promoted, retained, applied: !!opts.apply };
+  }
+
+  // ---------- competency-based assessment ----------
+  /**
+   * The NCTB 2023 curriculum grades a child against what they can do, not out of a hundred. A scale
+   * is a handful of levels (the triangle, circle and square), an outcome is one performance indicator,
+   * and an assessment is one teacher's judgement of one child against one indicator in one term.
+   *
+   * Nothing here is averaged into a mark. A competency report says which indicators a child has met
+   * and which they have not, because that is the only form of it a parent can act on.
+   */
+  async ensureCompetencyScale(schoolId: string, name = 'NCTB', levels?: { code: string; label: string; labelBn?: string; value: number }[]) {
+    const ex = await this.db.findOne<{ id: string }>('competency_scales', { school_id: schoolId, name });
+    if (ex) return ex.id;
+    const id = ulid();
+    const defaults = levels ?? [
+      { code: '△', label: 'Needs support', labelBn: 'সহায়তা প্রয়োজন', value: 1 },
+      { code: '○', label: 'Progressing', labelBn: 'অগ্রগতি হচ্ছে', value: 2 },
+      { code: '□', label: 'Achieved', labelBn: 'অর্জিত', value: 3 },
+    ];
+    await this.db.insert('competency_scales', { id, school_id: schoolId, name, levels: defaults as never });
+    return id;
+  }
+  async scales(schoolId: string) {
+    const rows = await this.db.findMany<Row>('competency_scales', { school_id: schoolId });
+    return rows.map(r => ({ ...r, levels: json(r.levels) }) as Row);
+  }
+  async addOutcome(schoolId: string, o: { classSubjectId: string; code: string; statement: string; statementBn?: string | null; unitId?: string | null; bloomLevel?: 'remember' | 'understand' | 'apply' | 'analyse' | 'evaluate' | 'create' | null; weight?: number }) {
+    const ex = await this.db.findOne<{ id: string }>('learning_outcomes', { school_id: schoolId, class_subject_id: o.classSubjectId, code: o.code });
+    if (ex) return ex.id;
+    const id = ulid();
+    await this.db.insert('learning_outcomes', { id, school_id: schoolId, class_subject_id: o.classSubjectId, unit_id: o.unitId ?? null, code: o.code, statement: o.statement, statement_bn: o.statementBn ?? null, bloom_level: o.bloomLevel ?? null, weight: o.weight ?? 1 });
+    return id;
+  }
+  async outcomes(schoolId: string, classSubjectId: string) {
+    return this.db.findMany<Row>('learning_outcomes', { school_id: schoolId, class_subject_id: classSubjectId }, { orderBy: 'code ASC', limit: 300 });
+  }
+  /** One teacher's judgement, per child per indicator. Re-rating replaces the old one. */
+  async assessCompetency(schoolId: string, rows: { studentId: string; outcomeId: string; termId: string; levelCode: string; evidence?: unknown }[], opts: { scaleId?: string; assessedBy?: string | null } = {}) {
+    const scaleId = opts.scaleId ?? await this.ensureCompetencyScale(schoolId);
+    const scale = await this.db.findOne<Row>('competency_scales', { id: scaleId, school_id: schoolId });
+    if (!scale) throw notFound('competency scale');
+    const levels = json<{ code: string }[]>(scale.levels) ?? [];
+    let saved = 0;
+    for (const r of rows) {
+      if (!levels.some(l => l.code === r.levelCode)) throw badRequest(`${r.levelCode} is not a level on the ${scale.name} scale`);
+      const ex = await this.db.findOne<Row>('competency_assessments', { student_id: r.studentId, outcome_id: r.outcomeId, term_id: r.termId });
+      const row = { school_id: schoolId, student_id: r.studentId, outcome_id: r.outcomeId, term_id: r.termId, scale_id: scaleId, level_code: r.levelCode, evidence: (r.evidence ?? null) as never, assessed_by: opts.assessedBy ?? null, assessed_at: nowSql() };
+      if (ex) await this.db.update('competency_assessments', { ...row, updated_at: nowSql() }, { id: String(ex.id) });
+      else await this.db.insert('competency_assessments', { id: ulid(), ...row });
+      saved++;
+    }
+    return { saved, scaleId };
+  }
+  /**
+   * A child's competency report for a term: every indicator that was assessed, and — the part that
+   * matters to a parent — the ones still to be met, by name.
+   */
+  async competencyReport(schoolId: string, studentId: string, termId: string) {
+    const rows = await this.db.query<Row>(`SELECT a.level_code, o.code, o.statement, o.statement_bn, sub.name AS subject, sc.levels
+      FROM competency_assessments a JOIN learning_outcomes o ON o.id = a.outcome_id
+      JOIN class_subjects cs ON cs.id = o.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id
+      JOIN competency_scales sc ON sc.id = a.scale_id
+      WHERE a.school_id = ? AND a.student_id = ? AND a.term_id = ? ORDER BY sub.name, o.code`, [schoolId, studentId, termId]);
+    const levels = json<{ code: string; label: string; value: number }[]>(rows[0]?.levels) ?? [];
+    const top = Math.max(1, ...levels.map(l => l.value));
+    const items = rows.map(r => {
+      const level = levels.find(l => l.code === String(r.level_code));
+      return { subject: String(r.subject), code: String(r.code), statement: String(r.statement), statementBn: (r.statement_bn as string) ?? null, level: String(r.level_code), label: level?.label ?? String(r.level_code), achieved: (level?.value ?? 0) >= top };
+    });
+    return { studentId, termId, assessed: items.length, achieved: items.filter(i => i.achieved).length, stillToMeet: items.filter(i => !i.achieved), items };
+  }
+
+  // ---------- OMR ----------
+  /**
+   * An answer sheet fed through a scanner. The engine that reads the bubbles is an adapter — this is
+   * the part that decides what to do with what it read, and the rule is simple: a sheet the machine
+   * is not sure about waits for a person. Applying a batch to the marks grid only ever takes the
+   * confident ones, because a mis-read roll number puts one child's marks on another child.
+   */
+  async ingestOmr(schoolId: string, sheets: { fileId: string; scheduleId?: string | null; detectedRoll?: string | null; answers?: unknown; score?: number | null; confidence?: number | null }[]) {
+    let stored = 0, needReview = 0;
+    for (const sheet of sheets) {
+      const confidence = sheet.confidence ?? 0;
+      const student = sheet.detectedRoll ? await this.studentByRoll(schoolId, sheet.detectedRoll, sheet.scheduleId ?? null) : null;
+      const status = !student || confidence < 90 ? 'needs_review' : 'processed';
+      if (status === 'needs_review') needReview++;
+      await this.db.insert('omr_sheets', { id: ulid(), school_id: schoolId, schedule_id: sheet.scheduleId ?? null, online_exam_id: null, student_id: student?.id ?? null, file_id: sheet.fileId, detected_roll: sheet.detectedRoll ?? null, answers: (sheet.answers ?? null) as never, score: sheet.score ?? null, confidence, status });
+      stored++;
+    }
+    return { stored, needReview, processed: stored - needReview };
+  }
+  /** A person's decision on a sheet the machine was unsure of. */
+  async reviewOmr(schoolId: string, sheetId: string, p: { studentId?: string | null; score?: number | null; reject?: boolean }) {
+    const sheet = await this.db.findOne<Row>('omr_sheets', { id: sheetId, school_id: schoolId });
+    if (!sheet) throw notFound('omr sheet');
+    if (p.reject) { await this.db.update('omr_sheets', { status: 'rejected', updated_at: nowSql() }, { id: sheetId }); return { id: sheetId, status: 'rejected' as const }; }
+    await this.db.update('omr_sheets', { student_id: p.studentId ?? sheet.student_id, score: p.score ?? sheet.score, confidence: 100, status: 'processed', updated_at: nowSql() }, { id: sheetId });
+    return { id: sheetId, status: 'processed' as const };
+  }
+  /** Puts the confident sheets into the marks grid. Anything still unsure is left for a person. */
+  async applyOmr(schoolId: string, scheduleId: string, enteredBy?: string | null) {
+    const sheets = await this.db.findMany<Row>('omr_sheets', { school_id: schoolId, schedule_id: scheduleId, status: 'processed' }, { limit: 2000 });
+    const marks = sheets.filter(s => s.student_id && s.score != null).map(s => ({ studentId: String(s.student_id), theory: Number(s.score) }));
+    if (!marks.length) return { applied: 0, waiting: sheets.length };
+    const r = await this.saveMarks(schoolId, scheduleId, marks as never, enteredBy);
+    await this.db.execute(`UPDATE omr_sheets SET status = 'applied', updated_at = ? WHERE school_id = ? AND schedule_id = ? AND status = 'processed'`, [nowSql(), schoolId, scheduleId]);
+    const waiting = await this.db.count('omr_sheets', { school_id: schoolId, schedule_id: scheduleId, status: 'needs_review' });
+    return { applied: r.saved, waiting };
+  }
+  async omrSheets(schoolId: string, f: { scheduleId?: string; status?: string } = {}) {
+    const where: Row = { school_id: schoolId };
+    if (f.scheduleId) where.schedule_id = f.scheduleId;
+    if (f.status) where.status = f.status;
+    return this.db.findMany<Row>('omr_sheets', where, { orderBy: 'created_at DESC', limit: 500 });
+  }
+  private async studentByRoll(schoolId: string, roll: string, scheduleId: string | null) {
+    if (scheduleId) {
+      const rows = await this.db.query<{ id: string }>(`SELECT s.id FROM exam_seat_plans p JOIN students s ON s.id = p.student_id WHERE p.school_id = ? AND p.schedule_id IS NULL AND s.current_roll_no = ? LIMIT 1`, [schoolId, roll]).catch(() => []);
+      if (rows[0]) return rows[0];
+    }
+    const byRoll = await this.db.query<{ id: string }>(`SELECT id FROM students WHERE school_id = ? AND (current_roll_no = ? OR admission_no = ?) AND status = 'active' LIMIT 2`, [schoolId, roll, roll]);
+    return byRoll.length === 1 ? byRoll[0]! : null;      // two children with the same roll is a person's problem, not a guess
+  }
+
+  // ---------- board registration and form fill-up ----------
+  /**
+   * SSC, HSC, JSC, Dakhil: the school registers its candidates, fills their forms, collects the board
+   * fee through the fee ledger, and later imports the result. The subject list is checked against what
+   * the child actually studies, because a form filled with a subject they were never taught is found
+   * out on results day.
+   */
+  async registerForBoard(schoolId: string, r: { studentId: string; academicYearId: string; board: string; examName: string; groupName?: string | null; subjects?: string[]; centre?: string | null; registrationNo?: string | null; rollNo?: string | null }) {
+    const student = await this.db.findOne<Row>('students', { id: r.studentId, school_id: schoolId });
+    if (!student) throw notFound('student');
+    const ex = await this.db.findOne<Row>('board_registrations', { school_id: schoolId, student_id: r.studentId, exam_name: r.examName });
+    if (ex) return { id: String(ex.id), alreadyRegistered: true };
+    if (r.subjects?.length) {
+      const taught = await this.db.query<{ name: string }>(`SELECT sub.name FROM class_subjects cs JOIN subjects sub ON sub.id = cs.subject_id WHERE cs.school_id = ? AND cs.class_id = ?`, [schoolId, String(student.current_class_id)]);
+      const known = new Set(taught.map(t => String(t.name).toLowerCase()));
+      const strange = r.subjects.filter(x => !known.has(x.toLowerCase()));
+      if (strange.length && known.size) throw badRequest(`${strange.join(', ')} ${strange.length > 1 ? 'are' : 'is'} not taught in this class`);
+    }
+    const id = ulid();
+    await this.db.insert('board_registrations', { id, school_id: schoolId, student_id: r.studentId, academic_year_id: r.academicYearId, board: r.board, exam_name: r.examName, registration_no: r.registrationNo ?? null, roll_no: r.rollNo ?? null, centre: r.centre ?? null, group_name: r.groupName ?? null, subjects: (r.subjects ?? null) as never, fee_invoice_id: null, status: 'draft', board_result: null });
+    return { id };
+  }
+  /** Submitting the form is when the board fee becomes a bill the guardian can see and pay. */
+  async submitBoardForm(schoolId: string, registrationId: string, opts: { fee?: number; feeHeadId?: string | null } = {}) {
+    const reg = await this.db.findOne<Row>('board_registrations', { id: registrationId, school_id: schoolId });
+    if (!reg) throw notFound('registration');
+    if (reg.status !== 'draft') throw new HttpError(409, `this form is already ${reg.status}`, 'conflict');
+    if (!reg.registration_no) throw badRequest('the board registration number has to be on the form before it is submitted');
+    let invoiceId: string | null = (reg.fee_invoice_id as string) ?? null;
+    if (opts.fee && opts.fee > 0 && !invoiceId && this.fees) {
+      const inv = await this.fees.createInvoice(schoolId, { studentId: String(reg.student_id), items: [{ feeHeadId: opts.feeHeadId ?? null, description: `${reg.exam_name} board fee`, amount: opts.fee }], notes: `board:${registrationId}` });
+      invoiceId = inv.id;
+    }
+    await this.db.update('board_registrations', { status: 'submitted', fee_invoice_id: invoiceId, updated_at: nowSql() }, { id: registrationId });
+    return { id: registrationId, status: 'submitted' as const, invoiceId };
+  }
+  /**
+   * The board's result, imported by registration or roll number. A result for somebody the school did
+   * not register is reported rather than guessed at.
+   */
+  async importBoardResults(schoolId: string, examName: string, rows: { rollNo?: string | null; registrationNo?: string | null; gpa?: number | null; grade?: string | null; subjects?: unknown }[]) {
+    let matched = 0; const unmatched: string[] = [];
+    for (const r of rows) {
+      const where: Row = { school_id: schoolId, exam_name: examName };
+      if (r.registrationNo) where.registration_no = r.registrationNo;
+      else if (r.rollNo) where.roll_no = r.rollNo;
+      else { unmatched.push('a row with neither a roll nor a registration number'); continue; }
+      const reg = await this.db.findOne<Row>('board_registrations', where);
+      if (!reg) { unmatched.push(String(r.registrationNo ?? r.rollNo)); continue; }
+      await this.db.update('board_registrations', { board_result: { gpa: r.gpa ?? null, grade: r.grade ?? null, subjects: r.subjects ?? null, importedAt: nowSql() } as never, status: 'result_received', updated_at: nowSql() }, { id: String(reg.id) });
+      matched++;
+    }
+    return { examName, matched, unmatched };
+  }
+  async boardRegistrations(schoolId: string, f: { examName?: string; status?: string } = {}) {
+    const where: string[] = ['b.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.examName) { where.push('b.exam_name = ?'); params.push(f.examName); }
+    if (f.status) { where.push('b.status = ?'); params.push(f.status); }
+    const rows = await this.db.query<Row>(`SELECT b.*, s.first_name, s.last_name, s.admission_no FROM board_registrations b JOIN students s ON s.id = b.student_id WHERE ${where.join(' AND ')} ORDER BY s.admission_no LIMIT 2000`, params);
+    return rows.map(r => ({ ...r, subjects: json(r.subjects), board_result: json(r.board_result) }) as Row);
   }
 
   // ---------- question bank & papers ----------

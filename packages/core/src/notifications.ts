@@ -5,7 +5,7 @@ import type { OutboxService } from './automation/outbox.js';
 import type { SettingsService } from './settings.js';
 import { inQuietHours, nextLocalTime, renderTemplate } from './util.js';
 
-export type Channel = 'sms' | 'email' | 'push' | 'in_app';
+export type Channel = 'sms' | 'email' | 'push' | 'in_app' | 'whatsapp' | 'voice';
 export interface NotifyInput {
   schoolId: string;
   userId?: string | null;
@@ -102,6 +102,9 @@ export class NotificationService {
   private async send(n: Record<string, unknown>): Promise<{ id?: string; cost?: number }> {
     const channel = String(n.channel); const address = String(n.recipient_address ?? '');
     if (channel === 'sms') { const r = await this.adapters.sms.send({ to: address, text: String(n.body) }); return { id: r.providerMsgId, cost: r.cost }; }
+    if (channel === 'whatsapp') { const d = json<Record<string, unknown>>(n.data) ?? {}; const r = await this.adapters.whatsapp.send({ to: address, text: String(n.body), templateName: (d.whatsappTemplate as string) ?? null, variables: (d.whatsappVariables as string[]) ?? undefined }); return { id: r.providerMsgId, cost: r.cost }; }
+    // a voice call reads the message out: for a guardian who cannot read, this is the only channel that works
+    if (channel === 'voice') { const r = await this.adapters.voice.call({ to: address, text: `${n.title ? `${n.title}. ` : ''}${String(n.body)}` }); return { id: r.providerCallId, cost: r.cost }; }
     if (channel === 'email') { const r = await this.adapters.mail.send({ to: address, subject: String(n.title ?? 'Pathshala'), text: String(n.body) }); return { id: r.id }; }
     if (channel === 'push') {
       const subs = await this.db.findMany<Record<string, unknown>>('push_subscriptions', { user_id: String(n.recipient_user_id), kind: 'webpush', revoked_at: null });
@@ -118,7 +121,7 @@ export class NotificationService {
   }
 
   private addressFor(channel: Channel, user: Record<string, unknown> | null, fallback?: string | null): string | null {
-    if (channel === 'sms') return (user?.phone as string) ?? fallback ?? null;
+    if (channel === 'sms' || channel === 'whatsapp' || channel === 'voice') return (user?.phone as string) ?? fallback ?? null;
     if (channel === 'email') return (user?.email as string) ?? fallback ?? null;
     if (channel === 'push') return user ? `push:${user.id}` : null;
     return null;

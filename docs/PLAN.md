@@ -185,6 +185,83 @@ exit criterion on all three engines.
 > Not yet: board registration and result import (needs a board API), and automatic archival.
 
 
+### Analytics — shipped
+
+> **Status (7 Sep 2026): implemented.** `analytics`: a metric catalogue computed from the register
+> rather than typed in (attendance, staff attendance, fees collected and outstanding, roll, admissions,
+> enquiries, messages), the daily KPI row the dashboards read, role dashboards where each card carries
+> its direction and what this school usually does, anomaly detection against the school's own recent
+> median and spread — one open alert per metric, never a daily duplicate — risk scores for dropout,
+> fee default, attendance and result decline that always carry their reasons and name a student to
+> their class teacher once, and cross-school benchmarks published as quartiles with no school ever
+> named. Console page: insights.
+> Not yet: a report builder for numbers nobody thought of in advance.
+
+### Communication+ — shipped
+
+> **Status (7 Sep 2026): implemented.** WhatsApp (Meta Cloud API, template-aware because Meta only
+> delivers a pre-approved template outside the 24-hour window) and voice calls (a generic IVR gateway)
+> joined SMS, email, push and in-app as delivery channels, each with a log adapter so a school that has
+> connected nothing still sees what would have gone out. `communication.broadcast` sends one message to
+> an audience resolved from the school's own records — a class, guardians with unpaid fees, all staff —
+> and a voice call reads the title out too, because a phone call has no subject line. Console page:
+> insights.
+> Not yet: an inbound WhatsApp chatbot, and IVR menus the guardian navigates.
+
+### Assessment+ — shipped
+
+> **Status (7 Sep 2026): implemented.** Competency-based assessment beside marks: NCTB-style scales
+> (triangle, circle, square), learning outcomes per class subject, one rating per child per indicator
+> per term, and a report that names the indicators still to be met rather than averaging them into a
+> number. OMR: sheets ingested with the roll the machine read and how sure it was — anything under 90%
+> confident, or a roll matching two children, waits for a person — and only the confident ones are
+> applied to the marks grid. Board registration: SSC/HSC/JSC/Dakhil forms checked against what the
+> child is actually taught, the board fee raised through the fee ledger, and results imported by
+> registration or roll number with the unmatched ones reported rather than guessed at.
+> `tests/year2c.test.mjs` covers all three on SQLite, MariaDB 11.4 and Postgres 16.
+> Not yet: the OMR image engine itself (this is the half that decides what to do with what it read),
+> and a live board API.
+
+
+## Year 3 · Platform (after year 2)
+
+### SaaS billing and partners — shipped
+
+> **Status (7 Sep 2026): implemented.** `saas`: plans with limits (students, SMS, storage, modules),
+> subscriptions with trials and resellers, usage metered from the rows that recorded it, invoices
+> raised a fortnight before renewal, and a daily job that marks the overdue ones. What an unpaid bill
+> costs a school is deliberate: new students and messages stop, and access to the register, attendance
+> and results never does — locking a school out of its own records over an adult's oversight would
+> punish children. A reseller's commission accrues when the school actually pays, not when the invoice
+> is raised. `saas.*` is a super-admin permission, so a school's own administrator cannot see or change
+> what the school is charged; the school sees its plan, its usage and its invoices at `/billing/me`.
+> Not yet: taking the subscription payment through a gateway rather than recording it by hand.
+
+### Marketplace, plugins and the public API — shipped
+
+> **Status (7 Sep 2026): implemented.** `marketplace`: plugins that run on their own machines and
+> receive the events they subscribed to as a signed webhook with a five-second timeout — a plugin that
+> hangs or turns malicious slows nothing down and reads nothing it was not given; the install secret is
+> shown once and only its hash is kept. OAuth2 clients with scopes, tokens stored as hashes, and a
+> public API at `/api/v1` where every route names the scope it needs, so an application can only do
+> what the school ticked; revoking a client kills its tokens. Template packs (documents, notification
+> templates, grading scales) that fill in what is missing and never overwrite what a school has
+> already changed.
+> Not yet: the authorization-code grant for apps acting as a person, and paid plugin billing.
+
+### AI assistant — shipped
+
+> **Status (7 Sep 2026): implemented.** `ai`, split in two on purpose. Questions about the school's own
+> data are answered from the database by code, with the real numbers — how many are absent, what is
+> outstanding, when the next exam is — so the answer cannot be invented, costs nothing, and works on an
+> installation that has never connected a provider. Drafting (a remark, a notice, a lesson plan,
+> questions) needs a model, and every draft is stored as a draft: applying it is a separate act, which
+> is also the audit trail for anything a model wrote. A guardian's question is answered about their own
+> children and nobody else's, and each school's monthly AI spend is capped. The provider is any
+> OpenAI-compatible endpoint. Console page: none yet — the assistant lives at `/api/ai/*`.
+> Not yet: a chat panel in the console, the WhatsApp chatbot, and OCR of marks sheets.
+
+
 ---
 
 ## Milestones

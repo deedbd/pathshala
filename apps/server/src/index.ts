@@ -18,6 +18,8 @@ import { mountPhase8 } from './routes/phase8.js';
 import { mountPhase9 } from './routes/phase9.js';
 import { mountPhase10, mountPublicGiving } from './routes/phase10.js';
 import { mountPhase11 } from './routes/phase11.js';
+import { mountPhase12 } from './routes/phase12.js';
+import { mountPhase13, mountPublicApi } from './routes/phase13.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -212,12 +214,18 @@ export async function createServer(app: App = createApp()) {
   mountPhase9(api, app, wrap, requirePerm);
   mountPhase10(api, app, wrap, requirePerm, requireUser);
   mountPhase11(api, app, wrap, requirePerm, requireUser);
+  mountPhase12(api, app, wrap, requirePerm, requireUser);
+  mountPhase13(api, app, wrap, requirePerm, requireUser);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicGiving(pub, app, wrap);
   mountPublicHr(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicAdmissions(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   api.use('/public', pub);
+  // the public API: bearer tokens with scopes, never the console's session cookie
+  const v1 = express.Router();
+  mountPublicApi(v1, app, wrap);
+  server.use('/api/v1', v1);
   server.use('/api', api);
 
   // ---- not installed → wizard ----

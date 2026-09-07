@@ -1,9 +1,13 @@
 import type { Db, Row } from '@pathshala/db';
-import { nowSql, ulid } from '@pathshala/db';
+import { json, nowSql, ulid } from '@pathshala/db';
 import type { Adapters } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import { HttpError, badRequest, forbidden, notFound } from '../context.js';
+
+export type BroadcastChannel = 'sms' | 'email' | 'push' | 'in_app' | 'whatsapp' | 'voice';
+export interface Audience { roles?: string[]; classIds?: string[]; sectionIds?: string[]; studentIds?: string[]; guardians?: boolean; staff?: boolean; withDues?: boolean }
+export interface BroadcastInput { title: string; body: string; channels?: BroadcastChannel[]; audience?: Audience; noticeType?: string; expiresAt?: string | null; urgent?: boolean; whatsappTemplate?: string | null; whatsappVariables?: string[]; createdBy?: string | null }
 
 export interface MessageInput { conversationId: string; body?: string | null; attachments?: unknown; replyToId?: string | null }
 
@@ -80,6 +84,78 @@ export class CommunicationService {
   }
 
   // ---------- PTM ----------
+  // ---------- broadcast ----------
+  /**
+   * One message to many people, on the channels the school chooses.
+   *
+   * Two things make this different from a loop over `notify`. The audience is resolved from the
+   * school's own records — a class, a section, a role, everyone with unpaid fees — so nobody has to
+   * keep a list in a notebook. And a voice call is offered as a channel, because a guardian who
+   * cannot read gets nothing from an SMS: the message is read out to them instead.
+   *
+   * A broadcast is queued, not sent inline: five hundred calls placed inside one request would take
+   * the request with them.
+   */
+  async broadcast(schoolId: string, b: BroadcastInput) {
+    const channels = b.channels?.length ? b.channels : ['push', 'in_app'];
+    const recipients = await this.audience(schoolId, b.audience ?? {});
+    if (!recipients.length) throw badRequest('that audience matches nobody');
+    const id = ulid();
+    await this.db.insert('notices', {
+      id, school_id: schoolId, title: b.title, body: b.body, notice_type: b.noticeType ?? 'general',
+      audience: { ...(b.audience ?? {}), channels, recipients: recipients.length } as never, attachments: null,
+      publish_at: nowSql(), expires_at: b.expiresAt ?? null, is_pinned: false,
+      send_push: channels.includes('push'), send_sms: channels.includes('sms'), send_email: channels.includes('email'),
+      status: 'published', created_by: b.createdBy ?? null,
+    });
+    for (const r of recipients) {
+      await this.notifications.notify({
+        schoolId, userId: r.userId, address: r.phone ?? r.email ?? null, channels: channels as never,
+        eventKey: 'comms.broadcast', title: b.title, body: b.body,
+        data: b.whatsappTemplate ? { whatsappTemplate: b.whatsappTemplate, whatsappVariables: b.whatsappVariables ?? [] } : undefined,
+        entityType: 'communication.notice', entityId: id,
+        respectQuietHours: b.urgent ? false : undefined,
+      });
+    }
+    await this.outbox.emitNow({ type: 'broadcast.sent', schoolId, aggregateType: 'communication.notice', aggregateId: id, payload: { noticeId: id, title: b.title, recipients: recipients.length, channels: channels.join(',') } });
+    return { id, recipients: recipients.length, channels };
+  }
+  /**
+   * Who a broadcast reaches. Guardians are addressed through the guardian who receives notifications
+   * for that child, so a family with three children here is written to once per child and not once
+   * per child per guardian.
+   */
+  async audience(schoolId: string, a: Audience) {
+    const out = new Map<string, { userId: string | null; phone: string | null; email: string | null }>();
+    const add = (key: string, r: { userId: string | null; phone: string | null; email: string | null }) => { if (!out.has(key)) out.set(key, r); };
+    if (a.roles?.length) {
+      const rows = await this.db.query<Row>(`SELECT DISTINCT u.id, u.phone, u.email FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE u.school_id = ? AND u.is_active = TRUE AND r.slug IN (${a.roles.map(() => '?').join(',')})`, [schoolId, ...a.roles]);
+      for (const r of rows) add(`u:${r.id}`, { userId: String(r.id), phone: (r.phone as string) ?? null, email: (r.email as string) ?? null });
+    }
+    if (a.guardians || a.classIds?.length || a.sectionIds?.length || a.studentIds?.length || a.withDues) {
+      const where: string[] = ['g.school_id = ?', 'sg.receives_notifications = TRUE', `s.status = 'active'`];
+      const params: unknown[] = [schoolId];
+      if (a.classIds?.length) { where.push(`s.current_class_id IN (${a.classIds.map(() => '?').join(',')})`); params.push(...a.classIds); }
+      if (a.sectionIds?.length) { where.push(`s.current_section_id IN (${a.sectionIds.map(() => '?').join(',')})`); params.push(...a.sectionIds); }
+      if (a.studentIds?.length) { where.push(`s.id IN (${a.studentIds.map(() => '?').join(',')})`); params.push(...a.studentIds); }
+      if (a.withDues) where.push(`EXISTS (SELECT 1 FROM invoices i WHERE i.student_id = s.id AND i.balance > 0)`);
+      const rows = await this.db.query<Row>(`SELECT DISTINCT g.id AS guardian_id, g.user_id, g.phone, g.email FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id JOIN students s ON s.id = sg.student_id WHERE ${where.join(' AND ')} LIMIT 20000`, params);
+      for (const r of rows) add(`g:${r.guardian_id}`, { userId: (r.user_id as string) ?? null, phone: (r.phone as string) ?? null, email: (r.email as string) ?? null });
+    }
+    if (a.staff) {
+      const rows = await this.db.query<Row>(`SELECT id, user_id, phone, email FROM staff WHERE school_id = ? AND status IN ('active','probation')`, [schoolId]);
+      for (const r of rows) add(`s:${r.id}`, { userId: (r.user_id as string) ?? null, phone: (r.phone as string) ?? null, email: (r.email as string) ?? null });
+    }
+    return [...out.values()];
+  }
+  /** What a broadcast cost and where it got to, once the queue has worked through it. */
+  async broadcastStatus(schoolId: string, noticeId: string) {
+    const notice = await this.db.findOne<Row>('notices', { id: noticeId, school_id: schoolId });
+    if (!notice) throw notFound('notice');
+    const rows = await this.db.query<{ channel: string; status: string; n: number; cost: number }>(`SELECT channel, status, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM notifications WHERE school_id = ? AND entity_type = 'communication.notice' AND entity_id = ? GROUP BY channel, status`, [schoolId, noticeId]);
+    return { notice: { ...notice, audience: json(notice.audience) }, delivery: rows, cost: rows.reduce((a, r) => a + Number(r.cost), 0) };
+  }
+
   async createPtmSlots(schoolId: string, s: { teacherId: string; date: string; startTime: string; endTime: string; minutes: number; capacity?: number; roomId?: string | null; mode?: 'in_person' | 'online' }) {
     const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
     const start = toMin(s.startTime), end = toMin(s.endTime);
