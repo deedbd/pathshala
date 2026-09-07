@@ -5,6 +5,7 @@ import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { FileService } from '../files.js';
+import type { DocumentService } from './documents.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface ExamInput { academicYearId?: string | null; termId?: string | null; examTypeId?: string | null; gradingScaleId?: string | null; name: string; startDate: string; endDate: string; classIds?: string[]; requireFeeClearance?: boolean; minAttendancePct?: number | null; rankScope?: 'section' | 'class' | 'both'; tieRule?: 'share_rank' | 'dense' | 'by_total' }
@@ -17,7 +18,7 @@ export interface MarkInput { studentId: string; theory?: number | null; practica
  * promotion. The engine is deterministic: recomputing an exam gives the same numbers.
  */
 export class AssessmentService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService) {}
 
   // ---------- setup ----------
   async gradingScales(schoolId: string) {
@@ -127,6 +128,61 @@ export class AssessmentService {
   }
   async seatPlan(schoolId: string, examId: string) {
     return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no, s.current_roll_no, r.name AS room_name, c.name AS class_name FROM exam_seat_plans p JOIN students s ON s.id = p.student_id LEFT JOIN rooms r ON r.id = p.room_id LEFT JOIN classes c ON c.id = s.current_class_id WHERE p.school_id = ? AND p.exam_id = ? ORDER BY c.numeric_level, LENGTH(p.seat_no), p.seat_no`, [schoolId, examId]);
+  }
+
+  /**
+   * D2: admit cards for everyone the seat plan found eligible. Queued and chunked like the report
+   * cards, because 1,500 cards is 1,500 PDFs and no request may take that long. A candidate who is
+   * not eligible gets no card, which is the point of the eligibility check.
+   */
+  async issueAdmitCards(schoolId: string, examId: string) {
+    const exam = await this.db.findOne<Row>('exams', { id: examId, school_id: schoolId });
+    if (!exam) throw notFound('exam');
+    const pending = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM exam_seat_plans WHERE exam_id = ? AND is_eligible = TRUE AND admit_card_file_id IS NULL`, [examId]);
+    if (!Number(pending[0]?.n ?? 0)) return { queued: false, pending: 0 };
+    await this.adapters.queue.push({ name: 'assessment.admit_cards', queue: 'batch', schoolId, payload: { examId }, triggeredBy: 'assessment.seat_plan' });
+    return { queued: true, pending: Number(pending[0]!.n) };
+  }
+  async renderAdmitCards(payload: Record<string, unknown>, ctx: JobContext) {
+    const examId = String(payload.examId);
+    const exam = await this.db.findOne<Row>('exams', { id: examId });
+    if (!exam) throw notFound('exam');
+    const schoolId = String(exam.school_id);
+    const schedules = await this.schedules(schoolId, examId);
+    const papers = schedules.map(s => `${String(s.subject_name)} — ${String(s.exam_date ?? '').slice(0, 10)} ${String(s.start_time ?? '').slice(0, 5)}`).join('\n');
+    const seats = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no, s.current_roll_no, r.name AS room_name, c.name AS class_name, sec.name AS section_name
+      FROM exam_seat_plans p JOIN students s ON s.id = p.student_id LEFT JOIN rooms r ON r.id = p.room_id LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN sections sec ON sec.id = s.current_section_id
+      WHERE p.exam_id = ? AND p.is_eligible = TRUE ORDER BY p.id`, [examId]);
+    const cursor = (ctx.job.cursor as { done?: number } | null) ?? {};
+    let done = cursor.done ?? 0;
+    const CHUNK = 25;
+    while (done < seats.length) {
+      for (const seat of seats.slice(done, done + CHUNK)) {
+        if (seat.admit_card_file_id) continue;
+        const issued = await this.documents.issue(schoolId, {
+          docType: 'admit_card', personType: 'student', studentId: String(seat.student_id),
+          data: {
+            name: `${seat.first_name} ${seat.last_name ?? ''}`.trim(), application_no: String(seat.admission_no), test: String(exam.name),
+            held_at: `${String(exam.start_date).slice(0, 10)} to ${String(exam.end_date).slice(0, 10)}`,
+            venue: `${seat.room_name ?? 'the exam hall'} · seat ${seat.seat_no}`,
+            guardian: `${seat.class_name ?? ''} ${seat.section_name ?? ''} · roll ${seat.current_roll_no ?? '—'}`,
+            note: papers,
+          },
+          entityType: 'assessment.exam', entityId: examId,
+        });
+        await this.db.update('exam_seat_plans', { admit_card_file_id: issued.fileId, updated_at: nowSql() }, { id: String(seat.id) });
+      }
+      done = Math.min(seats.length, done + CHUNK);
+      await ctx.progress(done, seats.length, { done });
+      if (Date.now() > ctx.deadline && done < seats.length) return { continue: true as const, cursor: { done } };
+    }
+    // the guardians of the ineligible are told why, once, rather than finding out at the gate
+    const blocked = await this.db.query<Row>(`SELECT p.*, s.first_name FROM exam_seat_plans p JOIN students s ON s.id = p.student_id WHERE p.exam_id = ? AND p.is_eligible = FALSE`, [examId]);
+    for (const b of blocked) {
+      const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [String(b.student_id)]);
+      for (const g of guardians) await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['sms', 'push', 'in_app'], eventKey: 'assessment.not_eligible', data: { student: String(b.first_name), exam: String(exam.name), reason: String(b.ineligible_reason ?? '') }, title: 'Admit card not issued', body: `${b.first_name} cannot sit ${exam.name} yet: ${b.ineligible_reason}. Clear it and the card will be issued.`, entityType: 'assessment.exam', entityId: examId });
+    }
+    return { result: { admitCards: seats.length, ineligible: blocked.length } };
   }
 
   // ---------- marks ----------

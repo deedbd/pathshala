@@ -84,10 +84,25 @@ describe('phase 4', () => {
     const blocked = plan.find(p => !Number(p.is_eligible));
     assert.match(String(blocked.ineligible_reason), /fees due/);
     assert.equal(blocked.student_id, students[0].id);
-    // the ordinary exam seats everyone
+    // the ordinary exam seats everyone, and the admit cards follow on the queue
     const open = await api(`/exams/${examId}/seat-plan`, {});
     assert.equal(open.ineligible, 0);
     assert.equal(open.seated, N);
+    assert.equal(open.admitCards.queued, true);
+    assert.equal(open.admitCards.pending, N);
+    await app.adapters.queue.drain(50);
+    let guard = 0;
+    while (++guard < 200 && (await app.db.query(`SELECT COUNT(*) AS n FROM exam_seat_plans WHERE exam_id = ? AND admit_card_file_id IS NULL AND is_eligible = TRUE`, [examId]))[0].n > 0) await app.adapters.queue.drain(5);
+    const withCards = await app.db.query(`SELECT COUNT(*) AS n FROM exam_seat_plans WHERE exam_id = ? AND admit_card_file_id IS NOT NULL`, [examId]);
+    assert.equal(Number(withCards[0].n), N, 'every eligible candidate has an admit card');
+    // the one who owes fees is told why, and gets no card
+    await app.relay.run();
+    const blockedCard = await app.db.query(`SELECT admit_card_file_id FROM exam_seat_plans WHERE exam_id = ? AND is_eligible = FALSE`, [strict.id]);
+    assert.ok(blockedCard.every(r => !r.admit_card_file_id), 'no card for somebody who cannot sit');
+    await app.assessment.issueAdmitCards(schoolId, strict.id);
+    let g2 = 0; while (++g2 < 100 && (await app.adapters.queue.drain(5)).ran) { /* let the cards render */ }
+    const told = await app.db.count('notifications', { school_id: schoolId, event_key: 'assessment.not_eligible' });
+    assert.ok(told >= 1, 'the guardian hears why, rather than finding out at the exam hall');
   });
 
   test('marks entry: validation, save, verify, lock', async () => {

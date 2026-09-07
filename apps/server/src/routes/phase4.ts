@@ -22,8 +22,10 @@ export function mountPhase4(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.post('/exams/:id/seat-plan', wrap(async req => {
     const u = requirePerm(req, 'assessment.edit');
     const r = await app.assessment.buildSeatPlan(u.school_id, req.params.id as string);
-    await app.outbox.emitNow({ type: 'exam.scheduled', schoolId: u.school_id, aggregateType: 'assessment.exam', aggregateId: req.params.id as string, payload: { examId: req.params.id as string, ...r } });
-    return r;
+    await app.outbox.emitNow({ type: 'exam.scheduled', schoolId: u.school_id, aggregateType: 'assessment.exam', aggregateId: req.params.id as string, payload: { examId: req.params.id as string, seated: r.seated, ineligible: r.ineligible } });
+    // the cards follow on the queue; the seat plan itself must answer straight away
+    const cards = await app.assessment.issueAdmitCards(u.school_id, req.params.id as string);
+    return { ...r, admitCards: cards };
   }));
   api.get('/exams/:id/seat-plan', wrap(async req => { const u = requirePerm(req, 'assessment.view'); return app.assessment.seatPlan(u.school_id, req.params.id as string); }));
 

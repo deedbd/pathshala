@@ -83,6 +83,9 @@ export async function createServer(app: App = createApp()) {
     });
   }
 
+  // see tuneKeepAlive: the client must give up on an idle socket well before the server does
+  server.use((_req, res, next) => { res.setHeader('Keep-Alive', `timeout=${KEEP_ALIVE_ADVERTISED_SECONDS}`); next(); });
+
   // ---- API ----
   const api = express.Router();
   const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => fn(req, res).then(r => { if (r !== undefined && !res.headersSent) res.json(r); }).catch(next);
@@ -263,7 +266,14 @@ export async function main() {
  * Node closes idle keep-alive sockets after 5 s, which races clients that are about to reuse one
  * (Passenger, Cloudflare and undici all pool connections) and surfaces as a random "fetch failed".
  * 65 s sits above the usual 60 s proxy idle timeout, so the proxy always closes first.
+ *
+ * The header matters as much as the timeout. Node advertises `Keep-Alive: timeout=65` to match, and
+ * clients that honour it (undici does) then hold the socket for exactly as long as the server keeps
+ * it — so whoever loses the race by a millisecond sees an ECONNRESET on the next request. The
+ * middleware below advertises a much shorter idle time than the server actually tolerates, which
+ * puts the client comfortably first: it reconnects while the server is still willing to wait.
  */
+export const KEEP_ALIVE_ADVERTISED_SECONDS = 5;
 export function tuneKeepAlive(listener: { keepAliveTimeout: number; headersTimeout: number }) {
   listener.keepAliveTimeout = 65_000;
   listener.headersTimeout = 66_000;

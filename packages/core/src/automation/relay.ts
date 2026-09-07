@@ -50,7 +50,7 @@ export class Relay {
 
   private async pass(max: number, deadline = 0): Promise<{ published: number; failed: number }> {
     this.busy = true; this.wanted = false;
-    let published = 0, failed = 0;
+    let published = 0, failed = 0, lastYield = Date.now();
     try {
       const rows = await this.db.query<Record<string, unknown>>(`SELECT * FROM outbox_events WHERE published_at IS NULL ORDER BY occurred_at ASC, id ASC LIMIT ${max}`);
       for (const row of rows) {
@@ -61,9 +61,10 @@ export class Relay {
         ok = (await this.once('webhooks', event, () => this.webhooks(event))) && ok;
         if (ok) { await this.db.update('outbox_events', { published_at: nowSql() }, { id: row.id as string }); published++; }
         else failed++;
-        // SQLite queries are synchronous, so without this yield a backlog would hold the event loop
-        // and every HTTP request behind it. One turn per event costs nothing and keeps the app answering.
-        await new Promise(r => setImmediate(r));
+        // SQLite queries are synchronous, so without a yield a backlog would hold the event loop and
+        // every HTTP request behind it. Yielding on a time slice rather than per event keeps the app
+        // answering without paying a turn of the loop for each of thousands of rows.
+        if (Date.now() - lastYield > 15) { await new Promise(r => setImmediate(r)); lastYield = Date.now(); }
         if (deadline && Date.now() > deadline) break;   // the rest waits for the next tick
       }
     } finally { this.busy = false; }
