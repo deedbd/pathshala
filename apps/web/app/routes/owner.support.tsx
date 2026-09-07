@@ -3,11 +3,12 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/owner.support';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Select, Textarea, api, formatDate, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { listOf, ownerApi, ownerLoad, str, type Row } from '~/owner-api';
+import { listOf, ownerApi, ownerLoad, requireOwnerOr404, str, type Row } from '~/owner-api';
 
 const TICKET_STATUSES = ['open', 'in_progress', 'closed'];
 
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
   const user = requireUser(context, request);
   const status = new URL(request.url).searchParams.get('status') ?? '';
   const answer = await ownerLoad(() => ownerApi(context).tickets({ status: status || undefined }));

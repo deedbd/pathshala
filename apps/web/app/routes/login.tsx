@@ -34,6 +34,13 @@ export async function action({ context, request }: Route.ActionArgs) {
     }
     const r = await context.app.auth.login({ identifier: formString(fd, 'identifier'), password: formString(fd, 'password'), totp: formString(fd, 'totp') || undefined, remember: fd.get('remember') === 'on', ...meta });
     if ('totpRequired' in r) return { totpRequired: true, identifier: formString(fd, 'identifier') };
+    // The Pathshala team does not sign in on a school's page. The session is dropped and the answer
+    // is the one a wrong password gets, so this page never admits that such an account exists.
+    try {
+      await context.app.owner.requireOwner(r.user as { id: string; school_id: string; user_type: string });
+      await context.app.auth.logout(r.token).catch(() => undefined);
+      return { error: 'login.failed' as const, identifier: formString(fd, 'identifier') };
+    } catch { /* an ordinary school account: carry on */ }
     return redirect(next.startsWith('/') ? next : '/dashboard', { headers: { 'Set-Cookie': sessionCookie(r.token, r.expiresAt, secure) } });
   } catch (e) {
     const err = e as { status?: number; message: string };

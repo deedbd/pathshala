@@ -111,3 +111,20 @@ export function listOf<T>(x: T[] | { rows: T[] } | null | undefined): T[] {
 }
 export function num(v: unknown): number { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 export function str(v: unknown): string { return v == null ? '' : String(v); }
+
+/**
+ * The vendor's console, or nothing at all.
+ *
+ * A refusal is a 404 rather than a 403: a school's administrator who guesses the address learns that
+ * there is nothing here, not that there is something they are one role away from. It has to be called
+ * by the layout *and* by every child page, because React Router runs their loaders side by side — a
+ * child that only redirected to /login would answer 302 and give the game away.
+ */
+export async function requireOwnerOr404(context: AppLoadContext): Promise<void> {
+  const ctx = context as unknown as { user?: { id: string; school_id: string; user_type: string } | null; app: { owner?: { requireOwner(u: unknown): Promise<unknown> } } };
+  if (!ctx.user) throw new Response('Not found', { status: 404 });
+  const owner = ctx.app.owner;
+  if (!owner) throw new Response('Not found', { status: 404 });
+  try { await owner.requireOwner(ctx.user); }
+  catch { throw new Response('Not found', { status: 404 }); }
+}

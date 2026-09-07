@@ -3,11 +3,12 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/owner.billing';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, Tabs, api, formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { num, ownerApi, ownerLoad, str, type OwnerBuckets, type Row } from '~/owner-api';
+import { num, ownerApi, ownerLoad, requireOwnerOr404, str, type OwnerBuckets, type Row } from '~/owner-api';
 
 const INVOICE_STATUSES = ['draft', 'unpaid', 'overdue', 'paid', 'void'];
 
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
   const user = requireUser(context, request);
   const status = new URL(request.url).searchParams.get('status') ?? '';
   const billing = await ownerLoad(() => ownerApi(context).billing({ status: status || undefined }));

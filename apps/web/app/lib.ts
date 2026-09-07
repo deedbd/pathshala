@@ -21,3 +21,34 @@ export function assertSameOrigin(request: Request, appUrl: string) {
 }
 
 export function formString(fd: FormData, key: string) { const v = fd.get(key); return typeof v === 'string' ? v : ''; }
+
+/**
+ * The vendor's device key, as the browser carries it.
+ *
+ * These are string helpers, not logic: the token is signed and checked by `OwnerAccessService` on the
+ * server. They live here because the web app must not import `@pathshala/core` at runtime — the
+ * release ships the two separately and `context.app` is handed in, not required — and the cookie name
+ * is the one thing the two halves have to agree on (`OWNER_DEVICE_COOKIE` in core).
+ */
+export const OWNER_DEVICE_COOKIE = 'ps_owner_device';
+
+export function ownerDeviceCookie(token: string, secure: boolean) {
+  return `${OWNER_DEVICE_COOKIE}=${token}; Path=/; Max-Age=${2 * 365 * 24 * 3600}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+}
+
+export function readOwnerDeviceCookie(header: string | null | undefined): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (k === OWNER_DEVICE_COOKIE) return rest.join('=') || null;
+  }
+  return null;
+}
+
+/** What to call this machine in the owner's list of trusted ones. */
+export function deviceLabel(userAgent: string | null | undefined): string {
+  const ua = String(userAgent ?? '');
+  const os = /Windows/i.test(ua) ? 'Windows' : /Android/i.test(ua) ? 'Android' : /iPhone|iPad/i.test(ua) ? 'iOS' : /Mac OS/i.test(ua) ? 'Mac' : /Linux/i.test(ua) ? 'Linux' : 'a machine';
+  const browser = /Edg\//i.test(ua) ? 'Edge' : /Chrome\//i.test(ua) ? 'Chrome' : /Firefox\//i.test(ua) ? 'Firefox' : /Safari\//i.test(ua) ? 'Safari' : 'a browser';
+  return `${browser} on ${os}`;
+}

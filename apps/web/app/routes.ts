@@ -33,6 +33,9 @@ export default [
     route('group', 'routes/group.tsx'),
     route('platform', 'routes/platform.tsx'),
   ]),
+  // the door: Pathshala's own sign-in, behind a path from .env that nothing links to. A wrong
+  // path is a 404 like any other, so a school's site says nothing about a vendor console
+  route('x/:door', 'routes/owner-door.tsx'),
   // Pathshala's own console: its own layout, outside the school console, gated by the owner service
   route('owner', 'routes/owner.tsx', [
     index('routes/owner.overview.tsx'),

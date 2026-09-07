@@ -3,13 +3,14 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/owner.schools';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, Tabs, api, formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { num, ownerApi, ownerLoad, str, type OwnerSchoolRow, type Row } from '~/owner-api';
+import { num, ownerApi, ownerLoad, requireOwnerOr404, str, type OwnerSchoolRow, type Row } from '~/owner-api';
 
 const PER_PAGE = 25;
 const TYPES = ['school', 'college', 'school_college', 'madrasa', 'kindergarten', 'coaching', 'university'];
 const STATUSES = ['active', 'trial', 'past_due', 'suspended'];
 
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
   const user = requireUser(context, request);
   const url = new URL(request.url);
   const q = url.searchParams.get('q') ?? '';

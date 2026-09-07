@@ -2,9 +2,10 @@ import { Link, useLoaderData } from 'react-router';
 import type { Route } from './+types/owner.overview';
 import { Banner, Chip, Kpi, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { ownerApi, ownerLoad } from '~/owner-api';
+import { ownerApi, ownerLoad, requireOwnerOr404 } from '~/owner-api';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
   const user = requireUser(context, request);
   const overview = await ownerLoad(() => ownerApi(context).overview());
   return { locale: (user.locale as Locale) || context.locale, overview };

@@ -2,9 +2,10 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/owner.health';
 import { Banner, Chip, DataTable, formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { num, ownerApi, ownerLoad, str, type OwnerHealthReport, type Row } from '~/owner-api';
+import { num, ownerApi, ownerLoad, requireOwnerOr404, str, type OwnerHealthReport, type Row } from '~/owner-api';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
   const user = requireUser(context, request);
   const health = await ownerLoad(() => ownerApi(context).health());
   return { locale: (user.locale as Locale) || context.locale, denied: health === null, health };

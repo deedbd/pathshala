@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = path.join(root, 'tests', '.tmp-owner');
 fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
-Object.assign(process.env, { APP_ENV: 'test', APP_ROOT: root, APP_URL: 'http://127.0.0.1:0', APP_KEY: 'owner-key'.padEnd(64, 'x'), CRON_KEY: 'cron-owner', UPLOADS_DIR: 'tests/.tmp-owner/uploads', ADAPTERS: 'db,heartbeat,local,pdfmake,sse', CRON_MODE: 'heartbeat', LOG_LEVEL: process.env.LOG_LEVEL || 'warn', FONTS_DIR: 'packages/adapters/fonts' });
+Object.assign(process.env, { APP_ENV: 'test', APP_ROOT: root, APP_URL: 'http://127.0.0.1:0', APP_KEY: 'owner-key'.padEnd(64, 'x'), CRON_KEY: 'cron-owner', OWNER_DOOR: 'test-door-9x7k2p', UPLOADS_DIR: 'tests/.tmp-owner/uploads', ADAPTERS: 'db,heartbeat,local,pdfmake,sse', CRON_MODE: 'heartbeat', LOG_LEVEL: process.env.LOG_LEVEL || 'warn', FONTS_DIR: 'packages/adapters/fonts' });
 if (process.env.TEST_DB_URL) { process.env.DB_URL = process.env.TEST_DB_URL; delete process.env.DB_ENGINE; } else { process.env.DB_ENGINE = 'sqlite'; process.env.SQLITE_PATH = 'tests/.tmp-owner/pathshala.db'; delete process.env.DB_URL; }
 
 const core = await import('../packages/core/dist/index.js');
@@ -79,6 +79,112 @@ describe('the owner console: one vendor, many client schools', () => {
     return r.body;
   };
 
+  /** A page, not an API call: the door and the console are server-rendered HTML. */
+  const page = async (p, opts = {}) => {
+    const r = await fetch(`${baseUrl}${p}`, { redirect: 'manual', headers: { ...(opts.cookie ? { cookie: opts.cookie } : {}), ...(opts.headers ?? {}) } });
+    return { status: r.status, location: r.headers.get('location'), text: await r.text(), setCookie: r.headers.getSetCookie?.() ?? [] };
+  };
+  const postForm = async (p, fields, opts = {}) => {
+    const r = await fetch(`${baseUrl}${p}`, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', origin: baseUrl, ...(opts.cookie ? { cookie: opts.cookie } : {}), ...(opts.headers ?? {}) },
+      body: new URLSearchParams(fields).toString(),
+    });
+    return { status: r.status, location: r.headers.get('location'), text: await r.text(), setCookie: r.headers.getSetCookie?.() ?? [] };
+  };
+
+  // ---------------- the door ----------------
+  test('the vendor signs in at its own door, and nowhere else', async () => {
+    const DOOR = '/x/test-door-9x7k2p';
+
+    // a school's own login page never signs the vendor in, and does not admit the account exists
+    const refused = await postForm('/login', { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
+    assert.equal(refused.status, 200, 'the school login answers with its own page, not a redirect');
+    assert.equal(refused.setCookie.some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'no session was handed out');
+    assert.match(refused.text, /login\.failed|match/i, 'and the answer is the one a wrong password gets');
+    // the same page still works for a school's own head teacher
+    const school = await postForm('/login', { intent: 'password', identifier: 'head@shapla.test', password: 'shapla-pass-1', next: '/dashboard' });
+    assert.equal(school.status, 302);
+    assert.ok(school.setCookie.some(c => c.startsWith('ps_session=')), 'a school signs in exactly as before');
+
+    // a wrong path is a 404 like any other address on the site
+    assert.equal((await page('/x/not-the-door')).status, 404);
+    assert.equal([301, 302, 404].includes((await page('/x/')).status), true, 'a bare /x/ is nothing either');
+    assert.equal((await page(DOOR)).status, 200, 'the door itself is there for whoever knows it');
+
+    // the door signs the vendor in, and hands the machine a device key so tomorrow's address may differ
+    const inside = await postForm(DOOR, { identifier: 'owner@vendor.test', password: 'owner-pass-1' });
+    assert.equal(inside.status, 302);
+    assert.equal(inside.location, '/owner');
+    assert.ok(inside.setCookie.some(c => c.startsWith('ps_session=')), 'a session');
+    assert.ok(inside.setCookie.some(c => c.startsWith('ps_owner_device=') && c.includes('HttpOnly')), 'and a device key the browser cannot read');
+    const ownerCookie = inside.setCookie.find(c => c.startsWith('ps_session=')).split(';')[0];
+
+    // a school's head teacher who somehow finds the door gets nothing from it
+    const wrongPerson = await postForm(DOOR, { identifier: 'head@shapla.test', password: 'shapla-pass-1' });
+    assert.equal(wrongPerson.status, 404, 'the page is gone rather than forbidden');
+    assert.equal(wrongPerson.setCookie.some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'and the session it just made was dropped');
+
+    // the console answers the vendor and nobody else — as a 404, so there is nothing to find
+    assert.equal((await page('/owner', { cookie: ownerCookie })).status, 200);
+    assert.equal((await page('/owner')).status, 404, 'signed out');
+    assert.equal((await page('/owner', { cookie: client.cookie })).status, 404, "a client's head teacher");
+    assert.equal((await page('/owner', { cookie: clerk.cookie })).status, 404, 'a clerk in the vendor\u2019s own school');
+
+    // and so does its API: 404, never 403
+    assert.equal((await call('/owner/overview', null, 'GET', client.cookie)).status, 404);
+    assert.equal((await call('/owner/schools', null, 'GET', clerk.cookie)).status, 404);
+    assert.equal((await call('/owner/overview', null, 'GET', null)).status, 404);
+    assert.equal((await call('/owner/overview', null, 'GET', ownerCookie)).status, 200, 'the owner still gets their own answer');
+  });
+
+  test('a machine the owner has trusted is remembered, and the list is theirs to shorten', async () => {
+    const devices = await app.ownerAccess.devices();
+    assert.ok(devices.length >= 1, 'signing in through the door trusted this machine');
+    const mine = devices[0];
+    assert.match(mine.label, /on/, 'the label says what kind of machine it was');
+    assert.ok(mine.addedAt && mine.lastSeenAt, 'and when it was first and last seen');
+    assert.equal(await app.ownerAccess.forgetDevice(mine.id), true);
+    assert.equal((await app.ownerAccess.devices()).some(d => d.id === mine.id), false, 'a machine can be taken off the list');
+    assert.equal(await app.ownerAccess.forgetDevice('01NOTADEVICE0000000000000'), false);
+  });
+
+  test('a MAC is not asked for over the internet, and an address rule is an OR not an AND', async () => {
+    const access = app.ownerAccess;
+    // the three rules, as rules
+    assert.equal(core.ipMatches('203.0.113.9', '203.0.113.9'), true);
+    assert.equal(core.ipMatches('203.0.113.9', '203.0.113.0/24'), true);
+    assert.equal(core.ipMatches('198.51.100.9', '203.0.113.0/24'), false);
+    assert.equal(core.normalizeIp('::ffff:203.0.113.9'), '203.0.113.9', 'the address people write down');
+    assert.equal(core.normalizeMac('AA-BB-CC-DD-EE-FF'), 'aa:bb:cc:dd:ee:ff');
+    assert.equal(core.normalizeMac('not a mac'), null);
+    // a MAC only exists on our own segment; a public address is never asked
+    assert.equal(core.isLanIp('192.168.1.40'), true);
+    assert.equal(core.isLanIp('203.0.113.9'), false);
+    assert.equal(await access.macFor('203.0.113.9'), null, 'a MAC does not cross the internet');
+
+    // with nothing configured and nothing trusted, the door is open to the password alone —
+    // an owner locked out of their own console by a network rule is the worse failure
+    for (const d of await access.devices()) await access.forgetDevice(d.id);
+    const open = await access.check({ ip: '203.0.113.9', deviceToken: null });
+    assert.equal(open.allowed, true);
+    assert.equal(open.matched, 'open');
+
+    // trust one machine, and now the rule bites: that machine yes, an unknown one no
+    const device = await access.trustDevice({ label: 'the owner\u2019s laptop', ip: '203.0.113.9' });
+    assert.equal((await access.check({ ip: '198.51.100.7', deviceToken: device.token })).matched, 'device', 'the key travels with the laptop');
+    assert.equal((await access.check({ ip: '203.0.113.9', deviceToken: null })).allowed, false, 'a different browser at the same desk is not the same machine');
+    assert.equal((await access.check({ ip: '203.0.113.9', deviceToken: `${device.id}.forged` })).allowed, false, 'and an id without the signature is nothing');
+
+    // an address on the allowlist is enough on its own, with no device key at all
+    app.config.ownerIps = ['203.0.113.0/24'];
+    assert.equal((await access.check({ ip: '203.0.113.9', deviceToken: null })).matched, 'ip');
+    assert.equal((await access.check({ ip: '198.51.100.7', deviceToken: null })).allowed, false);
+    assert.equal((await access.check({ ip: '198.51.100.7', deviceToken: device.token })).matched, 'device', 'either one, never both');
+    app.config.ownerIps = [];
+    for (const d of await access.devices()) await access.forgetDevice(d.id);
+  });
+
   /** Every route of the owner API, with a body good enough to reach the gate. */
   const ROUTES = () => [
     ['GET', '/owner/overview'],
@@ -98,12 +204,14 @@ describe('the owner console: one vendor, many client schools', () => {
   // ---------------------------------------------------------------- the gate
   test('a school admin and another school\'s super admin are refused on every route', async () => {
     for (const [method, p, body] of ROUTES()) {
+      // every refusal leaves as a 404: a 403 would tell a school's administrator that a vendor
+      // console is at this address and that they are one role away from it
       const clerkTry = await call(p, body, method, clerk.cookie);
-      assert.equal(clerkTry.status, 403, `${method} ${p} for a clerk of the vendor's own school → ${clerkTry.status}`);
+      assert.equal(clerkTry.status, 404, `${method} ${p} for a clerk of the vendor's own school → ${clerkTry.status}`);
       const clientTry = await call(p, body, method, client.cookie);
-      assert.equal(clientTry.status, 403, `${method} ${p} for another school's super admin → ${clientTry.status}`);
+      assert.equal(clientTry.status, 404, `${method} ${p} for another school's super admin → ${clientTry.status}`);
       const anon = await call(p, body, method, null);
-      assert.equal(anon.status, 401, `${method} ${p} signed out → ${anon.status}`);
+      assert.equal(anon.status, 404, `${method} ${p} signed out → ${anon.status}`);
     }
     // nothing was created by any of those attempts
     assert.equal(await app.db.count('schools', { name: 'Gate Test School' }), 0);

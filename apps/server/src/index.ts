@@ -230,10 +230,16 @@ export async function createServer(app: App = createApp()) {
   mountPhase18(api, app, wrap, requirePerm);
   mountPhase14(api, app, wrap, requirePerm);
   mountPhase15(api, app, wrap, requirePerm, requireUser);
-  // the vendor's console: gated in OwnerService, not by a permission any school can hold
+  // the vendor's console: gated in OwnerService, not by a permission any school can hold. Every
+  // refusal leaves as a 404 — a school's administrator who pokes at /api/owner learns that the path
+  // does not exist here, rather than that it exists and they are not allowed
   const ownerRouter = express.Router();
   mountOwner(ownerRouter, app, wrap, requirePerm);
-  api.use('/owner', ownerRouter);
+  api.use('/owner', ownerRouter, (err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    const status = (err as { status?: number })?.status;
+    if (status === 401 || status === 403) { res.status(404).json({ error: 'not found', code: 'not_found' }); return; }
+    next(err);
+  });
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicGiving(pub, app, wrap);

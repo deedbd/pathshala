@@ -2,17 +2,22 @@ import { Form, Link, NavLink, Outlet, useLoaderData } from 'react-router';
 import type { Route } from './+types/owner';
 import { formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { ownerApi, ownerLoad } from '~/owner-api';
+import { ownerApi, ownerLoad, requireOwnerOr404 } from '~/owner-api';
 
 /**
  * Pathshala's own console — the company's, not a school's.
  *
  * It is a layout of its own, outside `console.tsx`, so nothing here can be reached from a school's
- * sidebar. The gate is the owner service's: whoever `context.app.owner` refuses gets the plain
- * refusal below instead of a stack trace, and the child pages never render.
+ * sidebar. The gate is the owner service's, and a refusal is a **404**: a 403 would confirm to a
+ * school's administrator that a vendor console exists at this address and is worth attacking. The
+ * way in is the door (`/x/<OWNER_DOOR>`), which is the only page that signs the vendor in.
  */
 export async function loader({ context, request }: Route.LoaderArgs) {
+  await requireOwnerOr404(context);
+  if (!context.user) throw new Response('Not found', { status: 404 });
   const user = requireUser(context, request);
+  try { await context.app.owner.requireOwner(context.user); }
+  catch { throw new Response('Not found', { status: 404 }); }
   const overview = await ownerLoad(() => ownerApi(context).overview());
   return {
     locale: (user.locale as Locale) || context.locale,

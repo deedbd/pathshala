@@ -59,6 +59,7 @@ import { CollegeService } from './modules/college.js';
 import { AdaptiveService } from './modules/adaptive.js';
 import { PlatformService } from './modules/platform.js';
 import { OwnerService } from './modules/owner.js';
+import { OwnerAccessService } from './owner-access.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -66,7 +67,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; facilities: FacilitiesService; governance: GovernanceService; compliance: ComplianceService; analytics: AnalyticsService; saas: SaasService; marketplace: MarketplaceService; ai: AiService; groups: GroupsService; forecast: ForecastService; ivr: IvrService; college: CollegeService; adaptive: AdaptiveService; platform: PlatformService; owner: OwnerService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; facilities: FacilitiesService; governance: GovernanceService; compliance: ComplianceService; analytics: AnalyticsService; saas: SaasService; marketplace: MarketplaceService; ai: AiService; groups: GroupsService; forecast: ForecastService; ivr: IvrService; college: CollegeService; adaptive: AdaptiveService; platform: PlatformService; owner: OwnerService; ownerAccess: OwnerAccessService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -176,6 +177,8 @@ export function createApp(opts: CreateAppOptions = {}): App {
 
   // the vendor's own console: the second service that crosses the tenant boundary, gated inside itself
   const owner = new OwnerService(db, config, audit, rbac, auth, installer, notifications, saas, platform);
+  // who may even see the vendor's door: a trusted device, an allowed address, or a MAC on our own LAN
+  const ownerAccess = new OwnerAccessService(db, config);
 
   registerPlatformJobs({ db, adapters, notifications, outbox, log });
   adapters.queue.register('people.import_students', (payload, ctx) => importer.runJob(payload, ctx));
@@ -231,7 +234,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, facilities, governance, compliance, analytics, saas, marketplace, ai, groups, forecast, ivr, college, adaptive, platform, owner,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, facilities, governance, compliance, analytics, saas, marketplace, ai, groups, forecast, ivr, college, adaptive, platform, owner, ownerAccess,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => {
