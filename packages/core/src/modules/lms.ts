@@ -11,11 +11,32 @@ import { HttpError, badRequest, notFound } from '../context.js';
 export interface CourseInput { title: string; slug?: string; classSubjectId?: string | null; description?: string | null; teacherId?: string | null; isPaid?: boolean; price?: number }
 export interface AssignmentInput { sectionId: string; classSubjectId: string; teacherId: string; title: string; description?: string | null; dueAt: string; maxMarks?: number | null; allowLate?: boolean; latePenaltyPct?: number; submissionType?: 'file' | 'text' | 'both' | 'offline' | 'photo' }
 
+/** Who is reading or writing in a discussion. Staff see every course; a learner sees their own. */
+export interface DiscussionViewer { userId: string | null; isStaff: boolean; studentId?: string | null }
+export interface DiscussionPost { id: string; courseId: string; lessonId: string | null; parentId: string | null; authorId: string | null; author: string; body: string; isAnswer: boolean; upvotes: number; createdAt: string; replies: DiscussionPost[] }
+export interface CoverageItem { id: string; title: string; kind: 'lesson' | 'quiz' | 'material'; lessonType?: string; courseId?: string; courseTitle?: string; courseSlug?: string; enrolled?: boolean; done?: boolean; durationMin?: number | null; materialType?: string; url?: string | null }
+export interface UnitCoverage { unitId: string; unitTitle: string | null; lessons: CoverageItem[]; quizzes: CoverageItem[]; materials: CoverageItem[] }
+
+/** A video counts as watched once this much of its running time has actually gone past the player. */
+const WATCHED_ENOUGH_PCT = 85;
+/** The most seconds one heartbeat may add to a lesson. See `watch`. */
+const MAX_BEAT_SECONDS = 180;
+/** Similarity is measured over overlapping runs of this many words. */
+const SHINGLE_WORDS = 5;
+/** Below this many words an answer is not compared at all — see `similarityReport`. */
+const MIN_WORDS_TO_COMPARE = 40;
+/** Pairs at or above this percentage are put in front of a person. Nothing happens automatically. */
+const SIMILARITY_REPORT_AT = 40;
+/** Pairs grow with the square of the class, and a shared-hosting request dies at about 30 s. */
+const MAX_SUBMISSIONS_COMPARED = 300;
+
 /**
  * The LMS: courses with modules and lessons, enrolment (automatic for a class-subject course),
- * per-lesson progress that rolls up to a percentage, assignments with a late penalty applied at
- * marking time rather than argued about later, study materials, live classes with their join link,
- * and discussion threads. Reminders for unsubmitted work run hourly as one job.
+ * per-lesson progress that rolls up to a percentage, video watch time that has to have actually
+ * happened, assignments with a late penalty applied at marking time rather than argued about later,
+ * a similarity check between text answers that only ever asks a teacher to look, study materials,
+ * live classes with their join link, and discussion threads scoped to the reader's own course.
+ * Reminders for unsubmitted work run hourly as one job.
  */
 export class LmsService {
   constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private documents: DocumentService) {}
@@ -101,6 +122,79 @@ export class LmsService {
     let certificateId: string | null = null;
     if (pct >= 100) certificateId = (await this.issueCourseCertificate(schoolId, courseId, p.studentId).catch(() => null))?.certificateId ?? null;
     return { courseId, progressPct: pct, lessonsDone: done, lessons: total, certificateId };
+  }
+
+  /**
+   * A heartbeat from the video player: how many seconds went past since the last one, and where the
+   * needle is now. Two things make the number mean something.
+   *
+   * A beat may only ever add a few minutes. Without that cap a page can post "3600 seconds" once and
+   * finish an hour-long lesson nobody sat through — which is exactly what a student does when the
+   * certificate at the end of the course is the point. The running time is the other ceiling: total
+   * watch time can never exceed the lesson's own length however many beats arrive.
+   *
+   * `last_position` is where the needle is, and dragging it moves the needle without watching
+   * anything, so it is kept only to resume where the student left off and never counted towards
+   * completion. A lesson with no running time on it cannot be measured at all, and says so instead
+   * of pretending to a percentage.
+   */
+  async watch(schoolId: string, p: { lessonId: string; studentId: string; seconds?: number; position?: number }) {
+    const lesson = await this.db.findOne<Row>('lessons', { id: p.lessonId, school_id: schoolId });
+    if (!lesson) throw notFound('lesson');
+    const before = await this.db.findOne<Row>('lesson_progress', { lesson_id: p.lessonId, student_id: p.studentId });
+    const beat = Math.min(Math.max(0, Math.round(Number(p.seconds ?? 0) || 0)), MAX_BEAT_SECONDS);
+    const durationSec = Math.max(0, Math.round(Number(lesson.duration_min ?? 0) * 60));
+    const already = Math.max(0, Number(before?.seconds_watched ?? 0));
+    const total = durationSec ? Math.min(already + beat, durationSec) : already + beat;
+    const position = Math.max(0, Math.round(Number(p.position ?? before?.last_position ?? 0) || 0));
+    const watchedPct = durationSec ? round(Math.min(100, (total * 100) / durationSec)) : null;
+    const done = watchedPct !== null && watchedPct >= WATCHED_ENOUGH_PCT;
+    // a lesson already finished stays finished: a quiz lesson is completed by passing it, and a
+    // stray beat from a player left open on the page must not take that back and, with it, the
+    // course percentage and the certificate that followed
+    const wasDone = String(before?.status ?? '') === 'completed';
+    const status = done || wasDone ? 'completed' : total > 0 ? 'in_progress' : 'not_started';
+    const progress = await this.markProgress(schoolId, { lessonId: p.lessonId, studentId: p.studentId, status, secondsWatched: total, lastPosition: position });
+    // only the crossing is an event; a beat every thirty seconds would otherwise flood the outbox
+    if (done && !wasDone) {
+      await this.outbox.emitNow({ type: 'lesson.completed', schoolId, aggregateType: 'lms.lesson', aggregateId: p.lessonId, payload: { lessonId: p.lessonId, courseId: progress.courseId, studentId: p.studentId, watchedPct } });
+    }
+    return {
+      lessonId: p.lessonId, secondsWatched: total, lastPosition: position, watchedPct, requiredPct: WATCHED_ENOUGH_PCT, status,
+      note: watchedPct === null ? 'this lesson carries no running time, so watching cannot be measured — it is completed by hand' : null,
+      progress,
+    };
+  }
+
+  /**
+   * What a teacher wants to know about a video course: for each lesson, how many started it, how many
+   * actually watched it through, and how far the average student got. The average is over the
+   * students who opened the lesson at all — mixing in the ones who never started it would make a
+   * lesson everybody finished look half-watched.
+   */
+  async watchReport(schoolId: string, courseId: string) {
+    const course = await this.db.findOne<Row>('courses', { id: courseId, school_id: schoolId });
+    if (!course) throw notFound('course');
+    const enrolled = await this.db.count('course_enrollments', { course_id: courseId });
+    const rows = await this.db.query<Row>(`SELECT l.id, l.title, l.lesson_type, l.duration_min, m.sequence AS module_sequence, l.sequence,
+        COUNT(p.id) AS started, SUM(CASE WHEN p.status = 'completed' THEN 1 ELSE 0 END) AS completed, AVG(p.seconds_watched) AS avg_seconds
+      FROM lessons l JOIN course_modules m ON m.id = l.module_id
+      LEFT JOIN lesson_progress p ON p.lesson_id = l.id
+      WHERE l.school_id = ? AND m.course_id = ?
+      GROUP BY l.id, l.title, l.lesson_type, l.duration_min, m.sequence, l.sequence
+      ORDER BY m.sequence, l.sequence`, [schoolId, courseId]);
+    return {
+      courseId, title: String(course.title), enrolled, requiredPct: WATCHED_ENOUGH_PCT,
+      lessons: rows.map(r => {
+        const durationSec = Math.round(Number(r.duration_min ?? 0) * 60);
+        const avgSeconds = Math.round(Number(r.avg_seconds ?? 0));
+        return {
+          lessonId: String(r.id), title: String(r.title), lessonType: String(r.lesson_type), durationMin: r.duration_min === null ? null : Number(r.duration_min),
+          started: Number(r.started ?? 0), completed: Number(r.completed ?? 0), notStarted: Math.max(0, enrolled - Number(r.started ?? 0)),
+          avgSeconds, avgWatchedPct: durationSec ? round(Math.min(100, (avgSeconds * 100) / durationSec)) : null,
+        };
+      }),
+    };
   }
   // ---------- the quiz inside a lesson ----------
   /**
@@ -299,15 +393,236 @@ export class LmsService {
     await this.db.update('online_classes', { status: 'ended', updated_at: nowSql() }, { id: onlineClassId });
     return { saved };
   }
-  async ask(schoolId: string, d: { courseId?: string | null; lessonId?: string | null; parentId?: string | null; body: string; authorId?: string | null }) {
+  /**
+   * Who may read and write in a course's threads. Staff see every course; a student — or the guardian
+   * reading on that student's behalf — sees only the courses that student is enrolled on. Without
+   * this a guardian who guessed a course id would read another class's questions, and a question
+   * carries the asker's name and usually what they got wrong.
+   */
+  private async assertCourseVisible(schoolId: string, courseId: string, viewer?: DiscussionViewer) {
+    const course = await this.db.findOne<Row>('courses', { id: courseId, school_id: schoolId });
+    if (!course) throw notFound('course');
+    if (!viewer || viewer.isStaff) return course;
+    if (!viewer.studentId) throw new HttpError(403, 'these threads belong to a course, and this account is not on one', 'forbidden');
+    if (!(await this.db.findOne('course_enrollments', { course_id: courseId, student_id: viewer.studentId }))) throw new HttpError(403, 'this discussion belongs to a course this student is not enrolled on', 'forbidden');
+    return course;
+  }
+  private async courseOfLesson(schoolId: string, lessonId: string) {
+    const lesson = await this.db.findOne<Row>('lessons', { id: lessonId, school_id: schoolId });
+    if (!lesson) throw notFound('lesson');
+    const module = await this.db.findOne<Row>('course_modules', { id: String(lesson.module_id) });
+    if (!module) throw notFound('the lesson’s course');
+    return String(module.course_id);
+  }
+
+  /**
+   * A question or a reply. A reply takes its course and lesson from the post it answers, so a thread
+   * cannot be dragged into another course by sending a different courseId alongside the reply — and
+   * a reply to a reply still hangs off the original question, which keeps a thread two levels deep
+   * and readable on a phone.
+   */
+  async ask(schoolId: string, d: { courseId?: string | null; lessonId?: string | null; parentId?: string | null; body: string; authorId?: string | null }, viewer?: DiscussionViewer) {
+    let courseId = d.courseId ?? null;
+    let lessonId = d.lessonId ?? null;
+    let parentId = d.parentId ?? null;
+    let parent: Row | null = null;
+    if (parentId) {
+      parent = await this.db.findOne<Row>('discussions', { id: parentId, school_id: schoolId });
+      if (!parent) throw notFound('the post being replied to');
+      courseId = (parent.course_id as string) ?? null;
+      lessonId = (parent.lesson_id as string) ?? null;
+      parentId = (parent.parent_id as string) ?? String(parent.id);
+    }
+    if (!courseId && lessonId) courseId = await this.courseOfLesson(schoolId, lessonId);
+    if (!courseId) throw badRequest('a question belongs to a course or to a lesson; name one of them');
+    await this.assertCourseVisible(schoolId, courseId, viewer);
     const id = ulid();
-    await this.db.insert('discussions', { id, school_id: schoolId, course_id: d.courseId ?? null, lesson_id: d.lessonId ?? null, author_id: d.authorId ?? null, parent_id: d.parentId ?? null, body: d.body, is_answer: false, upvotes: 0 });
+    await this.db.insert('discussions', { id, school_id: schoolId, course_id: courseId, lesson_id: lessonId, author_id: d.authorId ?? null, parent_id: parentId, body: d.body, is_answer: false, upvotes: 0 });
+    if (parent) {
+      await this.outbox.emitNow({ type: 'discussion.replied', schoolId, aggregateType: 'lms.discussion', aggregateId: id, payload: { discussionId: id, threadId: parentId as string, courseId, lessonId, authorId: d.authorId ?? null } });
+      // the person who asked is the one waiting; a thread nobody is told about is a suggestion box
+      const root = String(parent.id) === String(parentId) ? parent : await this.db.findOne<Row>('discussions', { id: parentId as string });
+      const askerId = (root?.author_id as string) ?? null;
+      if (askerId && askerId !== d.authorId) {
+        const course = await this.db.findOne<Row>('courses', { id: courseId });
+        await this.notifications.notify({ schoolId, userId: askerId, channels: ['in_app', 'push'], eventKey: 'lms.discussion_reply', title: 'Reply to your question', body: `${String(course?.title ?? 'A course')}: ${d.body.slice(0, 140)}`, entityType: 'lms.discussion', entityId: id });
+      }
+    }
     return id;
   }
+  /**
+   * A course's (or one lesson's) threads, questions with their replies nested underneath. Second
+   * precision ties on a busy thread, so the ULID breaks it — ULIDs sort by the time they were made.
+   */
+  async threads(schoolId: string, f: { courseId?: string | null; lessonId?: string | null }, viewer?: DiscussionViewer) {
+    let courseId = f.courseId ?? null;
+    if (!courseId && f.lessonId) courseId = await this.courseOfLesson(schoolId, f.lessonId);
+    if (!courseId) throw badRequest('name the course or the lesson whose threads you want');
+    const course = await this.assertCourseVisible(schoolId, courseId, viewer);
+    const where = ['d.school_id = ?', 'd.course_id = ?'];
+    const params: unknown[] = [schoolId, courseId];
+    if (f.lessonId) { where.push('d.lesson_id = ?'); params.push(f.lessonId); }
+    const rows = await this.db.query<Row>(`SELECT d.*, u.display_name FROM discussions d LEFT JOIN users u ON u.id = d.author_id
+      WHERE ${where.join(' AND ')} ORDER BY d.created_at ASC, d.id ASC LIMIT 500`, params);
+    const byId = new Map<string, DiscussionPost>();
+    for (const r of rows) {
+      byId.set(String(r.id), {
+        id: String(r.id), courseId, lessonId: (r.lesson_id as string) ?? null, parentId: (r.parent_id as string) ?? null,
+        authorId: (r.author_id as string) ?? null, author: String(r.display_name ?? 'Someone'), body: String(r.body),
+        isAnswer: !!Number(r.is_answer), upvotes: Number(r.upvotes ?? 0), createdAt: String(r.created_at), replies: [],
+      });
+    }
+    const threads: DiscussionPost[] = [];
+    for (const post of byId.values()) {
+      const parent = post.parentId ? byId.get(post.parentId) : undefined;
+      if (parent) parent.replies.push(post); else threads.push(post);
+    }
+    return { courseId, courseTitle: String(course.title), lessonId: f.lessonId ?? null, posts: rows.length, threads };
+  }
+  /** Kept for callers that want the flat rows; `threads` is what a page should ask for. */
   async discussion(schoolId: string, courseId: string) {
-    return this.db.query<Row>(`SELECT d.*, u.display_name FROM discussions d LEFT JOIN users u ON u.id = d.author_id WHERE d.school_id = ? AND d.course_id = ? ORDER BY d.created_at ASC LIMIT 500`, [schoolId, courseId]);
+    return this.db.query<Row>(`SELECT d.*, u.display_name FROM discussions d LEFT JOIN users u ON u.id = d.author_id WHERE d.school_id = ? AND d.course_id = ? ORDER BY d.created_at ASC, d.id ASC LIMIT 500`, [schoolId, courseId]);
+  }
+  async upvote(schoolId: string, id: string, viewer?: DiscussionViewer) {
+    const post = await this.db.findOne<Row>('discussions', { id, school_id: schoolId });
+    if (!post) throw notFound('post');
+    if (post.course_id) await this.assertCourseVisible(schoolId, String(post.course_id), viewer);
+    // counted in the database rather than read-then-written: two students voting at once both count
+    await this.db.execute(`UPDATE discussions SET upvotes = upvotes + 1, updated_at = ? WHERE id = ? AND school_id = ?`, [nowSql(), id, schoolId]);
+    return { id, upvotes: Number(post.upvotes ?? 0) + 1 };
   }
   async markAnswer(schoolId: string, id: string) { return this.db.update('discussions', { is_answer: true, updated_at: nowSql() }, { id, school_id: schoolId }); }
+
+  // ---------- how alike two answers are ----------
+  /**
+   * Word-shingle Jaccard similarity between the text answers of one assignment: the fraction of
+   * five-word runs the two answers share. It runs entirely on this server, needs no service and no
+   * model, and works the same on Bangla as on English.
+   *
+   * What it is *not* is an accusation. Two students who learned the same definition from the same
+   * textbook will look alike and have done nothing wrong, so this never touches a mark, never
+   * changes a submission's status and never tells a guardian anything. It puts a pair in front of the
+   * teacher and asks them to read both. Short answers are skipped for the same reason: below about
+   * forty words there is only one sensible way to write the sentence, and a percentage over "the
+   * mitochondrion is the powerhouse of the cell" measures the language, not the student.
+   */
+  async similarityReport(schoolId: string, assignmentId: string, opts: { minWords?: number; reportAt?: number } = {}) {
+    const assignment = await this.db.findOne<Row>('assignments', { id: assignmentId, school_id: schoolId });
+    if (!assignment) throw notFound('assignment');
+    const minWords = Math.max(SHINGLE_WORDS + 1, Math.round(opts.minWords ?? MIN_WORDS_TO_COMPARE));
+    const reportAt = opts.reportAt ?? SIMILARITY_REPORT_AT;
+    const rows = await this.db.query<Row>(`SELECT s.id, s.student_id, s.text_answer, st.first_name, st.last_name, st.current_roll_no
+      FROM assignment_submissions s JOIN students st ON st.id = s.student_id
+      WHERE s.school_id = ? AND s.assignment_id = ? ORDER BY s.submitted_at ASC, s.id ASC LIMIT ${MAX_SUBMISSIONS_COMPARED}`, [schoolId, assignmentId]);
+
+    type Doc = { submissionId: string; studentId: string; name: string; roll: string | null; words: string[]; shingles: Set<string> };
+    const docs: Doc[] = [];
+    const skipped: { submissionId: string; studentId: string; name: string; words: number; reason: string }[] = [];
+    for (const r of rows) {
+      const name = `${r.first_name ?? ''} ${r.last_name ?? ''}`.trim();
+      const words = wordsOf(String(r.text_answer ?? ''));
+      if (words.length < minWords) {
+        skipped.push({
+          submissionId: String(r.id), studentId: String(r.student_id), name, words: words.length,
+          reason: words.length ? `only ${words.length} words — too short to tell copying from a shared definition` : 'nothing was typed; this work came in as a file',
+        });
+        continue;
+      }
+      docs.push({ submissionId: String(r.id), studentId: String(r.student_id), name, roll: r.current_roll_no == null ? null : String(r.current_roll_no), words, shingles: shinglesOf(words) });
+    }
+
+    const highest = new Map<string, number>();
+    const pairs: { similarityPct: number; a: { submissionId: string; studentId: string; name: string; roll: string | null }; b: { submissionId: string; studentId: string; name: string; roll: string | null }; sharedPhrases: string[] }[] = [];
+    for (let i = 0; i < docs.length; i++) {
+      for (let j = i + 1; j < docs.length; j++) {
+        const a = docs[i] as Doc, b = docs[j] as Doc;
+        const small = a.shingles.size <= b.shingles.size ? a.shingles : b.shingles;
+        const big = small === a.shingles ? b.shingles : a.shingles;
+        const common = new Set<string>();
+        for (const s of small) if (big.has(s)) common.add(s);
+        const union = a.shingles.size + b.shingles.size - common.size;
+        const pct = union ? round((common.size * 100) / union) : 0;
+        highest.set(a.submissionId, Math.max(highest.get(a.submissionId) ?? 0, pct));
+        highest.set(b.submissionId, Math.max(highest.get(b.submissionId) ?? 0, pct));
+        if (pct >= reportAt) {
+          pairs.push({
+            similarityPct: pct,
+            a: { submissionId: a.submissionId, studentId: a.studentId, name: a.name, roll: a.roll },
+            b: { submissionId: b.submissionId, studentId: b.studentId, name: b.name, roll: b.roll },
+            // the wording they actually share, so the teacher opens the two answers already knowing where to look
+            sharedPhrases: sharedPhrases(a.words, common),
+          });
+        }
+      }
+    }
+    pairs.sort((x, y) => y.similarityPct - x.similarityPct);
+    // the number is kept beside the submission so a marker sees it without re-running the check;
+    // a submission that was skipped keeps its empty similarity_pct rather than a misleading zero
+    for (const d of docs) await this.db.update('assignment_submissions', { similarity_pct: highest.get(d.submissionId) ?? 0, updated_at: nowSql() }, { id: d.submissionId });
+
+    if (pairs.length) {
+      await this.outbox.emitNow({ type: 'assignment.similarity_flagged', schoolId, aggregateType: 'lms.assignment', aggregateId: assignmentId, payload: { assignmentId, title: String(assignment.title), pairs: pairs.length, highestPct: (pairs[0] as { similarityPct: number }).similarityPct, checked: docs.length } });
+      const teacher = await this.db.findOne<{ user_id: string | null }>('staff', { id: String(assignment.teacher_id) });
+      if (teacher?.user_id) {
+        await this.notifications.notify({
+          schoolId, userId: teacher.user_id, channels: ['in_app'], eventKey: 'lms.similarity_found',
+          title: 'Two answers look alike',
+          body: `${String(assignment.title)}: ${pairs.length} pair(s) share a lot of wording, the closest ${(pairs[0] as { similarityPct: number }).similarityPct}%. Please read them side by side before deciding anything.`,
+          entityType: 'lms.assignment', entityId: assignmentId,
+        });
+      }
+    }
+    return {
+      assignmentId, title: String(assignment.title), checked: docs.length, skipped, pairs,
+      highestPct: (pairs[0]?.similarityPct as number | undefined) ?? 0, reportAt, minWords, shingleWords: SHINGLE_WORDS,
+      // said out loud rather than left to be discovered: a very large intake is only partly compared
+      truncated: rows.length >= MAX_SUBMISSIONS_COMPARED ? `only the first ${MAX_SUBMISSIONS_COMPARED} submissions were compared` : null,
+      note: 'A percentage is a reason to read two answers side by side, not a finding. Students who learned the same definition will look alike; nothing here changes a mark or reaches a guardian.',
+    };
+  }
+
+  // ---------- what the library has on a syllabus unit ----------
+  /**
+   * Everything published that teaches a given set of syllabus units, and — when a student is named —
+   * whether that student can open it and whether they have already been through it. The revision
+   * planner asks this once for every unit it needs rather than once per indicator, because a child
+   * with fifteen indicators still to meet must get an answer inside a shared-hosting request.
+   */
+  async coverageForUnits(schoolId: string, unitIds: string[], studentId?: string | null): Promise<Record<string, UnitCoverage>> {
+    const ids = [...new Set(unitIds.filter(Boolean))];
+    const out: Record<string, UnitCoverage> = {};
+    if (!ids.length) return out;
+    const holes = ids.map(() => '?').join(',');
+    const units = await this.db.query<Row>(`SELECT id, title FROM syllabus_units WHERE school_id = ? AND id IN (${holes})`, [schoolId, ...ids]);
+    for (const id of ids) out[id] = { unitId: id, unitTitle: (units.find(u => String(u.id) === id)?.title as string) ?? null, lessons: [], quizzes: [], materials: [] };
+    // with no student named the two LEFT JOINs match nothing, which is exactly right: the class-wide
+    // answer carries no "enrolled" or "already done" because there is nobody for them to be about
+    const lessons = await this.db.query<Row>(`SELECT l.id, l.title, l.lesson_type, l.unit_id, l.duration_min, c.id AS course_id, c.title AS course_title, c.slug,
+        e.id AS enrolment_id, p.status AS progress_status
+      FROM lessons l JOIN course_modules m ON m.id = l.module_id JOIN courses c ON c.id = m.course_id
+      LEFT JOIN course_enrollments e ON e.course_id = c.id AND e.student_id = ?
+      LEFT JOIN lesson_progress p ON p.lesson_id = l.id AND p.student_id = ?
+      WHERE l.school_id = ? AND c.status = 'published' AND c.deleted_at IS NULL AND l.unit_id IN (${holes})
+      ORDER BY m.sequence, l.sequence`, [studentId ?? '', studentId ?? '', schoolId, ...ids]);
+    for (const l of lessons) {
+      const bucket = out[String(l.unit_id)];
+      if (!bucket) continue;
+      const item: CoverageItem = {
+        id: String(l.id), title: String(l.title), kind: String(l.lesson_type) === 'quiz' ? 'quiz' : 'lesson', lessonType: String(l.lesson_type),
+        courseId: String(l.course_id), courseTitle: String(l.course_title), courseSlug: String(l.slug),
+        enrolled: !!l.enrolment_id, done: String(l.progress_status ?? '') === 'completed',
+        durationMin: l.duration_min === null ? null : Number(l.duration_min),
+      };
+      (item.kind === 'quiz' ? bucket.quizzes : bucket.lessons).push(item);
+    }
+    const materials = await this.db.query<Row>(`SELECT id, title, material_type, unit_id, external_url FROM study_materials
+      WHERE school_id = ? AND unit_id IN (${holes}) ORDER BY published_at DESC`, [schoolId, ...ids]);
+    for (const m of materials) {
+      const bucket = out[String(m.unit_id)];
+      if (bucket) bucket.materials.push({ id: String(m.id), title: String(m.title), kind: 'material', materialType: String(m.material_type), url: (m.external_url as string) ?? null });
+    }
+    return out;
+  }
 
   private async notifySection(schoolId: string, sectionId: string, eventKey: string, title: string, body: string, entityId: string) {
     const students = await this.db.query<{ student_id: string }>(`SELECT student_id FROM student_enrollments WHERE section_id = ? AND status = 'active'`, [sectionId]);
@@ -345,4 +660,37 @@ export class LmsService {
       },
     };
   }
+}
+
+/**
+ * Words for the similarity check: lowercased, punctuation dropped, Unicode-aware — `\w` matches no
+ * Bengali letter at all, so an answer written in Bangla would otherwise come out as zero words and
+ * be silently skipped as "nothing was typed".
+ */
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').split(/\s+/).filter(Boolean);
+}
+/** Overlapping runs of SHINGLE_WORDS words. Order matters: shuffled sentences share few shingles. */
+function shinglesOf(words: string[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + SHINGLE_WORDS <= words.length; i++) out.add(words.slice(i, i + SHINGLE_WORDS).join(' '));
+  return out;
+}
+/**
+ * The longest stretches of wording the two answers actually share, in the order the first one wrote
+ * them. A teacher opening two scripts needs to know where to look, not that a number was 78.
+ */
+function sharedPhrases(words: string[], shared: Set<string>, max = 2, maxChars = 200): string[] {
+  const runs: { from: number; to: number }[] = [];
+  let start = -1;
+  for (let i = 0; i + SHINGLE_WORDS <= words.length; i++) {
+    const hit = shared.has(words.slice(i, i + SHINGLE_WORDS).join(' '));
+    if (hit && start < 0) start = i;
+    if (!hit && start >= 0) { runs.push({ from: start, to: i - 1 + SHINGLE_WORDS }); start = -1; }
+  }
+  if (start >= 0) runs.push({ from: start, to: words.length });
+  return runs
+    .sort((a, b) => (b.to - b.from) - (a.to - a.from))
+    .slice(0, max)
+    .map(r => { const s = words.slice(r.from, r.to).join(' '); return s.length > maxChars ? `${s.slice(0, maxChars)}…` : s; });
 }

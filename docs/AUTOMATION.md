@@ -74,6 +74,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | E3 | 🔒 `due_at` passed | — | Mark late submissions; apply `late_penalty_pct` on grading; grading-pending task for teacher after 3 days | `assignment_submissions.is_late`, `tasks` |
 | E4 | ⚙️ `online_class.starting` (−15 min) | — | Push with join link; create meeting via Zoom/Meet API if missing | `online_classes.join_url`, `notifications` |
 | E5 | 🔒 platform webhook (participant joined/left) | — | Write `online_class_attendance`; feed period attendance | `online_class_attendance`, `student_period_attendance` |
+| E6 | 🔒 player heartbeat on a video lesson | watched ≥ 85% of `duration_min` (a beat may add at most 3 min; seeking never counts) | Complete the lesson; roll the course percentage up; emit `lesson.completed` | `lesson_progress`, `course_enrollments` |
+| E7 | 🔒 similarity check on an assignment | ≥ 2 text answers of ≥ 40 words | Word-shingle similarity between every pair; store the highest per submission; ask the teacher to read the closest pairs — never a mark, never a penalty, never a word to a guardian | `assignment_submissions.similarity_pct`, `notifications` |
+| E8 | ⏰ weekly | indicators not met this term | Revision plan per child: the indicators still to meet, weakest first, and the lessons/quizzes/materials on that syllabus unit; an indicator nothing covers is named as a gap instead of getting a made-up recommendation | `notifications` |
 
 ## 6. Fees & billing
 
@@ -215,6 +218,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `exams.pre_exam_prep` | `0 7 * * *` | D2 |
 | `exams.marks_deadline_reminders` | `0 9 * * *` | D3 |
 | `lms.assignment_reminders` | `0 * * * *` | E2 |
+| `adaptive.revision_plans` | `0 6 * * 6` | E8 |
 | `library.due_and_fines` | `0 7 * * *` | I2, I3 |
 | `transport.create_trips` | `0 5 * * 0-4` | J1 |
 | `transport.delay_watch` | `*/5 * * * *` | J4 |

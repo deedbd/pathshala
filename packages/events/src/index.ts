@@ -61,6 +61,10 @@ export interface EventPayloads {
   'incident.reported': { incidentId: string; studentId: string; points: number; severity: string };
   'course.published': { courseId: string; title: string; enrolled: number };
   'assignment.published': { assignmentId: string; sectionId: string; title: string; dueAt: string };
+  'lesson.completed': { lessonId: string; courseId: string; studentId: string; watchedPct: number | null };
+  'discussion.replied': { discussionId: string; threadId: string; courseId: string; lessonId: string | null; authorId: string | null };
+  'assignment.similarity_flagged': { assignmentId: string; title: string; pairs: number; highestPct: number; checked: number };
+  'revision_plan.built': { studentId: string; termId: string; indicators: number; covered: number; uncovered: number };
   'event.created': { eventId: string; title: string; startsAt: string };
   'complaint.created': { complaintId: string; ticketNo: string; category: string; priority: string; slaDueAt: string };
   'document.requested': { requestId: string; docType: string; eligible: boolean; blockers: string[] };
@@ -128,7 +132,7 @@ export const EVENT_TYPES = Object.freeze([
   'school.created', 'user.created', 'user.invited', 'user.logged_in', 'user.locked', 'settings.changed', 'file.uploaded', 'installer.completed',
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
-  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'incident.reported', 'course.published', 'assignment.published', 'event.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
+  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'incident.reported', 'course.published', 'assignment.published', 'lesson.completed', 'discussion.replied', 'assignment.similarity_flagged', 'revision_plan.built', 'event.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
   'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'cheque.received', 'cheque.cleared', 'cheque.bounced', 'instalment_plan.created', 'wallet.topped_up', 'pos.sold', 'shop.ordered', 'scholarship.awarded', 'donation.received', 'alumni.graduated', 'competition.results_recorded', 'work_order.raised', 'work_order.done', 'meeting.minuted', 'policy.published', 'election.closed', 'govt_report.generated', 'data_request.made', 'anomaly.detected', 'risk.flagged', 'broadcast.sent', 'subscription.changed', 'saas_invoice.raised', 'plugin.installed', 'ai.generated', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 

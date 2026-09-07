@@ -70,6 +70,11 @@
     "rows": "E2"
   },
   {
+    "job_key": "adaptive.revision_plans",
+    "cron_expr": "0 6 * * 6",
+    "rows": "E8"
+  },
+  {
     "job_key": "library.due_and_fines",
     "cron_expr": "0 7 * * *",
     "rows": "I2, I3"

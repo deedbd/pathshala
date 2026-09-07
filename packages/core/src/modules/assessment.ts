@@ -585,7 +585,7 @@ export class AssessmentService {
    * matters to a parent — the ones still to be met, by name.
    */
   async competencyReport(schoolId: string, studentId: string, termId: string) {
-    const rows = await this.db.query<Row>(`SELECT a.level_code, o.code, o.statement, o.statement_bn, sub.name AS subject, sc.levels
+    const rows = await this.db.query<Row>(`SELECT a.level_code, o.id AS outcome_id, o.code, o.statement, o.statement_bn, o.unit_id, o.class_subject_id, o.weight, sub.name AS subject, sc.levels
       FROM competency_assessments a JOIN learning_outcomes o ON o.id = a.outcome_id
       JOIN class_subjects cs ON cs.id = o.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id
       JOIN competency_scales sc ON sc.id = a.scale_id
@@ -594,9 +594,40 @@ export class AssessmentService {
     const top = Math.max(1, ...levels.map(l => l.value));
     const items = rows.map(r => {
       const level = levels.find(l => l.code === String(r.level_code));
-      return { subject: String(r.subject), code: String(r.code), statement: String(r.statement), statementBn: (r.statement_bn as string) ?? null, level: String(r.level_code), label: level?.label ?? String(r.level_code), achieved: (level?.value ?? 0) >= top };
+      // the ids travel with the report so the revision planner can find what teaches each indicator
+      // without going behind this service and reading the assessment tables itself
+      return {
+        outcomeId: String(r.outcome_id), unitId: (r.unit_id as string) ?? null, classSubjectId: String(r.class_subject_id),
+        subject: String(r.subject), code: String(r.code), statement: String(r.statement), statementBn: (r.statement_bn as string) ?? null,
+        level: String(r.level_code), label: level?.label ?? String(r.level_code), value: level?.value ?? 0, top, weight: Number(r.weight ?? 1),
+        achieved: (level?.value ?? 0) >= top,
+      };
     });
     return { studentId, termId, assessed: items.length, achieved: items.filter(i => i.achieved).length, stillToMeet: items.filter(i => !i.achieved), items };
+  }
+  /**
+   * The same picture for a whole class-subject: per indicator, how many children were rated against
+   * it and how many actually met it. A teacher reteaches a topic to the room; they do not sit down
+   * with thirty separate reports and work out for themselves which one keeps coming up.
+   */
+  async competencyClassReport(schoolId: string, classSubjectId: string, termId: string) {
+    const rows = await this.db.query<Row>(`SELECT a.student_id, a.level_code, o.id AS outcome_id, o.code, o.statement, o.statement_bn, o.unit_id, o.weight, sc.levels
+      FROM competency_assessments a JOIN learning_outcomes o ON o.id = a.outcome_id JOIN competency_scales sc ON sc.id = a.scale_id
+      WHERE a.school_id = ? AND a.term_id = ? AND o.class_subject_id = ? ORDER BY o.code, a.student_id`, [schoolId, termId, classSubjectId]);
+    const byOutcome = new Map<string, { outcomeId: string; code: string; statement: string; statementBn: string | null; unitId: string | null; weight: number; assessed: number; met: number; notMet: number; notMetStudentIds: string[] }>();
+    for (const r of rows) {
+      const levels = json<{ code: string; label: string; value: number }[]>(r.levels) ?? [];
+      const top = Math.max(1, ...levels.map(l => l.value));
+      const value = levels.find(l => l.code === String(r.level_code))?.value ?? 0;
+      const id = String(r.outcome_id);
+      const hit = byOutcome.get(id) ?? { outcomeId: id, code: String(r.code), statement: String(r.statement), statementBn: (r.statement_bn as string) ?? null, unitId: (r.unit_id as string) ?? null, weight: Number(r.weight ?? 1), assessed: 0, met: 0, notMet: 0, notMetStudentIds: [] };
+      hit.assessed++;
+      if (value >= top) hit.met++;
+      else { hit.notMet++; if (hit.notMetStudentIds.length < 200) hit.notMetStudentIds.push(String(r.student_id)); }
+      byOutcome.set(id, hit);
+    }
+    const outcomes = [...byOutcome.values()].sort((a, b) => (b.notMet - a.notMet) || a.code.localeCompare(b.code));
+    return { classSubjectId, termId, students: new Set(rows.map(r => String(r.student_id))).size, outcomes };
   }
 
   // ---------- OMR ----------
