@@ -225,19 +225,70 @@ export class SaasService {
     return { id: ticketId, status: 'closed' as const, resolution: resolution ?? null };
   }
 
+  /**
+   * Money out to a reseller. Worked out to the taka and put in front of a person: a payout is a
+   * transfer to somebody else's bank account, and nothing in this system moves money by itself.
+   *
+   * Partners belong to the installation, not to a school, so only the school this installation was
+   * created with reports them — otherwise every tenant tells its own owner about the same payout,
+   * and only one of those people can actually send it.
+   */
+  private async reportDuePayouts(schoolId: string) {
+    const first = await this.db.findOne<Row>('schools', {}, { orderBy: 'created_at ASC, id ASC' });
+    if (String(first?.id ?? '') !== schoolId) return 0;
+    const closedPeriod = `${nowSql().slice(0, 7)}-01`;
+    const due = await this.db.query<Row>(`SELECT p.*, pa.name AS partner_name FROM saas_partner_payouts p JOIN saas_partners pa ON pa.id = p.partner_id WHERE p.status = 'pending' AND p.period < ? AND p.amount > 0 ORDER BY p.period LIMIT 20`, [closedPeriod]);
+    let told = 0;
+    for (const p of due) {
+      const sent = await this.notifications.notifyRoleOnce(schoolId, 'super_admin', 24 * 20, { channels: ['in_app', 'email'], eventKey: 'saas.payout_due', title: `${String(p.partner_name)} is owed ${Number(p.amount)}`, body: `Commission for ${String(p.period).slice(0, 7)}, accrued only from invoices that have actually been paid. Send it, then mark the payout paid — nothing here moves money by itself.`, entityType: 'saas.payout', entityId: String(p.id) });
+      if (!sent.length) continue;
+      told++;
+      await this.outbox.emitNow({ type: 'payout.due', schoolId, aggregateType: 'saas.payout', aggregateId: String(p.id), payload: { payoutId: String(p.id), partnerId: String(p.partner_id), partner: String(p.partner_name), period: String(p.period).slice(0, 10), amount: Number(p.amount) } });
+    }
+    return told;
+  }
+
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // renewals, the invoices they need, and the reminders before anything is cut off
+      /**
+       * Renewals, the invoices they need, the reminders before anything is cut off, and the two
+       * things that used to need somebody watching a spreadsheet: a trial that ends, and a bill that
+       * was raised and then never mentioned again.
+       *
+       * Nothing here ever locks a school out of its own records. A trial that runs out and a bill
+       * that goes unpaid both land on `past_due`, which stops new students and new messages and
+       * leaves every register, result and receipt exactly where it was.
+       */
       'saas.billing': async ({ schoolId }) => {
         await this.meter(schoolId);
+        // the partners are reported first, because they belong to the installation and not to a
+        // subscription: an owner who never put their own school on a plan is still the person who
+        // owes their resellers money
+        const payouts = await this.reportDuePayouts(schoolId);
         const sub = await this.subscription(schoolId);
-        if (!sub) return { billed: 0 };
+        if (!sub) return { billed: 0, overdue: 0, chased: payouts };
         const today = nowSql().slice(0, 10);
         const endsAt = String(sub.ends_at ?? '').slice(0, 10);
-        let billed = 0;
+        const subId = String(sub.id);
+        let billed = 0, chased = 0;
+
+        // a trial with a week left, and again on the day it ends: the school is told in words, not
+        // by discovering one morning that it cannot add a child
+        if (sub.status === 'trial' && endsAt) {
+          const daysLeft = Math.round((Date.parse(`${endsAt}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+          if (daysLeft <= 7 && daysLeft > 0) {
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 120, { channels: ['email', 'in_app'], eventKey: 'saas.trial_ending', title: `The trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`, body: `${sub.plan_name} is free until ${endsAt}. After that new students and messages pause until a plan is paid for; everything already entered stays.`, entityType: 'saas.subscription', entityId: subId });
+          }
+          if (daysLeft <= 0) {
+            await this.db.update('saas_subscriptions', { status: 'past_due', updated_at: nowSql() }, { id: subId });
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 120, { channels: ['email', 'in_app'], eventKey: 'saas.trial_ended', title: 'The trial has ended', body: 'New students and messages are paused. Everything the school has already entered is untouched and still readable.', entityType: 'saas.subscription', entityId: subId });
+            await this.outbox.emitNow({ type: 'subscription.changed', schoolId, aggregateType: 'saas.subscription', aggregateId: subId, payload: { subscriptionId: subId, plan: String(sub.plan_name), status: 'past_due', price: Number(sub.price) } });
+          }
+        }
+
         // a fortnight before the end, raise the next invoice so nobody is surprised
-        if (sub.auto_renew && endsAt && endsAt <= this.addDays(today, 14) && sub.status !== 'past_due') {
+        if (sub.auto_renew && endsAt && endsAt <= this.addDays(today, 14) && sub.status !== 'past_due' && sub.status !== 'trial') {
           const r = await this.invoice(schoolId, { periodStart: endsAt });
           if (!('alreadyRaised' in r)) billed++;
         }
@@ -246,8 +297,39 @@ export class SaasService {
           await this.db.update('saas_invoices', { status: 'overdue', updated_at: nowSql() }, { id: String(inv.id) });
           await this.notifications.notifyRole(schoolId, 'admin', { channels: ['email', 'in_app'], eventKey: 'saas.overdue', title: `Invoice ${inv.invoice_no} is overdue`, body: 'New students and messages are paused until it is paid. Everything already in the system stays available.', entityType: 'saas.invoice', entityId: String(inv.id) });
         }
-        if (overdue.length && sub.status === 'active') await this.db.update('saas_subscriptions', { status: 'past_due', updated_at: nowSql() }, { id: String(sub.id) });
-        return { billed, overdue: overdue.length };
+        if (overdue.length && sub.status === 'active') await this.db.update('saas_subscriptions', { status: 'past_due', updated_at: nowSql() }, { id: subId });
+
+        // an unpaid bill was marked overdue once and then never mentioned again. It is chased on a
+        // ladder — a week, a fortnight, a month — and never more than once at each rung.
+        const stale = await this.db.query<Row>(`SELECT * FROM saas_invoices WHERE school_id = ? AND status = 'overdue' AND due_date < ? LIMIT 20`, [schoolId, this.addDays(today, -7)]);
+        for (const inv of stale) {
+          const late = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${String(inv.due_date).slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+          const rung = late >= 30 ? 30 : late >= 14 ? 14 : 7;
+          const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 6, { channels: ['email', 'in_app'], eventKey: `saas.overdue_${rung}`, title: `Invoice ${inv.invoice_no} is ${late} days overdue`, body: `${Number(inv.total)} for ${String(inv.period_start)} to ${String(inv.period_end)} is still unpaid. New students and messages stay paused until it is settled.`, entityType: 'saas.invoice', entityId: String(inv.id) });
+          if (sent.length) chased++;
+        }
+
+        // a plan the school is about to outgrow. Being refused a new pupil at the counter with no
+        // warning is the school's problem to have solved a week earlier, not to discover in front of
+        // a parent — so the limits are checked from the meter rather than at the moment of refusal.
+        const limit = sub.student_limit == null ? null : Number(sub.student_limit);
+        if (limit != null) {
+          const active = await this.db.count('students', { school_id: schoolId, status: 'active' });
+          if (active >= limit * 0.9) {
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 20, { channels: ['email', 'in_app'], eventKey: 'saas.limit_near', title: active >= limit ? 'The plan is full' : 'The plan is nearly full', body: `${active} of the ${limit} students the ${sub.plan_name} plan holds. ${active >= limit ? 'No further student can be added until the plan changes.' : 'Move up a plan before the next admission.'}`, entityType: 'saas.subscription', entityId: subId });
+            chased++;
+          }
+        }
+        const included = Number(sub.sms_included ?? 0);
+        if (included) {
+          const used = await this.usage(schoolId, 'sms');
+          if (used >= included * 0.9) {
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 20, { channels: ['email', 'in_app'], eventKey: 'saas.sms_near', title: used >= included ? 'This month\'s messages are used up' : 'Messages are nearly used up', body: `${used} of ${included} messages sent this month. ${used >= included ? 'Nothing further goes out until next month or a bigger plan.' : ''}`.trim(), entityType: 'saas.subscription', entityId: subId });
+            chased++;
+          }
+        }
+
+        return { billed, overdue: overdue.length, chased: chased + payouts };
       },
     };
   }

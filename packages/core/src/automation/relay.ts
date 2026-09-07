@@ -109,7 +109,10 @@ export class Relay {
       try {
         const res = await fetch(String(h.url), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Pathshala-Signature': hmac(String(h.secret || this.appKey), body) }, body, signal: AbortSignal.timeout(8000) });
         await this.db.insert('webhook_deliveries', { id, school_id: event.schoolId, webhook_id: h.id as string, event_uid: event.uid, attempt: 1, response_code: res.status, response_body: (await res.text()).slice(0, 2000), delivered_at: res.ok ? nowSql() : null, next_retry_at: res.ok ? null : nowSql(new Date(Date.now() + 600_000)) });
+        // the count is consecutive failures, not failures ever: a webhook that answers again has
+        // recovered, and a year of occasional 502s must not add up to a switched-off integration
         if (!res.ok) await this.db.execute(`UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = ?`, [h.id]);
+        else await this.db.execute(`UPDATE webhooks SET failure_count = 0 WHERE id = ? AND failure_count > 0`, [h.id]);
       } catch (e) {
         await this.db.insert('webhook_deliveries', { id, school_id: event.schoolId, webhook_id: h.id as string, event_uid: event.uid, attempt: 1, response_code: null, response_body: (e as Error).message.slice(0, 2000), delivered_at: null, next_retry_at: nowSql(new Date(Date.now() + 600_000)) });
         await this.db.execute(`UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = ?`, [h.id]);

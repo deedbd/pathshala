@@ -156,6 +156,35 @@ export class NotificationService {
     return rows.find(r => r.locale === locale) ?? rows.find(r => r.locale === 'en') ?? rows[0] ?? null;
   }
 
+  /**
+   * Has this exact message already gone out about this exact thing since `since`?
+   *
+   * Every automation that messages a person has to answer that question, and each one answering it
+   * with a column of its own is how a reminder becomes a daily reminder: the column is added for the
+   * first case, forgotten for the second, and the guardian gets the same SMS every morning for a
+   * fortnight. The `notifications` rows are the record of what was actually sent, so they are the
+   * honest place to ask. Housekeeping keeps 90 days of them, which bounds every window below.
+   */
+  async sentSince(schoolId: string, eventKey: string, entityId: string | null, since: string | Date): Promise<boolean> {
+    const from = typeof since === 'string' ? since : nowSql(since);
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = ? AND ${entityId == null ? 'entity_id IS NULL' : 'entity_id = ?'} AND created_at >= ?`,
+      entityId == null ? [schoolId, eventKey, from] : [schoolId, eventKey, entityId, from]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+  /** Notifies a role unless the same message about the same thing already went out inside the window. */
+  async notifyRoleOnce(schoolId: string, role: string, withinHours: number, input: Omit<NotifyInput, 'schoolId' | 'userId'>): Promise<string[]> {
+    const since = nowSql(new Date(Date.now() - withinHours * 3600_000));
+    if (await this.sentSince(schoolId, input.eventKey, input.entityId ?? null, since)) return [];
+    return this.notifyRole(schoolId, role, input);
+  }
+  /** The same rule for one person: an offer expiring is worth one SMS, not one a day. */
+  async notifyOnce(withinHours: number, input: NotifyInput): Promise<string[]> {
+    const since = nowSql(new Date(Date.now() - withinHours * 3600_000));
+    if (await this.sentSince(input.schoolId, input.eventKey, input.entityId ?? null, since)) return [];
+    return this.notify(input);
+  }
+
   async recentFor(userId: string, limit = 30) { return this.db.findMany('notifications', { recipient_user_id: userId, channel: 'in_app' }, { orderBy: 'created_at DESC', limit }); }
   async markRead(id: string, userId: string) { return this.db.update('notifications', { status: 'read', read_at: nowSql() }, { id, recipient_user_id: userId }); }
 }

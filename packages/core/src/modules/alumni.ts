@@ -1,5 +1,6 @@
 import type { Db, Row } from '@pathshala/db';
 import { nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
@@ -148,9 +149,44 @@ export class AlumniService {
     return { id: postId, status: 'closed' as const };
   }
   /** Open posts only, and an expired post is closed rather than left to mislead somebody. */
-  async jobs(schoolId: string) {
+  async jobBoard(schoolId: string) {
     const today = nowSql().slice(0, 10);
     await this.db.execute(`UPDATE job_board_posts SET status = 'closed', updated_at = ? WHERE school_id = ? AND status = 'open' AND expires_at IS NOT NULL AND expires_at < ?`, [nowSql(), schoolId, today]);
     return this.db.query<Row>(`SELECT p.*, a.full_name AS posted_by FROM job_board_posts p LEFT JOIN alumni a ON a.id = p.posted_by_alumni_id WHERE p.school_id = ? AND p.status = 'open' ORDER BY p.created_at DESC LIMIT 100`, [schoolId]);
+  }
+
+  // ---------- scheduled ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      /**
+       * Daily: the job board tidies itself.
+       *
+       * A post was only ever closed when somebody happened to load the page — so a vacancy that
+       * closed in March was still being applied for in June by whoever had the link, and the alumnus
+       * who posted it never learned that it had lapsed. Closing an expired post is arithmetic on a
+       * date the poster set themselves; telling them a few days beforehand is the courtesy that
+       * makes them extend it if the job is still open.
+       */
+      'alumni.job_board': async ({ schoolId }) => {
+        const today = nowSql().slice(0, 10);
+        const soon = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+        let closed = 0, warned = 0;
+        const expiring = await this.db.query<Row>(`SELECT p.*, a.user_id, a.full_name FROM job_board_posts p LEFT JOIN alumni a ON a.id = p.posted_by_alumni_id
+          WHERE p.school_id = ? AND p.status = 'open' AND p.expires_at IS NOT NULL AND p.expires_at BETWEEN ? AND ? LIMIT 100`, [schoolId, today, soon]);
+        for (const p of expiring) {
+          if (!p.user_id) continue;
+          const sent = await this.notifications.notifyOnce(96, { schoolId, userId: String(p.user_id), channels: ['in_app', 'email'], eventKey: 'alumni.job_expiring', title: 'Your job post is about to close', body: `${String(p.title)}${p.company ? ` at ${String(p.company)}` : ''} closes on ${String(p.expires_at).slice(0, 10)}. Tell the school if it should stay up.`, entityType: 'alumni.job_post', entityId: String(p.id) });
+          if (sent.length) warned++;
+        }
+        const gone = await this.db.query<Row>(`SELECT p.*, a.user_id FROM job_board_posts p LEFT JOIN alumni a ON a.id = p.posted_by_alumni_id
+          WHERE p.school_id = ? AND p.status = 'open' AND p.expires_at IS NOT NULL AND p.expires_at < ? LIMIT 200`, [schoolId, today]);
+        for (const p of gone) {
+          await this.db.update('job_board_posts', { status: 'closed', updated_at: nowSql() }, { id: String(p.id) });
+          closed++;
+          if (p.user_id) await this.notifications.notifyOnce(720, { schoolId, userId: String(p.user_id), channels: ['in_app'], eventKey: 'alumni.job_closed', title: 'Your job post has closed', body: `${String(p.title)} reached the date you set and is no longer on the board. Post it again if the job is still open.`, entityType: 'alumni.job_post', entityId: String(p.id) });
+        }
+        return { closed, warned };
+      },
+    };
   }
 }

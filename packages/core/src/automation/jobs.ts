@@ -47,8 +47,19 @@ export function registerPlatformJobs(deps: { db: Db; adapters: Adapters; notific
       const r5 = await db.execute(`DELETE FROM notifications WHERE school_id = ? AND status IN ('sent','delivered','read','failed') AND created_at < ?`, [schoolId, d(90)]);
       const r6 = await db.execute(`DELETE FROM background_jobs WHERE school_id = ? AND status IN ('success','cancelled') AND finished_at < ?`, [schoolId, d(14)]);
       const r7 = await db.execute(`DELETE FROM automation_runs WHERE school_id = ? AND started_at < ?`, [schoolId, d(180)]);
-      log.info(`housekeeping ${schoolId}: otp ${r1.affectedRows}, sessions ${r2.affectedRows}, outbox ${r3.affectedRows}, consumptions ${r4.affectedRows}, notifications ${r5.affectedRows}, jobs ${r6.affectedRows}, runs ${r7.affectedRows}`);
-      await db.insert('system_health', { id: ulid(), check_key: 'housekeeping', status: 'ok', detail: { schoolId, at: now }, checked_at: now });
+      // delivery attempts to somebody else's server: the webhook row keeps the failure count, the
+      // bodies are only ever read while debugging one, and a busy school writes thousands a week
+      const r8 = await db.execute(`DELETE FROM webhook_deliveries WHERE school_id = ? AND created_at < ?`, [schoolId, d(30)]);
+      // an access token is dead the moment it expires; keeping the hashes teaches nobody anything
+      const r9 = await db.execute(`DELETE FROM oauth_tokens WHERE school_id = ? AND (expires_at < ? OR revoked_at < ?)`, [schoolId, d(7), d(7)]);
+      log.info(`housekeeping ${schoolId}: otp ${r1.affectedRows}, sessions ${r2.affectedRows}, outbox ${r3.affectedRows}, consumptions ${r4.affectedRows}, notifications ${r5.affectedRows}, jobs ${r6.affectedRows}, runs ${r7.affectedRows}, deliveries ${r8.affectedRows}, tokens ${r9.affectedRows}`);
+      // `system_health.check_key` is unique, so this is one row that is overwritten. Inserting a new
+      // one each night failed from the second night on — and a scheduled job that throws writes its
+      // own row and tells nobody, which is exactly the silence the watchdog above exists to break.
+      const detail = { schoolId, at: now } as never;
+      const ex = await db.findOne<{ id: string }>('system_health', { check_key: 'housekeeping' });
+      if (ex) await db.update('system_health', { status: 'ok', detail, checked_at: now }, { id: ex.id });
+      else await db.insert('system_health', { id: ulid(), check_key: 'housekeeping', status: 'ok', detail, checked_at: now });
     },
     'platform.kpi_snapshot': async ({ schoolId }) => {
       const day = new Date().toISOString().slice(0, 10);

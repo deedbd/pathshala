@@ -395,7 +395,9 @@ export class AdmissionsService {
       styles: { h1: { fontSize: 16, bold: true }, title: { fontSize: 13, bold: true }, small: { fontSize: 8, color: '#555' } },
     } as Record<string, unknown>;
     const pdf = await this.adapters.pdf.render(doc);
-    const f = await this.files.store({ schoolId, data: pdf, fileName: `merit-${String(cls?.name ?? classId)}-${campaignId.slice(-6)}.pdf`, mimeType: 'application/pdf', purpose: 'merit_list', entityType: 'admissions.campaign', entityId: campaignId });
+    // the purpose carries the class, so the nightly pass can tell "this sheet exists" from "a sheet
+    // for some other class of the same campaign exists" and does not render the same PDF every night
+    const f = await this.files.store({ schoolId, data: pdf, fileName: `merit-${String(cls?.name ?? classId)}-${campaignId.slice(-6)}.pdf`, mimeType: 'application/pdf', purpose: `merit_list:${classId}`, entityType: 'admissions.campaign', entityId: campaignId });
     return { fileId: f.id, ranked: rows.length, seats };
   }
 
@@ -545,6 +547,109 @@ export class AdmissionsService {
           if (missed >= 2) { await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'admissions.followup_escalated', title: 'Enquiry going cold', body: `${e.student_name} has had ${missed} follow-ups and is still open.`, entityType: 'admissions.enquiry', entityId: String(e.id) }); escalated++; }
         }
         return { reminded, escalated };
+      },
+      /**
+       * Daily: everything in a live admission that was waiting for somebody to remember it.
+       *
+       * The pieces were all here already, but each one hung off a single trigger — a test seat off
+       * the form-fee payment, the merit list off the last mark, an interview off a person opening the
+       * page. An admission with no form fee therefore allocated no seats at all, a class where one
+       * applicant never sat the test never got a merit list, and an interview slot made in advance
+       * stayed empty until somebody put names in it by hand. This pass walks the campaigns that are
+       * still live and finishes what the triggers could not reach.
+       */
+      'admissions.campaign_watch': async ({ schoolId }) => {
+        const today = nowSql().slice(0, 10);
+        const out = { seated: 0, interviews: 0, merit: 0, sheets: 0, reminded: 0, chased: 0 };
+        const campaigns = await this.db.query<Row>(`SELECT * FROM admission_campaigns WHERE school_id = ? AND status IN ('open','closed') ORDER BY opens_at DESC LIMIT 20`, [schoolId]);
+
+        for (const c of campaigns) {
+          const campaignId = String(c.id);
+          // 1. a test to sit and nobody told them where. `onPaymentReceived` does this for a campaign
+          // with a form fee; a free campaign submits the application on the spot and reached nothing.
+          if (Number(c.requires_test)) {
+            const waiting = await this.db.query<Row>(`SELECT a.id FROM admission_applications a JOIN admission_tests t ON t.campaign_id = a.campaign_id AND t.class_id = a.class_id
+              WHERE a.school_id = ? AND a.campaign_id = ? AND a.status IN ('submitted','screening') LIMIT 100`, [schoolId, campaignId]);
+            for (const a of waiting) { if (await this.allocateTestSeat(schoolId, String(a.id)).catch(() => null)) out.seated++; }
+          }
+
+          // 2. interview slots that exist and are empty, with applicants who have not been given one.
+          // Putting a name in the next free slot is arithmetic; what happens in the interview is not.
+          if (['interview', 'mixed'].includes(String(c.selection_mode))) {
+            const unbooked = await this.db.query<Row>(`SELECT a.id, a.class_id FROM admission_applications a
+              WHERE a.school_id = ? AND a.campaign_id = ? AND a.status IN ('submitted','screening','tested')
+                AND NOT EXISTS (SELECT 1 FROM admission_interviews i WHERE i.application_id = a.id)
+              ORDER BY a.created_at LIMIT 60`, [schoolId, campaignId]);
+            let noSlot = 0;
+            for (const a of unbooked) {
+              try { await this.scheduleInterview(schoolId, String(a.id)); out.interviews++; }
+              catch { noSlot++; }                                    // no free slot left: counted, not retried
+            }
+            if (noSlot) {
+              await this.notifications.notifyRoleOnce(schoolId, 'admin', 72, { channels: ['in_app'], eventKey: 'admissions.no_interview_slots', title: 'Interview slots have run out', body: `${noSlot} applicants in ${String(c.name)} are waiting for an interview time. Make more slots and they will be booked in automatically.`, entityType: 'admissions.campaign', entityId: campaignId });
+              out.chased++;
+            }
+          }
+
+          // 3. the merit list. A5 fires on the last mark of a class; a class where somebody never sat
+          // the test never gets that last mark, so the list is computed here once the admission has
+          // closed and no mark can still arrive. A campaign that does not want it computed is told.
+          const closed = String(c.closes_at).slice(0, 10) < today || String(c.status) === 'closed';
+          if (closed) {
+            const classes = await this.db.findMany<Row>('admission_campaign_classes', { campaign_id: campaignId });
+            for (const k of classes) {
+              const classId = String(k.class_id);
+              const [pending] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND merit_rank IS NULL AND status IN ('submitted','screening','test_scheduled','tested')`, [schoolId, campaignId, classId]);
+              if (Number(pending?.n ?? 0) > 0) {
+                if (Number(c.auto_merit_list)) { await this.computeMerit(schoolId, campaignId, classId); out.merit++; }
+                else {
+                  // prepared, confirmed by a person: this campaign asked to rank its own applicants
+                  await this.notifications.notifyRoleOnce(schoolId, 'admin', 72, { channels: ['in_app'], eventKey: 'admissions.merit_ready', title: 'A merit list is waiting to be drawn up', body: `${String(c.name)} has closed and ${Number(pending!.n)} applicants are unranked. Open Admissions and press Merit list.`, entityType: 'admissions.campaign', entityId: campaignId });
+                  out.chased++;
+                }
+              }
+              // an offer is a promise to a family, so a campaign that turned auto_offer off keeps the
+              // decision. Everything around it is done — ranked, shortlisted, seats counted, the sheet
+              // rendered — and the desk is told once that it is one button away.
+              if (!Number(c.auto_offer)) {
+                const [ready] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND status = 'shortlisted'`, [schoolId, campaignId, classId]);
+                if (Number(ready?.n ?? 0) > 0) {
+                  const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 72, { channels: ['in_app'], eventKey: 'admissions.offers_ready', title: `${Number(ready!.n)} applicants are shortlisted and waiting for an offer`, body: `${String(c.name)}: the merit list is drawn and the seats are counted. Press Make offers and the letters, invoices and messages go out.`, entityType: 'admissions.campaign', entityId: campaignId });
+                  if (sent.length) out.chased++;
+                }
+              }
+              // 4. the sheet for the notice board, rendered once per class and left in Files
+              const [ranked] = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND merit_rank IS NOT NULL`, [schoolId, campaignId, classId]);
+              if (Number(ranked?.n ?? 0) > 0 && !(await this.db.findOne('files', { school_id: schoolId, purpose: `merit_list:${classId}`, entity_id: campaignId }))) {
+                await this.meritListPdf(schoolId, campaignId, classId).catch(() => null);
+                out.sheets++;
+              }
+            }
+          }
+        }
+
+        // 5. an offer about to lapse. The hourly job revokes it the moment it expires; nobody was
+        // ever told beforehand, so the first news a family had was that the place had gone.
+        const soon = nowSql(new Date(Date.now() + 2 * 86_400_000));
+        const expiring = await this.db.query<Row>(`SELECT o.*, a.first_name, a.guardian_phone FROM admission_offers o JOIN admission_applications a ON a.id = o.application_id
+          WHERE o.school_id = ? AND o.accepted_at IS NULL AND o.declined_at IS NULL AND o.revoked_at IS NULL AND o.expires_at BETWEEN ? AND ? LIMIT 200`, [schoolId, nowSql(), soon]);
+        for (const o of expiring) {
+          const sent = await this.notifications.notifyOnce(72, { schoolId, address: String(o.guardian_phone), channels: ['sms'], eventKey: 'admissions.offer_expiring', data: { name: String(o.first_name), expires: String(o.expires_at).slice(0, 10) }, title: 'Offer about to expire', body: `${o.first_name}'s place is held only until ${String(o.expires_at).slice(0, 10)}. Pay the admission fee before then to keep it.`, entityType: 'admissions.offer', entityId: String(o.id) });
+          if (sent.length) out.reminded++;
+        }
+
+        // 6. papers still missing from an applicant who has been offered a place: the office would
+        // otherwise discover the birth certificate is absent on the child's first morning
+        const required = (await this.settings.get<string[]>(schoolId, 'admissions.required_documents')) ?? ['photo', 'birth_certificate', 'previous_result'];
+        const offered = await this.db.query<Row>(`SELECT id, first_name, last_name, application_no FROM admission_applications WHERE school_id = ? AND status IN ('shortlisted','offered') ORDER BY updated_at DESC LIMIT 50`, [schoolId]);
+        for (const a of offered) {
+          const have = await this.db.findMany<Row>('application_documents', { school_id: schoolId, application_id: String(a.id) });
+          const missing = required.filter(r => !have.some(h => String(h.doc_type) === r));
+          if (!missing.length) continue;
+          const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 168, { channels: ['in_app'], eventKey: 'admissions.documents_missing', title: 'Papers still missing', body: `${a.first_name} ${a.last_name ?? ''} (${a.application_no}) has been offered a place without ${missing.join(', ')}.`, entityType: 'admissions.application', entityId: String(a.id) });
+          if (sent.length) out.chased++;
+        }
+        return out;
       },
     };
   }

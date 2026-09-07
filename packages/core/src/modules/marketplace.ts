@@ -3,7 +3,8 @@ import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
 import type { OutboxService } from '../automation/outbox.js';
 import type { HandlerRegistry } from '../automation/handlers.js';
-import type { Logger } from '@pathshala/adapters';
+import type { Logger, ScheduledFn } from '@pathshala/adapters';
+import type { NotificationService } from '../notifications.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export type Scope = 'students.read' | 'students.write' | 'attendance.read' | 'attendance.write' | 'fees.read' | 'fees.write' | 'results.read' | 'notices.write' | 'profile.read';
@@ -21,7 +22,7 @@ export const SCOPES: Scope[] = ['students.read', 'students.write', 'attendance.r
  * a school did not grant is refused at the door rather than checked deep inside a handler.
  */
 export class MarketplaceService {
-  constructor(private db: Db, private outbox: OutboxService, private log: Logger) {}
+  constructor(private db: Db, private outbox: OutboxService, private log: Logger, private notifications: NotificationService) {}
 
   // ---------- plugins ----------
   async publishPlugin(p: { slug: string; name: string; vendor?: string | null; description?: string | null; version: string; hooks?: string[]; settingsSchema?: unknown; priceMonthly?: number }) {
@@ -86,13 +87,29 @@ export class MarketplaceService {
           const signature = createHash('sha256').update(`${String(settings.secretHash ?? '')}.${body}`).digest('hex');
           try {
             const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Pathshala-Event': e.type, 'X-Pathshala-Signature': signature }, body, signal: AbortSignal.timeout(5000) });
-            if (!res.ok) this.log.warn(`plugin ${install.slug} answered ${res.status} to ${e.type}`);
+            if (!res.ok) { this.log.warn(`plugin ${install.slug} answered ${res.status} to ${e.type}`); await this.recordHookResult(String(install.id), settings, `${res.status} ${res.statusText}`.trim()); }
+            else await this.recordHookResult(String(install.id), settings, null);
           } catch (err) {
             this.log.warn(`plugin ${install.slug} did not answer ${e.type}: ${(err as Error).message}`);
+            await this.recordHookResult(String(install.id), settings, (err as Error).message);
           }
         }
       });
     }
+  }
+
+  /**
+   * Keeps the score for one plugin's webhook. A failure that is only written to the log is a failure
+   * nobody sees: the school installed the plugin, the plugin's server has been answering 502 since
+   * Tuesday, and every event since Tuesday has gone nowhere. The count lives beside the install so
+   * the daily pass can act on it, and a single success clears it — a plugin that recovers on its own
+   * must not be switched off by a fortnight-old grudge.
+   */
+  private async recordHookResult(installId: string, settings: Record<string, unknown>, error: string | null) {
+    const failures = error ? Number(settings.hookFailures ?? 0) + 1 : 0;
+    if (!error && !Number(settings.hookFailures ?? 0)) return;                     // nothing to write
+    const next = { ...settings, hookFailures: failures, hookLastError: error ? error.slice(0, 200) : null, hookLastAt: nowSql() };
+    await this.db.update('plugin_installs', { settings: next as never, updated_at: nowSql() }, { id: installId }).catch(() => undefined);
   }
 
   // ---------- OAuth2 clients and tokens ----------
@@ -196,6 +213,54 @@ export class MarketplaceService {
       throw badRequest(`packs of kind ${pack.kind} are not applied automatically yet`);
     }
     return { packId, kind: String(pack.kind), written, kept };
+  }
+
+  // ---------- scheduled ----------
+  /** How many times somebody else's server may refuse us before we stop calling it. */
+  static readonly PLUGIN_FAILURES = 10;
+  static readonly WEBHOOK_FAILURES = 20;
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      /**
+       * Daily: the integrations that have stopped working. Both halves of this module talk to
+       * somebody else's machine, and both used to fail in the quietest possible way — a line in the
+       * log, a counter nobody reads — while the school went on believing its attendance was reaching
+       * the government portal.
+       *
+       * The rule is: stop calling, and say so. Retrying a dead endpoint for ever costs the school's
+       * own automation time on every single event, and a school that is told can fix the URL or
+       * uninstall the plugin. Neither is switched back on by this job; that is the school's decision.
+       */
+      'marketplace.health': async ({ schoolId }) => {
+        const out = { pluginsDisabled: 0, webhooksDisabled: 0 };
+        const installs = await this.db.query<Row>(`SELECT i.*, p.slug, p.name FROM plugin_installs i JOIN plugins p ON p.id = i.plugin_id WHERE i.school_id = ? AND i.is_enabled = TRUE`, [schoolId]);
+        for (const i of installs) {
+          const settings = json<Record<string, unknown>>(i.settings) ?? {};
+          const failures = Number(settings.hookFailures ?? 0);
+          if (failures < MarketplaceService.PLUGIN_FAILURES) continue;
+          await this.db.update('plugin_installs', { is_enabled: false, settings: { ...settings, disabledReason: 'webhook kept failing', disabledAt: nowSql() } as never, updated_at: nowSql() }, { id: String(i.id) });
+          await this.notifications.notifyRole(schoolId, 'admin', {
+            channels: ['in_app', 'email'], eventKey: 'marketplace.plugin_disabled', title: `${String(i.name)} has been switched off`,
+            body: `Its webhook failed ${failures} times in a row (${String(settings.hookLastError ?? 'no answer')}). Events are no longer being sent to it. Fix the address and turn it back on in Platform → Apps.`,
+            entityType: 'marketplace.plugin', entityId: String(i.id),
+          });
+          await this.outbox.emitNow({ type: 'plugin.disabled', schoolId, aggregateType: 'marketplace.plugin', aggregateId: String(i.id), payload: { installId: String(i.id), slug: String(i.slug), failures, reason: String(settings.hookLastError ?? 'webhook kept failing').slice(0, 200) } });
+          out.pluginsDisabled++;
+        }
+        const hooks = await this.db.query<Row>(`SELECT * FROM webhooks WHERE school_id = ? AND is_active = TRUE AND failure_count >= ?`, [schoolId, MarketplaceService.WEBHOOK_FAILURES]);
+        for (const h of hooks) {
+          await this.db.update('webhooks', { is_active: false, updated_at: nowSql() }, { id: String(h.id) });
+          await this.notifications.notifyRole(schoolId, 'admin', {
+            channels: ['in_app'], eventKey: 'marketplace.webhook_disabled', title: 'A webhook has been switched off',
+            body: `${String(h.url).slice(0, 80)} failed ${Number(h.failure_count)} times in a row. Nothing is being posted to it any more.`,
+            entityType: 'platform.webhook', entityId: String(h.id),
+          });
+          await this.outbox.emitNow({ type: 'automation.stalled', schoolId, aggregateType: 'platform.webhook', aggregateId: String(h.id), payload: { kind: 'outbox', detail: `webhook ${String(h.url).slice(0, 120)} disabled after ${Number(h.failure_count)} failures`, count: Number(h.failure_count) } });
+          out.webhooksDisabled++;
+        }
+        return out;
+      },
+    };
   }
 }
 

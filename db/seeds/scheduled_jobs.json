@@ -313,5 +313,50 @@
     "job_key": "admissions.followup_reminders",
     "cron_expr": "0 9 * * *",
     "rows": "A2"
+  },
+  {
+    "job_key": "admissions.campaign_watch",
+    "cron_expr": "0 7 * * *",
+    "rows": "A10–A15"
+  },
+  {
+    "job_key": "platform.watchdog",
+    "cron_expr": "15 * * * *",
+    "rows": "N13–N17"
+  },
+  {
+    "job_key": "analytics.benchmarks",
+    "cron_expr": "0 4 2 * *",
+    "rows": "P28"
+  },
+  {
+    "job_key": "groups.consolidate",
+    "cron_expr": "30 1 * * *",
+    "rows": "P29"
+  },
+  {
+    "job_key": "marketplace.health",
+    "cron_expr": "0 3 * * *",
+    "rows": "N19, P31"
+  },
+  {
+    "job_key": "ai.budget_watch",
+    "cron_expr": "0 9 * * *",
+    "rows": "P32"
+  },
+  {
+    "job_key": "ivr.line_watch",
+    "cron_expr": "0 9 * * 6",
+    "rows": "P33"
+  },
+  {
+    "job_key": "alumni.job_board",
+    "cron_expr": "0 8 * * *",
+    "rows": "P34"
+  },
+  {
+    "job_key": "cms.scheduled_publish",
+    "cron_expr": "*/10 * * * *",
+    "rows": "P35"
   }
 ]

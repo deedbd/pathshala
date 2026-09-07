@@ -1,7 +1,8 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
-import type { Adapters } from '@pathshala/adapters';
+import type { Adapters, ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
+import type { NotificationService } from '../notifications.js';
 import type { SettingsService } from '../settings.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
@@ -27,7 +28,7 @@ export interface Asker { userId: string; userType: string; roles: string[] }
  */
 export class AiService {
   constructor(
-    private db: Db, private outbox: OutboxService, private settings: SettingsService, private adapters: Adapters,
+    private db: Db, private outbox: OutboxService, private settings: SettingsService, private adapters: Adapters, private notifications: NotificationService,
   ) {}
 
   // ---------- asking about the school ----------
@@ -233,5 +234,34 @@ export class AiService {
     const generated = await this.db.query<{ v: number }>(`SELECT COALESCE(SUM(CAST(0 AS DECIMAL(10,4))), 0) AS v FROM ai_generations WHERE school_id = ? AND created_at >= ?`, [schoolId, `${month}-01 00:00:00`]);
     const spent = round(Number(rows[0]?.v ?? 0) + Number(generated[0]?.v ?? 0));
     return { month, budget, spent, left: round(budget - spent) };
+  }
+
+  // ---------- scheduled ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      /**
+       * Daily: the AI budget, before it runs out rather than after.
+       *
+       * The cap does its job — the bill cannot run away — but it does it silently: one morning the
+       * assistant stops drafting and starts explaining that the budget is used up, and the teacher
+       * who was halfway through a set of report-card remarks has no idea why. A word at nine tenths
+       * spent, once in the month, is the whole of it. Nothing is raised, nothing is bought, and the
+       * questions answered from the school's own rows keep working either way — they never cost
+       * anything.
+       */
+      'ai.budget_watch': async ({ schoolId }) => {
+        const b = await this.budgetLeft(schoolId);
+        if (!b.budget || b.spent < b.budget * 0.9) return { month: b.month, spent: b.spent, warned: false };
+        // one message per month per school: the entity is the month itself, so a fresh budget on the
+        // first of the next month is a new thing to be told about and this one is not repeated
+        const sent = await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 25, {
+          channels: ['in_app'], eventKey: 'ai.budget_low',
+          title: b.left <= 0 ? 'The AI budget for this month is used up' : 'The AI budget is nearly used up',
+          body: `${b.spent} of ${b.budget} spent in ${b.month}. ${b.left <= 0 ? 'Drafting is paused until next month or a bigger budget.' : 'Drafting stops when it reaches the cap.'} Questions about attendance, fees and results are answered from the school's own rows and cost nothing.`,
+          entityType: 'ai.budget', entityId: b.month,
+        });
+        return { month: b.month, spent: b.spent, budget: b.budget, warned: sent.length > 0 };
+      },
+    };
   }
 }
