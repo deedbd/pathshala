@@ -143,15 +143,13 @@ export async function seed(db: Db, opts: SeedOptions): Promise<SeedResult> {
   // ---- scheduled jobs (docs/AUTOMATION.md) ----
   const jobs = readJson<{ job_key: string; cron_expr: string; rows: string }[]>(opts.dbDir, 'scheduled_jobs.json');
   for (const j of jobs) {
-    if (await db.findOne('scheduled_jobs', { school_id: sid, job_key: j.job_key })) continue;
-    await db.insert('scheduled_jobs', { id: ulid(), school_id: sid, job_key: j.job_key, cron_expr: j.cron_expr, timezone: 'Asia/Dhaka', payload: { rows: j.rows }, is_active: true }); bump('scheduled_jobs');
+    if (await insertIfAbsent(db, 'scheduled_jobs', { id: ulid(), school_id: sid, job_key: j.job_key, cron_expr: j.cron_expr, timezone: 'Asia/Dhaka', payload: { rows: j.rows }, is_active: true }, { school_id: sid, job_key: j.job_key })) bump('scheduled_jobs');
   }
 
   // ---- automation rules (docs/AUTOMATION.md, editable per school) ----
   const rules = readJson<{ code: string; module: string; name: string; description: string; trigger_kind: string; event_type: string | null; condition_text: string; actions: unknown[] }[]>(opts.dbDir, 'automation_rules.json');
   for (const r of rules) {
-    if (await db.findOne('automation_rules', { school_id: sid, code: r.code })) continue;
-    await db.insert('automation_rules', { id: ulid(), school_id: sid, code: r.code, name: r.name, module: r.module, description: r.description, trigger_kind: r.trigger_kind, event_type: r.event_type, cron_expr: null, conditions: r.condition_text ? { note: r.condition_text } : null, actions: r.actions as Row[], is_system: true, is_active: true, priority: 100, cooldown_minutes: 5, run_count: 0 }); bump('automation_rules');
+    if (await insertIfAbsent(db, 'automation_rules', { id: ulid(), school_id: sid, code: r.code, name: r.name, module: r.module, description: r.description, trigger_kind: r.trigger_kind, event_type: r.event_type, cron_expr: null, conditions: r.condition_text ? { note: r.condition_text } : null, actions: r.actions as Row[], is_system: true, is_active: true, priority: 100, cooldown_minutes: 5, run_count: 0 }, { school_id: sid, code: r.code })) bump('automation_rules');
   }
 
   // ---- notification templates bn/en ----
@@ -182,6 +180,26 @@ export async function seed(db: Db, opts: SeedOptions): Promise<SeedResult> {
   }
 
   return { inserted };
+}
+
+/**
+ * Inserts a row unless the same one arrives from somewhere else first.
+ *
+ * Seeding a school is no longer the only thing that writes these rows: the automation catalogue is
+ * reconciled at boot and again on every watchdog tick, so a school being provisioned at that moment
+ * can lose a race against a unique key it shares. Losing it means the row is there, which is what the
+ * seed was asking for — the failure worth avoiding is a school left half-seeded because two passes
+ * agreed with each other.
+ */
+async function insertIfAbsent(db: Db, table: string, row: Row, key: Row): Promise<boolean> {
+  if (await db.findOne(table, key as never)) return false;
+  try {
+    await db.attempt(() => db.insert(table, row));
+    return true;
+  } catch (e) {
+    if (await db.findOne(table, key as never)) return false;
+    throw e;
+  }
 }
 
 export interface SeededJob { job_key: string; cron_expr: string; rows: string }
