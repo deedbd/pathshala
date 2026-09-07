@@ -55,6 +55,13 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Postgres aborts the whole transaction on the first failed statement, so code that *expects* a statement to fail sometimes — a race to insert the same unique row — must fence it: `tx.attempt(fn)` wraps it in a savepoint on all three engines and is a plain call outside a transaction. `NumberingService` creating a sequence is the case that found this, as "current transaction is aborted, commands ignored" from an unrelated statement two calls later.
 - A test at the repo root can only import what the **root** `package.json` declares: pnpm's layout does not hoist a workspace package's dependencies to the root `node_modules`. `xlsx` is there for that reason. It resolved locally and not in CI, which is exactly the shape of failure to look for when a suite dies in its `before` hook with no per-test error.
 - An automation that fans out from an event must be idempotent and must check its own preconditions: the relay delivers at least once, and several events of the same kind can arrive in a row (three batches of marks → three merit runs). Ranking waits for the last mark, and an applicant already holding an offer is never re-ranked.
+- A cap on one request is not a cap on the rate. A watch beat could only ever add three minutes, and twenty of them arriving in the same second still finished an hour-long lesson; a per-caller flood budget still gave every spoofed caller ID a fresh budget of its own. Anything that limits abuse has to be measured against the clock (`lesson_progress.last_beat_at`) or against the thing being protected (a per-school budget beside the per-caller one), not against a single call.
+- A code derived from a name must carry the id, not a prefix of the name. `CRS-` plus fifteen characters of the slug gave "Spoken English Batch A" and "Batch B" one fee head, and a payment for either handed out a seat in both.
+- An env var must never outrank a per-school setting. `IVR_SECRET` was read first, so one gateway operator's value answered for every tenant on the host — including schools that had never turned the voice line on — while the console reported the secret it had just saved as configured. The school's own row wins; the env var stands in only where there is none.
+- Missing data is not zero. A member school whose nightly pass had not run contributed `collected: 0` to a trust's consolidated total, with `error: null` beside it: the trust was told it was owed half of what it was owed. Where a total cannot be trusted it is refused and the reason is named, exactly as a missing exchange rate already was.
+- A guard on a work queue must move even when there is nothing to do. The adaptive pass excluded children it had written to, so a child who needed no message left nothing behind, stayed a candidate and held a place in the window for ever — two hundred of those and the school's other children are never planned for again. It carries a cursor now.
+- A "create" endpoint that quietly updates is a way to change a live cohort's rules from a form somebody opened to fix a typo. `POST /college/programs` refuses a duplicate code instead.
+- Installation-wide tables (`currency_rates`) need a gate of their own: a permission checked in the caller's own school says nothing about a row every school reads.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
 ## Year 2 (in progress)
@@ -85,7 +92,8 @@ department portals, a certificate that waits for the credits, and coaching batch
 whose seat is handed over by the payment, not by the plan). It owns `course_registrations` and reaches
 every other module through its service — `academic` for programmes and credits, `people` for
 departments, `fees` for the plan, `lms` for the seat and its certificate, `assessment` for the grade.
-API: `apps/server/src/routes/phase14.ts`. Exit criterion: `tests/college.test.mjs`.
+API: `apps/server/src/routes/phase14.ts`; console page `apps/web/app/routes/college.tsx`. Exit
+criterion: `tests/college.test.mjs`.
 
 ## Year 4 (in progress)
 `groups` (`packages/core/src/modules/groups.ts`) is the one service that reads across tenants, so
@@ -96,7 +104,8 @@ account that is not a guardian. Consolidated numbers are AnalyticsService's `kpi
 never recomputed, and money from schools with different `schools.currency` is refused until a
 `currency_rates` row exists — the total then carries the rate and the day it came from. New tables:
 `school_groups`, `school_group_members`, `currency_rates`, `student_transfers`. API:
-`apps/server/src/routes/phase16.ts`. Exit criterion: `tests/groups.test.mjs`.
+`apps/server/src/routes/phase16.ts`; console page `apps/web/app/routes/group.tsx`. Exit criterion:
+`tests/groups.test.mjs`.
 
 ## Years 4–5 (in progress)
 `forecast` (`packages/core/src/modules/forecast.ts`) is the first of the prediction work: a
@@ -109,7 +118,8 @@ event, never an invoice or a vacancy. The wellbeing score is written to `risk_sc
 `AnalyticsService.saveRisk` (analytics owns that table), and welfare involvement never scores on its
 own: it only adds a flat weight to something measurable that is already wrong, and counselling and a
 safeguarding case weigh the same, so the score cannot be read backwards to tell them apart. API:
-`apps/server/src/routes/phase17.ts`. Exit criterion: `tests/forecast.test.mjs`.
+`apps/server/src/routes/phase17.ts`; the console is the forecast tab of
+`apps/web/app/routes/insights.tsx`. Exit criterion: `tests/forecast.test.mjs`.
 
 ## Year 5 (in progress)
 `ivr` (voice-first guardian interactions): an inbound IVR gateway drives `/api/ivr/:school/step` with
@@ -119,8 +129,10 @@ caller ID against `guardians.phone` — enough for what is already texted to tha
 more; an unknown number is told to contact the office and is never asked for a secret. The service
 holds no state between steps (the gateway hands back every key pressed), the answers come from the
 owning services and `AiService`'s own queries, and each call is one line in `call_logs` through
-`FrontOfficeService.recordCall`. API: `apps/server/src/routes/phase18.ts`. Exit criterion:
-`tests/ivr.test.mjs`.
+`FrontOfficeService.recordCall` — which records which key was pressed, never the answer, because the
+register is read with `frontoffice.view` and a clerk refused the fees page must not read a child's
+balance out of a call note. API: `apps/server/src/routes/phase18.ts`; the console is the IVR tab of
+`apps/web/app/routes/operations.tsx`. Exit criterion: `tests/ivr.test.mjs`.
 Also advanced LMS + adaptive learning (year 5 brought forward): watch time a beat cannot fake (a
 heartbeat adds at most 3 min, seeking never counts, 85% watched completes the lesson), discussion
 threads a student sees only for their own course, word-shingle Jaccard similarity between text
@@ -128,7 +140,8 @@ answers that skips anything under 40 words and only ever asks the teacher to loo
 and `adaptive` (`packages/core/src/modules/adaptive.ts`), which turns competency ratings into a
 per-child revision plan naming the lessons on each unmet indicator's syllabus unit and saying
 plainly when nothing covers one. Plans are derived, never stored. API:
-`apps/server/src/routes/phase15.ts`; exit criterion `tests/lms-advanced.test.mjs`.
+`apps/server/src/routes/phase15.ts`; the console is the discussions and adaptive tabs of
+`apps/web/app/routes/learning.tsx`; exit criterion `tests/lms-advanced.test.mjs`.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented, and the years 2–5 modules above sit on top of them.

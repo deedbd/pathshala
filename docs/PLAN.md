@@ -477,3 +477,25 @@ exit criterion on all three engines.
 ## Definition of done (every feature)
 
 Schema in `def.mjs` · events documented · handler idempotent · rule visible in Automation → Activity · failure alerts admin · works on SQLite and MySQL · bn and en · phone and desktop · integration test for the happy path and one failure.
+
+
+## Console pages for years 3–5 (shipped)
+
+The five modules written in parallel — college, advanced LMS + adaptive, groups, forecast, IVR — had
+an API and a test suite but no page a head teacher could open. They have one now: `/college`
+(programmes, registration, transcript, course sales), `/group` (the schools of a trust together, the
+staff pool, transfers, exchange rates), the discussions and adaptive tabs of `/learning`, the forecast
+tab of `/insights`, and the IVR tab of `/operations` — which is the only place the webhook secret can
+be set, so the voice line can now be switched on without curl.
+
+Three review passes over those same five modules found eighteen defects, thirteen of them reproduced
+against a running install. The serious ones were a course fee head shared by two batches of one
+course (paying for one handed out a seat in both), a paid course certifying itself with nothing paid,
+a watch beat that could outrun the clock, `IVR_SECRET` overriding every per-school secret on a
+multi-school host, a consolidated group total that read a school with no figures as a school that
+collected nothing, exchange rates writable by any tenant, and a guardian family view that matched on
+a phone number across the whole installation. All are fixed, each with the test that would have
+caught it.
+
+**Not yet:** the IVR result question still costs a full exam scan per call; `staffPool` and the
+transfer list have no paging; the group page adds a school by id rather than by picking one.
