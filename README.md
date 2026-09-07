@@ -34,6 +34,10 @@ on SQLite, MySQL 8 and Postgres 16:
 | 8 | Behaviour, health and the clinic, counselling and safeguarding, LMS, surveys, events | points propose an action; confidential notes stay encrypted |
 | 9 | Hardening: the security review as a test, backup and restore, the engine move, the load run | 5 schools × 1,500 students in one database; a request answers in 0.36 s with 11,800 events still queued |
 
+Automation is the default rather than a feature: 72 scheduled jobs and 291 rows in
+`docs/AUTOMATION.md` cover the work nobody should have to remember, anything irreversible is prepared
+completely and waits for one click, and only information nobody has entered yet is typed by a person.
+
 **Years 2 to 5 of `docs/ROADMAP-5Y.md` are being built on top of those nine phases**, in the same
 way — a module, its automation rows, its API, a console page, and a test that proves the exit
 criterion on all three engines:

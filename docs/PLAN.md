@@ -502,3 +502,42 @@ instead of a scan of every exam the school has held, the staff pool and the tran
 (and the pool says what its page is a page of), and a group adds a school by picking it from the
 list of schools on the installation — which only the founder school may ask for, because that list
 is the tenants on the host.
+
+## Everything that can run itself, does (shipped)
+
+The owner's rule: only what genuinely needs a person stays manual. Four passes went through every
+module and asked, of every action a person could click, whether the system could do it instead.
+
+**42 → 72 scheduled jobs, 291 rows in `docs/AUTOMATION.md`.** The work that had no owner now has
+one: a month never billed, an invoice batch nobody finished, a receipt nobody printed, a discount
+past its date, an approved expense whose journal was never posted, a trial balance nobody drew, a
+day book nobody closed, a donation with no receipt; a seat plan and its admit cards, marks locked at
+the school's own deadline, results computed the night the last mark lands, report cards the batch
+never reached, next year's calendar, a class-subject with no teacher, a cover for a teacher who is
+absent, a syllabus falling behind; payroll waiting for approval, a leaver never settled, papers
+expiring, a work order past its SLA, minutes never written, a policy nobody acknowledged, a consent
+that lapsed, a stipend due, a census window opening, a bus with no driver tomorrow, a roll call not
+taken, stock under its reorder level; an applicant never seated, an interview slot nobody booked, a
+merit list nobody drew, an offer about to lapse, a plugin webhook failing for ever, a token expiring,
+a school over its plan, a trial that never ended, a group's figures never consolidated, a page whose
+go-live date passed.
+
+**What stays with a person, and why.** Information nobody has entered yet — marks, counted cash, a
+cheque number, a meter reading, a visitor at the gate — is typed, because the system does not invent
+what it does not know. And an irreversible decision is *prepared* rather than taken: publishing
+results, applying promotion, publishing a timetable, approving payroll, settling a leaver, clearing
+or bouncing a cheque, making an offer, paying a partner, closing a fiscal year, deleting under a
+retention rule, submitting a government return, restoring a backup. Each of those is computed,
+rendered and raised as a task naming what is left, so the human step is one click.
+
+**The machinery watches itself.** `platform.watchdog` reports a job that has not run since its last
+success, events stuck unpublished, messages stuck queued, uploads filling the disk — and the nightly
+backup is read back (gunzip, header, row count) before it is believed. An update's new jobs reach the
+schools already installed, because the catalogue is reconciled at boot and again on every watchdog
+tick.
+
+`pnpm smoke` is 331 tests across 25 suites; every automation has a test that runs it twice and proves
+the second pass changes nothing, and one that proves it stays silent when there is nothing to do.
+
+**Not yet:** payment-gateway settlement reconciliation (there is no settlements table), and the
+final fee settlement when a student transfers out or drops.
