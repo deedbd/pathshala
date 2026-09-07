@@ -25,6 +25,7 @@ import { mountPhase17 } from './routes/phase17.js';
 import { mountPhase18 } from './routes/phase18.js';
 import { mountPhase14 } from './routes/phase14.js';
 import { mountPhase15 } from './routes/phase15.js';
+import { mountOwner, suspendedSchoolGuard } from './routes/owner.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -208,6 +209,9 @@ export async function createServer(app: App = createApp()) {
     return { ok: true, publicKey: app.adapters.push.publicKey() };
   }));
   api.get('/push/public-key', (_req, res) => res.json({ publicKey: app.adapters.push.publicKey() }));
+  // a suspended school stops entering new work and never stops reading its own records; sign-in,
+  // notifications and the owner's own API stay open, and every GET passes untouched
+  api.use(suspendedSchoolGuard(app));
   mountPhase1(api, app, wrap, requirePerm, requireUser);
   mountPhase2(api, app, wrap, requirePerm, requireUser);
   mountPhase3(api, app, wrap, requirePerm, requireUser);
@@ -226,6 +230,10 @@ export async function createServer(app: App = createApp()) {
   mountPhase18(api, app, wrap, requirePerm);
   mountPhase14(api, app, wrap, requirePerm);
   mountPhase15(api, app, wrap, requirePerm, requireUser);
+  // the vendor's console: gated in OwnerService, not by a permission any school can hold
+  const ownerRouter = express.Router();
+  mountOwner(ownerRouter, app, wrap, requirePerm);
+  api.use('/owner', ownerRouter);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicGiving(pub, app, wrap);
