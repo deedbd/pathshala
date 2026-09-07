@@ -15,6 +15,7 @@ import { mountPhase5, mountPublicHr } from './routes/phase5.js';
 import { mountPhase6, mountPublicAdmissions } from './routes/phase6.js';
 import { mountPhase7 } from './routes/phase7.js';
 import { mountPhase8 } from './routes/phase8.js';
+import { mountPhase9 } from './routes/phase9.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -124,9 +125,20 @@ export async function createServer(app: App = createApp()) {
     setSessionCookie(req, res, r.token, r.expiresAt);
     return { user: publicUser(r.user), accessToken: app.auth.accessToken(r.user, r.sessionId) };
   }));
+  // asking for codes is throttled by target whether or not the number belongs to anybody: the reply is
+  // deliberately the same either way, so without this an attacker could enumerate numbers for free.
+  // Per process, which on Passenger is the whole app; the database limit in AuthService is the real one.
+  const otpAsks = new Map<string, number[]>();
+  const OTP_ASKS_PER_10MIN = 5;
   api.post('/auth/otp/request', wrap(async req => {
     const input = otpRequestSchema.parse(req.body);
     await verifyTurnstile(config.env, input.turnstile, req.ip);
+    const key = `${input.target}`.toLowerCase();
+    const recent = (otpAsks.get(key) ?? []).filter(t => Date.now() - t < 600_000);
+    if (recent.length >= OTP_ASKS_PER_10MIN) throw new HttpError(429, 'too many codes requested; wait 10 minutes', 'rate_limited');
+    recent.push(Date.now());
+    otpAsks.set(key, recent);
+    if (otpAsks.size > 5000) for (const [k, v] of otpAsks) if (!v.some(t => Date.now() - t < 600_000)) otpAsks.delete(k);
     let user = await app.auth.findByIdentifier(input.target);
     if (!user) { // a guardian on file gets a portal account the first time they ask for a code
       const g = await app.db.findOne<{ id: string; school_id: string }>('guardians', { phone: input.target.includes('@') ? '__' : normalizeBdPhone(input.target) ?? '__' });
@@ -192,6 +204,7 @@ export async function createServer(app: App = createApp()) {
   mountPhase6(api, app, wrap, requirePerm, requireUser);
   mountPhase7(api, app, wrap, requirePerm, requireUser);
   mountPhase8(api, app, wrap, requirePerm, requireUser);
+  mountPhase9(api, app, wrap, requirePerm);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicHr(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));

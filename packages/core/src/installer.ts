@@ -86,14 +86,33 @@ export class InstallerService {
     return this.running;
   }
 
+  /**
+   * A second (or fifth) school in the same database. The installer's own step 8 is one call to this;
+   * a SaaS host or a group of schools sharing one cPanel account uses it directly. Every tenant gets
+   * its own seeds, campus, admin and defaults — nothing is shared but the tables.
+   */
+  async addTenant(input: InstallSchoolInput): Promise<{ schoolId: string; userId: string }> {
+    return this.provisionSchool(input, null, false);
+  }
   /** Step 8: the one form the owner fills. Creates the school, seeds tenant rows, creates the admin, signs them in. */
   async createSchool(input: InstallSchoolInput): Promise<{ schoolId: string; userId: string }> {
     const existing = await this.db.findOne<{ id: string }>('schools', {}, { orderBy: 'created_at ASC' });
     if (existing && (await this.status()).steps.find(s => s.step === 'school')?.status === 'done') throw new Error('school already created; continue at the next step');
     await this.mark('school', 'running');
     try {
+      return await this.provisionSchool(input, existing, true);
+    } catch (e) { await this.mark('school', 'failed', { error: (e as Error).message }); throw e; }
+  }
+  private async provisionSchool(input: InstallSchoolInput, existing: { id: string } | null, markInstaller: boolean): Promise<{ schoolId: string; userId: string }> {
+    {
       const schoolId = existing?.id ?? ulid();
-      const code = input.schoolCode || slugify(input.schoolName).replace(/-/g, '').toUpperCase().slice(0, 8) || 'SCHOOL';
+      // the code prefixes every document number, so it has to be unique across the tenants sharing
+      // this database — two schools whose names truncate to the same eight letters get a suffix
+      let code = input.schoolCode || slugify(input.schoolName).replace(/-/g, '').toUpperCase().slice(0, 8) || 'SCHOOL';
+      if (!existing) {
+        const base = code.slice(0, 6);
+        for (let n = 2; await this.db.findOne('schools', { code }); n++) code = `${base}${n}`.slice(0, 8);
+      }
       const result = await this.db.transaction(async tx => {
         if (!existing) await tx.insert('schools', { id: schoolId, code, name: input.schoolName, name_bn: input.schoolNameBn || null, institution_type: input.institutionType, timezone: 'Asia/Dhaka', currency: 'BDT', locale: input.locale, status: 'active', onboarded_at: nowSql() });
         await tx.insert('campuses', { id: ulid(), school_id: schoolId, name: 'Main Campus', code: 'MAIN', is_main: true, status: 'active' }).catch(() => undefined);
@@ -103,9 +122,9 @@ export class InstallerService {
       await seed(this.db, { dbDir: this.config.dbDir, schoolId, log: m => this.deps.log.info(`seed: ${m}`) });
       const userId = await runWithContext(systemContext(schoolId), () => this.deps.auth.createUser({ schoolId, userType: 'admin', displayName: input.adminName, phone: input.adminPhone, email: input.adminEmail || null, password: input.adminPassword, locale: input.locale, roles: ['super_admin'] }));
       if (this.deps.afterSchool) await runWithContext(systemContext(schoolId, { userId }), () => this.deps.afterSchool!(schoolId, input));
-      await this.mark('school', 'done', { schoolId, userId, code });
+      if (markInstaller) await this.mark('school', 'done', { schoolId, userId, code });
       return { ...result, userId };
-    } catch (e) { await this.mark('school', 'failed', { error: (e as Error).message }); throw e; }
+    }
   }
 
   /** Step 9: write a file, tick the scheduler, relay an event through a rule, queue + render a PDF, try mail. */

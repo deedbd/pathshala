@@ -42,6 +42,7 @@ export { FrontOfficeService } from './modules/frontoffice.js';
 export { WelfareService } from './modules/welfare.js';
 export { LmsService, type CourseInput, type AssignmentInput } from './modules/lms.js';
 export { EngagementService, type SurveyInput } from './modules/engagement.js';
+export { PlatformService, type BackupTargetConfig } from './modules/platform.js';
 export { DocumentService, type IssueInput, type DocType } from './modules/documents.js';
 export { AdmissionsService, type CampaignInput, type ApplicationInput } from './modules/admissions.js';
 export { HrService, type StructureInput, type LoanInput, type ExitInput, type TaxSlab } from './modules/hr.js';

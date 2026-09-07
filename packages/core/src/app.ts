@@ -42,6 +42,7 @@ import { FrontOfficeService } from './modules/frontoffice.js';
 import { WelfareService } from './modules/welfare.js';
 import { LmsService } from './modules/lms.js';
 import { EngagementService } from './modules/engagement.js';
+import { PlatformService } from './modules/platform.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -49,14 +50,14 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; platform: PlatformService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
   /** Request heartbeat: throttled scheduler tick + relay + queue drain (WordPress-cron pattern). */
   heartbeat(): void;
-  /** Full tick for /cron/tick and tests. */
-  tick(): Promise<{ scheduler: Awaited<ReturnType<Adapters['scheduler']['tick']>>; relay: { published: number; failed: number }; queue: { ran: number; failed: number } }>;
+  /** Full tick for /cron/tick and tests; `budgetMs` bounds the relay when a request triggered it. */
+  tick(opts?: { budgetMs?: number; maxJobs?: number }): Promise<{ scheduler: Awaited<ReturnType<Adapters['scheduler']['tick']>>; relay: { published: number; failed: number }; queue: { ran: number; failed: number } }>;
 }
 
 export interface CreateAppOptions { rootDir?: string; db?: Db; log?: Logger; env?: NodeJS.ProcessEnv }
@@ -112,6 +113,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const welfare = new WelfareService(db, outbox, notifications, tasks, approvals, inventory, config.appKey);
   const lms = new LmsService(db, outbox, notifications, academic);
   const engagement = new EngagementService(db, outbox, notifications);
+  const platform = new PlatformService(db, outbox, notifications, settings, adapters, config.rootDir, log);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -162,12 +164,13 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(welfare.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(lms.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(engagement.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
   registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, platform,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -180,13 +183,14 @@ export function createApp(opts: CreateAppOptions = {}): App {
       const minGap = adapters.mode === 'inprocess' ? 60_000 : 20_000;
       if (beating || Date.now() - lastBeat < minGap) return;
       beating = true; lastBeat = Date.now();
-      setImmediate(() => { app.tick().catch(e => log.error('heartbeat', e)).finally(() => { beating = false; }); });
+      // a request-driven tick is strictly bounded: whoever browses next must not pay for the backlog
+      setImmediate(() => { app.tick({ budgetMs: 2000, maxJobs: 3 }).catch(e => log.error('heartbeat', e)).finally(() => { beating = false; }); });
     },
-    async tick() {
+    async tick(opts = {}) {
       if (!(await installer.hasSchema())) return { scheduler: { ran: [], skipped: 0, errors: ['schema not installed yet'] }, relay: { published: 0, failed: 0 }, queue: { ran: 0, failed: 0 } };
       const scheduler = await adapters.scheduler.tick();
-      const r = await relay.run();
-      const q = await adapters.queue.drain();
+      const r = await relay.run(100, opts.budgetMs ?? 0);
+      const q = await adapters.queue.drain(opts.maxJobs);
       return { scheduler, relay: r, queue: q };
     },
   };

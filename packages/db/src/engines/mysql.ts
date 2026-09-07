@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import type { Pool, PoolConnection } from 'mysql2/promise';
 import type { Db, DbConfig, Row } from '../types.js';
-import { bind, crud, splitStatements } from '../sql.js';
+import { bind, crud, ident, splitStatements } from '../sql.js';
 
 /** cPanel's MySQL/MariaDB through mysql2 (pure JS). Datetimes are read as strings, decimals as numbers. */
 export function openMysql(cfg: DbConfig): Db {
@@ -27,6 +27,8 @@ function makeDb(pool: Pool, conn: PoolConnection | null): Db {
     engine: 'mysql',
     raw: pool,
     query, execute, ...base,
+    quote: (n: string) => ident(n, 'mysql'),
+    async tables() { const rows = await query<Record<string, string>>(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name`); return rows.map(r => String(r.name ?? r.NAME ?? Object.values(r)[0])); },
     async script(sql, opts) {
       let ran = 0, skipped = 0;
       for (const st of splitStatements(sql)) {

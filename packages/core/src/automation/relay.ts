@@ -18,30 +18,37 @@ export class Relay {
   constructor(private db: Db, private handlers: HandlerRegistry, private rules: RuleEngine, private log: Logger, private appKey: string) {}
 
   private stopped = false;
-  start(intervalMs = 500) { this.stopped = false; if (this.timer) return; this.timer = setInterval(() => void this.run().catch(e => this.log.error('relay', e)), intervalMs); this.timer.unref?.(); }
+  /** The background loop works in slices: a long backlog must not starve the requests being served. */
+  start(intervalMs = 500) { this.stopped = false; if (this.timer) return; this.timer = setInterval(() => void this.run(100, Math.max(100, intervalMs - 100)).catch(e => this.log.error('relay', e)), intervalMs); this.timer.unref?.(); }
   async stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; while (this.busy) await new Promise(r => setTimeout(r, 20)); }
   /** Called by the outbox after an emit so events publish without waiting for the next interval. */
   nudge() { this.wanted = true; setImmediate(() => { if (this.wanted && !this.busy && !this.stopped) void this.run().catch(e => this.log.error('relay', e)); }); }
 
   private inflight: Promise<{ published: number; failed: number }> | null = null;
-  /** Publishes pending events. A caller that arrives while a pass is running waits for it, then runs its own pass. */
-  async run(max = 100): Promise<{ published: number; failed: number }> {
+  /**
+   * Publishes pending events. A caller that arrives while a pass is running waits for it, then runs
+   * its own pass. `budgetMs` bounds how long one call may spend: a request heartbeat must never pay
+   * for a backlog somebody else created — on SQLite every query is synchronous, so a long relay pass
+   * blocks every other request in the process. What is left over waits for the next tick.
+   */
+  async run(max = 100, budgetMs = 0): Promise<{ published: number; failed: number }> {
     if (this.stopped) return { published: 0, failed: 0 };
     while (this.inflight) { try { await this.inflight; } catch { /* logged by the pass itself */ } }
+    const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
     // consumers emit follow-up events (task.created, approval.requested…); keep passing until nothing new is pending
     this.inflight = (async () => {
       const total = { published: 0, failed: 0 };
       for (let i = 0; i < 8; i++) {
-        const r = await this.pass(max);
+        const r = await this.pass(max, deadline);
         total.published += r.published; total.failed += r.failed;
-        if (r.published === 0) break;
+        if (r.published === 0 || (deadline && Date.now() > deadline)) break;
       }
       return total;
     })();
     try { return await this.inflight; } finally { this.inflight = null; }
   }
 
-  private async pass(max: number): Promise<{ published: number; failed: number }> {
+  private async pass(max: number, deadline = 0): Promise<{ published: number; failed: number }> {
     this.busy = true; this.wanted = false;
     let published = 0, failed = 0;
     try {
@@ -54,6 +61,10 @@ export class Relay {
         ok = (await this.once('webhooks', event, () => this.webhooks(event))) && ok;
         if (ok) { await this.db.update('outbox_events', { published_at: nowSql() }, { id: row.id as string }); published++; }
         else failed++;
+        // SQLite queries are synchronous, so without this yield a backlog would hold the event loop
+        // and every HTTP request behind it. One turn per event costs nothing and keeps the app answering.
+        await new Promise(r => setImmediate(r));
+        if (deadline && Date.now() > deadline) break;   // the rest waits for the next tick
       }
     } finally { this.busy = false; }
     return { published, failed };

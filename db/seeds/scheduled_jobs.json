@@ -130,6 +130,11 @@
     "rows": "N10"
   },
   {
+    "job_key": "platform.backup",
+    "cron_expr": "0 2 * * *",
+    "rows": "N10"
+  },
+  {
     "job_key": "academic.syllabus_lag",
     "cron_expr": "0 8 * * 0",
     "rows": "B6"

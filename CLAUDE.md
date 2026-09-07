@@ -20,7 +20,8 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - `docs/HOSTING-CPANEL.md` — zero-touch installer flow and fallback matrix
 - `docs/ROADMAP-5Y.md` — what ships in years 1–5 (all tables already exist)
 - `docs/AUTOMATION.md` — trigger → automated action matrix, cron seed
-- `docs/PLAN.md` — 40-week phases, pilot at week 14
+- `docs/PLAN.md` — 40-week phases, pilot at week 14; every phase carries a status paragraph saying what shipped and what did not
+- `docs/MANUAL-bn.md` — the head teacher's manual, in Bangla
 - `docs/masterplan.html` — interactive master plan + schema explorer (`node db/build-masterplan.mjs` rebuilds it)
 - `docs/console.html` — clickable UI prototype (demo data) used as the UI reference
 - `db/mysql/schema.sql`, `db/sqlite/schema.sql`, `db/schema.json`, `db/SCHEMA.md` — generated
@@ -44,15 +45,23 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - JSON columns must hold valid JSON on MySQL/Postgres (SQLite is lax): an encrypted secret is stored as `{ enc: "v1..." }`, never as a bare string.
 - Express matches routes in order, so a literal path that shares a shape with a parameterised one must be registered first — `/exams/annual/compute` before `/exams/:id/compute`, or `annual` is read as an exam id.
 - MySQL reads inside a transaction use REPEATABLE READ, so a plain SELECT cannot see a row another connection committed after the transaction began — it will still collide on the unique key. Where a row is read then created (`NumberingService`), write first (`UPDATE … SET n = n + 1`) and read after: an UPDATE sees the latest committed row and locks it.
+- `node:sqlite` is synchronous, so any long background pass holds the whole event loop and every request behind it. Background work runs in slices: `relay.run(max, budgetMs)` yields between events, the in-process loop takes a budget under its interval, and a request-driven heartbeat gets 2 s and three jobs at most. A load run caught this as a 24.8 s response that should have been 0.36 s.
+- Engines list their tables differently (SQLite in creation order, MySQL and Postgres alphabetically), so anything that copies whole tables — backup, restore, the engine move — orders them by `db/schema.json`, which is the order the foreign keys need.
 - Confidential text (counselling notes, safeguarding cases) is encrypted with `encryptSecret` and only ever decrypted by the service that owns it, for the person who owns the record. List endpoints strip the ciphertext, and the alert that a case exists never carries what is in it.
 - Never read a count on `this.db` to build a number while inserting inside a transaction: that read runs on a different connection and cannot see the rows the transaction is writing (and under MySQL's REPEATABLE READ it cannot see other connections' recent commits either). Document numbers come from `NumberingService`, which takes the transaction.
 - An automation that fans out from an event must be idempotent and must check its own preconditions: the relay delivers at least once, and several events of the same kind can arrive in a row (three batches of marks → three merit runs). Ranking waits for the last mark, and an applicant already holding an offer is never re-ranked.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
 ## Next step
-Phase 9 (`docs/PLAN.md`, weeks 37–40), the last one: a load test on a real Namecheap Stellar account (5 schools × 1,500 students in one tenant database), memory and queue tuning, the SQLite→MySQL migration tool, an update mechanism with rollback, backups to Drive or Dropbox, a security review (OTP limits, secrets, tenant-scope fuzzing), bn/en QA, the admin manual in Bangla, an onboarding wizard, and Year-2 features shipped dark.
+All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
 
-Phases 0–8 are implemented; each phase's status paragraph in `docs/PLAN.md` says what is done and what was left out. The plan sets no exit criterion for phases 6–9, so each is judged by its own test. `pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres); `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion instead of the 120-student default.
+1. Run the installer on an actual Namecheap Stellar account and time it end to end (Phase 0's exit criterion has only been proven locally and in CI).
+2. Take one pilot school live: Cloudflare and Turnstile against a real site key, a real SMS gateway, a real bKash or SSLCommerz merchant account.
+3. The update-with-rollback script (`scripts/update.mjs`): back up, swap the release, health-check, and restore the previous release if the check fails.
+4. Google Drive and S3 backup targets (Dropbox works today).
+5. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
+
+`pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres). `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

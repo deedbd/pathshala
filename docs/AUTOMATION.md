@@ -219,6 +219,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `welfare.behaviour_rules` | `0 2 * * *` | N2 |
 | `platform.kpi_snapshot` | `0 0 * * *` | N9 |
 | `platform.housekeeping` | `0 3 * * *` | N10 |
+| `platform.backup` | `0 2 * * *` | N10 |
 | `academic.syllabus_lag` | `0 8 * * 0` | B6 |
 | `admissions.offer_expiry` | `0 * * * *` | A7 |
 | `admissions.followup_reminders` | `0 9 * * *` | A2 |

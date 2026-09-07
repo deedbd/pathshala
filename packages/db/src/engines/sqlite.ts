@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Db, Row } from '../types.js';
-import { bind, crud, splitStatements } from '../sql.js';
+import { ident, bind, crud, splitStatements } from '../sql.js';
 
 /**
  * Zero-config fallback engine using Node's built-in SQLite (no native npm package).
@@ -31,6 +31,8 @@ function makeDb(conn: DatabaseSync, inTx: boolean): Db {
     engine: 'sqlite',
     raw: conn,
     query, execute, ...base,
+    quote: (n: string) => ident(n, 'sqlite'),
+    async tables() { return (await query<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY rowid`)).map(r => r.name); },
     async script(sql, opts) {
       let ran = 0, skipped = 0;
       for (const st of splitStatements(sql)) {

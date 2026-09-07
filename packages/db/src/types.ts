@@ -30,6 +30,10 @@ export interface Db {
   findOne<T = Row>(table: string, where: Row, opts?: FindOptions): Promise<T | null>;
   findMany<T = Row>(table: string, where?: Row, opts?: FindOptions): Promise<T[]>;
   count(table: string, where?: Row): Promise<number>;
+  /** Every table this database actually has, in creation order. Used by backup and migration. */
+  tables(): Promise<string[]>;
+  /** Quotes an identifier for this engine; refuses anything that is not a plain name. */
+  quote(name: string): string;
   close(): Promise<void>;
   /** Engine-native handle (mysql2 pool, node:sqlite DatabaseSync, pg Pool). Avoid in domain code. */
   readonly raw: unknown;

@@ -1,6 +1,6 @@
 import pg from 'pg';
 import type { Db, DbConfig, Row } from '../types.js';
-import { bind, crud, splitStatements, toPgPlaceholders } from '../sql.js';
+import { bind, crud, ident, splitStatements, toPgPlaceholders } from '../sql.js';
 
 // Keep the same wire format as the other engines: datetimes as 'YYYY-MM-DD HH:MM:SS' strings, numerics as numbers.
 pg.types.setTypeParser(1114, (v: string) => v.slice(0, 19));           // timestamp
@@ -34,6 +34,8 @@ function makeDb(pool: pg.Pool, client: pg.PoolClient | null): Db {
     engine: 'postgres',
     raw: pool,
     query, execute, ...base,
+    quote: (n: string) => ident(n, 'postgres'),
+    async tables() { return (await query<{ name: string }>(`SELECT tablename AS name FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename`)).map(r => r.name); },
     async script(sql, opts) {
       let ran = 0, skipped = 0;
       for (const st of splitStatements(sql)) {
