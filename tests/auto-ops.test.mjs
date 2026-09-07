@@ -356,7 +356,7 @@ describe('operations that run themselves', () => {
     const second = await run('hostel', 'hostel.night_watch', { onDate });
     assert.equal(second.rollCallMissing, 1, 'it is still not taken');
     assert.equal(await openTasks('hostel.rollcall'), 1, 'but the warden is not woken twice');
-    assert.equal(await notified('hostel.rollcall_missing', `${hostelId}:${onDate}`), await notified('hostel.rollcall_missing'));
+    assert.equal(await notified('hostel.rollcall_missing', hostelId), await notified('hostel.rollcall_missing'), 'the notice is filed against the hostel; the night it is about is the window');
 
     await app.hostel.rollCall(schoolId, hostelId, onDate, 'night', [{ studentId: students[0].id, status: 'present' }]);
     assert.equal(await openTasks('hostel.rollcall'), 0, 'taking the call closes the chase');

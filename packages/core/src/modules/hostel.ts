@@ -155,7 +155,7 @@ export class HostelService {
     // K4: an unexplained absence at night is escalated immediately, not in the morning
     if (call === 'night') {
       // the call has been taken, so the chase for it is over
-      await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'hostel.rollcall' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, `${hostelId}:${onDate}`]);
+      await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'hostel.rollcall' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, hostelId]);
       for (const m of marks.filter(x => x.status === 'absent')) {
         const pass = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM hostel_outpasses WHERE student_id = ? AND status IN ('approved','out') AND leave_from <= ? AND expected_return >= ?`, [m.studentId, nowSql(), nowSql()]);
         if (Number(pass[0]?.n ?? 0) > 0) continue;
