@@ -21,3 +21,6 @@ apps/*/dist/
 tests/.tmp/
 tests/.tmp-*/
 tests/.release-verify/
+
+# agent worktrees (local only)
+.claude/worktrees/

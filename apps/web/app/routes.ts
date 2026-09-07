@@ -29,6 +29,7 @@ export default [
     route('community', 'routes/community.tsx'),
     route('institution', 'routes/institution.tsx'),
     route('insights', 'routes/insights.tsx'),
+    route('platform', 'routes/platform.tsx'),
   ]),
   route('teach', 'routes/teach.tsx'),
   ...prefix('site', [
