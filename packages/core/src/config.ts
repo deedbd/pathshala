@@ -26,6 +26,12 @@ export interface AppConfig {
   ownerDoor: string | null;
   /** Optional comma-separated list of addresses that may reach the door at all. */
   ownerIps: string[];
+  /**
+   * Optional MAC addresses that may reach it. Only ever answers for a machine on the server's own
+   * network segment — a MAC does not travel over the internet, so on shared hosting this list is
+   * inert and the address list and the trusted devices decide.
+   */
+  ownerMacs: string[];
 }
 
 /** Minimal .env parser (no dependency): KEY=value, quotes optional, # comments. Does not override existing process env. */
@@ -86,5 +92,6 @@ export function loadConfig(rootDir = resolveRootDir()): AppConfig {
     sessionDays: Number(env.SESSION_DAYS) || 30,
     ownerDoor: (env.OWNER_DOOR || '').trim().replace(/^\/+|\/+$/g, '').toLowerCase() || null,
     ownerIps: (env.OWNER_IPS || '').split(',').map(x => x.trim()).filter(Boolean),
+    ownerMacs: (env.OWNER_MACS || '').split(',').map(x => x.trim()).filter(Boolean),
   };
 }

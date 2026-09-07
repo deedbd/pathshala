@@ -5,6 +5,7 @@ export { createLogger } from './logger.js';
 export { AuditService, type AuditEntry } from './audit.js';
 export { SettingsService } from './settings.js';
 export { RbacService, type UserAccess } from './rbac.js';
+export { OwnerAccessService, ownerDeviceCookie, readOwnerDeviceCookie, randomDeviceLabel, normalizeIp, normalizeMac, ipMatches, isLanIp, OWNER_DEVICE_COOKIE, type OwnerDevice, type OwnerAccessResult } from './owner-access.js';
 export { FileService, type StoreFileInput } from './files.js';
 export { CustomFieldService, type CustomFieldDef } from './customFields.js';
 export { TaskService, type CreateTaskInput } from './tasks.js';
