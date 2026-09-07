@@ -23,6 +23,13 @@ export interface Db {
   /** Runs multiple statements in one script (migrations/seeds). Errors are per-statement. */
   script(sql: string, opts?: { ignore?: (err: Error, statement: string) => boolean }): Promise<{ ran: number; skipped: number }>;
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+  /**
+   * Runs `fn` so that a failure inside it does not take the surrounding transaction with it.
+   * Postgres aborts a whole transaction on the first failed statement, so any code that *expects* a
+   * statement to fail sometimes — a race to insert the same unique row, say — has to fence it off.
+   * Outside a transaction this is just `fn()`.
+   */
+  attempt<T>(fn: () => Promise<T>): Promise<T>;
   insert(table: string, row: Row): Promise<void>;
   insertMany(table: string, rows: Row[]): Promise<void>;
   update(table: string, set: Row, where: Row): Promise<number>;

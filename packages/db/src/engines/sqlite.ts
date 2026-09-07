@@ -16,6 +16,8 @@ export function openSqlite(file: string): Db {
   return makeDb(conn, false);
 }
 
+let spCounter = 0;
+
 function makeDb(conn: DatabaseSync, inTx: boolean): Db {
   const query = async <T = Row>(sql: string, params: unknown[] = []) => {
     const stmt = conn.prepare(sql);
@@ -40,6 +42,13 @@ function makeDb(conn: DatabaseSync, inTx: boolean): Db {
         catch (e) { if (opts?.ignore?.(e as Error, st)) { skipped++; continue; } throw new Error(`${(e as Error).message}\n  in: ${st.slice(0, 200)}`); }
       }
       return { ran, skipped };
+    },
+    async attempt(fn) {
+      if (!inTx) return fn();
+      const name = `sp_${(spCounter = (spCounter + 1) % 1_000_000)}`;
+      conn.exec(`SAVEPOINT ${name}`);
+      try { const r = await fn(); conn.exec(`RELEASE ${name}`); return r; }
+      catch (e) { conn.exec(`ROLLBACK TO ${name}`); conn.exec(`RELEASE ${name}`); throw e; }
     },
     async transaction(fn) {
       if (inTx) return fn(db); // SQLite has one connection; nested transactions join the outer one

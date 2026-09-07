@@ -17,6 +17,7 @@ import { mountPhase7 } from './routes/phase7.js';
 import { mountPhase8 } from './routes/phase8.js';
 import { mountPhase9 } from './routes/phase9.js';
 import { mountPhase10, mountPublicGiving } from './routes/phase10.js';
+import { mountPhase11 } from './routes/phase11.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -210,6 +211,7 @@ export async function createServer(app: App = createApp()) {
   mountPhase8(api, app, wrap, requirePerm, requireUser);
   mountPhase9(api, app, wrap, requirePerm);
   mountPhase10(api, app, wrap, requirePerm, requireUser);
+  mountPhase11(api, app, wrap, requirePerm, requireUser);
   const pub = express.Router();
   mountPublic(pub, app, wrap, (token, ip) => verifyTurnstile(config.env, token, ip));
   mountPublicGiving(pub, app, wrap);

@@ -45,6 +45,9 @@ import { EngagementService } from './modules/engagement.js';
 import { CommerceService } from './modules/commerce.js';
 import { GivingService } from './modules/giving.js';
 import { AlumniService } from './modules/alumni.js';
+import { FacilitiesService } from './modules/facilities.js';
+import { GovernanceService } from './modules/governance.js';
+import { ComplianceService } from './modules/compliance.js';
 import { PlatformService } from './modules/platform.js';
 
 export interface App {
@@ -53,7 +56,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; platform: PlatformService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; facilities: FacilitiesService; governance: GovernanceService; compliance: ComplianceService; platform: PlatformService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -119,6 +122,9 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const commerce = new CommerceService(db, outbox, notifications, numbering, accounting, fees, settings);
   const giving = new GivingService(db, outbox, notifications, accounting, fees, academic, documents);
   const alumni = new AlumniService(db, outbox, notifications, academic);
+  const facilities = new FacilitiesService(db, outbox, notifications, tasks, accounting, adapters);
+  const governance = new GovernanceService(db, outbox, notifications, tasks, config.appKey);
+  const compliance = new ComplianceService(db, outbox, notifications, academic, files, hr, adapters);
   const platform = new PlatformService(db, outbox, notifications, settings, adapters, config.rootDir, log);
 
   const installer = new InstallerService(db, config, adapters, {
@@ -171,13 +177,16 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(welfare.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(lms.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(engagement.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(facilities.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(governance.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(compliance.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
   registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, platform,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, facilities, governance, compliance, platform,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };

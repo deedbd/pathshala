@@ -21,7 +21,8 @@ export class NumberingService {
       if (bumped.affectedRows !== 1) {
         // no sequence yet: create it already used once (next_value 2) and take number 1
         try {
-          await tx.insert('number_sequences', { id: ulid(), school_id: schoolId, key_name: key, prefix: opts.prefix ?? '', next_value: 2, padding: opts.padding ?? 6, reset_yearly: !!opts.resetYearly, year_tag: opts.resetYearly ? year : null });
+          // fenced with a savepoint: losing this race must not abort the transaction around it
+          await tx.attempt(() => tx.insert('number_sequences', { id: ulid(), school_id: schoolId, key_name: key, prefix: opts.prefix ?? '', next_value: 2, padding: opts.padding ?? 6, reset_yearly: !!opts.resetYearly, year_tag: opts.resetYearly ? year : null }));
           return format(opts.prefix ?? '', 1, opts.padding ?? 6, opts.resetYearly ? year : null);
         } catch (e) { lastError = e; continue; }        // another writer created it first — bump it on the next pass
       }

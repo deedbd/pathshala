@@ -110,6 +110,21 @@
     "rows": "N8"
   },
   {
+    "job_key": "facilities.sla_watch",
+    "cron_expr": "0 9 * * *",
+    "rows": "L6"
+  },
+  {
+    "job_key": "governance.resolution_watch",
+    "cron_expr": "0 9 * * *",
+    "rows": "O1"
+  },
+  {
+    "job_key": "compliance.review",
+    "cron_expr": "0 4 1 * *",
+    "rows": "O2"
+  },
+  {
     "job_key": "comms.publish_scheduled_notices",
     "cron_expr": "*/10 * * * *",
     "rows": "M2"

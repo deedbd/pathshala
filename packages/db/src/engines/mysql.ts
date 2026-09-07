@@ -12,6 +12,8 @@ export function openMysql(cfg: DbConfig): Db {
 
 type Exec = Pool | PoolConnection;
 
+let spCounter = 0;
+
 function makeDb(pool: Pool, conn: PoolConnection | null): Db {
   const ex: Exec = conn ?? pool;
   const query = async <T = Row>(sql: string, params: unknown[] = []) => {
@@ -36,6 +38,13 @@ function makeDb(pool: Pool, conn: PoolConnection | null): Db {
         catch (e) { if (opts?.ignore?.(e as Error, st)) { skipped++; continue; } throw new Error(`${(e as Error).message}\n  in: ${st.slice(0, 200)}`); }
       }
       return { ran, skipped };
+    },
+    async attempt(fn) {
+      if (!conn) return fn();
+      const name = `sp_${(spCounter = (spCounter + 1) % 1_000_000)}`;
+      await conn.query(`SAVEPOINT ${name}`);
+      try { const r = await fn(); await conn.query(`RELEASE SAVEPOINT ${name}`); return r; }
+      catch (e) { await conn.query(`ROLLBACK TO SAVEPOINT ${name}`); throw e; }
     },
     async transaction(fn) {
       if (conn) return fn(db);

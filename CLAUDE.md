@@ -52,6 +52,8 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Confidential text (counselling notes, safeguarding cases) is encrypted with `encryptSecret` and only ever decrypted by the service that owns it, for the person who owns the record. List endpoints strip the ciphertext, and the alert that a case exists never carries what is in it.
 - Never read a count on `this.db` to build a number while inserting inside a transaction: that read runs on a different connection and cannot see the rows the transaction is writing (and under MySQL's REPEATABLE READ it cannot see other connections' recent commits either). Document numbers come from `NumberingService`, which takes the transaction.
 - A service called from inside another module's transaction must take that transaction, not start its own: on SQLite a second `db.transaction()` on the one connection throws "cannot start a transaction within a transaction", and on MySQL it silently runs on another connection that cannot see the rows still being written. The staff import found both — `HrService.setStructure` now takes an optional `tx`, as `createStudent` and `createStaff` already did.
+- Postgres aborts the whole transaction on the first failed statement, so code that *expects* a statement to fail sometimes — a race to insert the same unique row — must fence it: `tx.attempt(fn)` wraps it in a savepoint on all three engines and is a plain call outside a transaction. `NumberingService` creating a sequence is the case that found this, as "current transaction is aborted, commands ignored" from an unrelated statement two calls later.
+- A test at the repo root can only import what the **root** `package.json` declares: pnpm's layout does not hoist a workspace package's dependencies to the root `node_modules`. `xlsx` is there for that reason. It resolved locally and not in CI, which is exactly the shape of failure to look for when a suite dies in its `before` hook with no per-test error.
 - An automation that fans out from an event must be idempotent and must check its own preconditions: the relay delivers at least once, and several events of the same kind can arrive in a row (three batches of marks → three merit runs). Ranking waits for the last mark, and an applicant already holding an offer is never re-ranked.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
@@ -59,8 +61,12 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 `docs/ROADMAP-5Y.md` year 2 is being built on top of the nine phases. Shipped so far: `commerce`
 (wallet, canteen and shop), `giving` (scholarship funds, donors, appeals), `alumni` (directory,
 mentorship, job board) and the co-curricular half of `engagement` (competitions, event programmes and
-volunteers). Their API is `apps/server/src/routes/phase10.ts`, the console page is
-`apps/web/app/routes/community.tsx`, and `tests/year2a.test.mjs` is their exit criterion.
+volunteers). Also `facilities` (room bookings, work orders with an SLA, cleaning, meters, drills), `governance`
+(committees, minutes whose resolutions become tasks, policies with acknowledgements, secret-ballot
+elections) and `compliance` (BANBEIS census, stipends, consent, data requests, retention review).
+Their API is `apps/server/src/routes/phase10.ts` and `phase11.ts`, the console pages are
+`apps/web/app/routes/community.tsx` and `institution.tsx`, and `tests/year2a.test.mjs` and
+`tests/year2b.test.mjs` are their exit criteria.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:

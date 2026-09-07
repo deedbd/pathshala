@@ -97,6 +97,13 @@ export interface EventPayloads {
   'donation.received': { donationId: string; donorId: string; amount: number; kind: string; campaignId: string };
   'alumni.graduated': { batchId: string; graduationYear: number; classId: string; alumni: number };
   'competition.results_recorded': { competitionId: string; name: string; results: number };
+  'work_order.raised': { workOrderId: string; title: string; category: string; priority: string; dueAt: string };
+  'work_order.done': { workOrderId: string; cost: number; expenseId: string };
+  'meeting.minuted': { meetingId: string; resolutions: number };
+  'policy.published': { policyId: string; title: string; version: number };
+  'election.closed': { electionId: string; title: string; winners: string; votes: number };
+  'govt_report.generated': { reportId: string; reportType: string; period: string };
+  'data_request.made': { requestId: string; userId: string; kind: string };
   'payroll.calculated': { runId: string; month: string; staff: number; gross: number; net: number; approvalStatus: string };
   'payroll.approved': { runId: string; month: string };
   'payroll.paid': { runId: string; amount: number; journalEntryId: string };
@@ -115,7 +122,7 @@ export const EVENT_TYPES = Object.freeze([
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
   'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'incident.reported', 'course.published', 'assignment.published', 'event.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
-  'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'cheque.received', 'cheque.cleared', 'cheque.bounced', 'instalment_plan.created', 'wallet.topped_up', 'pos.sold', 'shop.ordered', 'scholarship.awarded', 'donation.received', 'alumni.graduated', 'competition.results_recorded', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping',
+  'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'cheque.received', 'cheque.cleared', 'cheque.bounced', 'instalment_plan.created', 'wallet.topped_up', 'pos.sold', 'shop.ordered', 'scholarship.awarded', 'donation.received', 'alumni.graduated', 'competition.results_recorded', 'work_order.raised', 'work_order.done', 'meeting.minuted', 'policy.published', 'election.closed', 'govt_report.generated', 'data_request.made', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 
 export function isEventType(v: string): v is EventType {

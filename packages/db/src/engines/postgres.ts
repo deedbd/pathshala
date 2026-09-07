@@ -17,6 +17,8 @@ export function openPostgres(cfg: DbConfig): Db {
   return makeDb(pool, null);
 }
 
+let spCounter = 0;
+
 function makeDb(pool: pg.Pool, client: pg.PoolClient | null): Db {
   const ex = client ?? pool;
   // Without parameters use the simple protocol so multi-statement strings (e.g. "DROP SCHEMA …; CREATE SCHEMA …") work.
@@ -43,6 +45,13 @@ function makeDb(pool: pg.Pool, client: pg.PoolClient | null): Db {
         catch (e) { if (opts?.ignore?.(e as Error, st)) { skipped++; continue; } throw new Error(`${(e as Error).message}\n  in: ${st.slice(0, 200)}`); }
       }
       return { ran, skipped };
+    },
+    async attempt(fn) {
+      if (!client) return fn();
+      const name = `sp_${(spCounter = (spCounter + 1) % 1_000_000)}`;
+      await client.query(`SAVEPOINT ${name}`);
+      try { const r = await fn(); await client.query(`RELEASE SAVEPOINT ${name}`); return r; }
+      catch (e) { await client.query(`ROLLBACK TO SAVEPOINT ${name}`); throw e; }
     },
     async transaction(fn) {
       if (client) return fn(db);

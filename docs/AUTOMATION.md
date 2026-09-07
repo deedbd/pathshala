@@ -150,6 +150,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | K4 | ⏰ nightly after roll call | absent in night roll call, no outpass | Alert warden + guardian | `notifications` |
 | K5 | ⚙️ complaint logged | category maintenance | Task to maintenance; SLA 48h | `tasks` |
 | K6 | ⏰ 1st of the month 03:00 | per-meal billing is on | Bill last month's meals at the rate each was taken at; a student already billed is skipped | `meal_records`, `invoices` |
+| L6 | ⏰ daily 09:00 | work order past the deadline its priority set | Chase the assignee and the office; overdue safety drills are named too | `work_orders`, `safety_drills` |
+| O1 | ⏰ daily 09:00 | a resolution's due date has passed | Remind its owner (or the office if it has none); an election past its closing time counts itself | `resolutions`, `elections` |
+| O2 | ⏰ monthly | records older than a retention rule, or a return generated a fortnight ago and still unsent | Report what retention would touch — never delete — and name the unsent returns | `retention_policies`, `govt_reports` |
 
 ## 12. Inventory & assets
 
@@ -217,6 +220,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `hostel.mess_billing` | `0 3 1 * *` | K6 |
 | `inventory.maintenance_due` | `0 8 * * *` | L4 |
 | `frontoffice.sla_escalation` | `0 * * * *` | N8 |
+| `facilities.sla_watch` | `0 9 * * *` | L6 |
+| `governance.resolution_watch` | `0 9 * * *` | O1 |
+| `compliance.review` | `0 4 1 * *` | O2 |
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |
 | `comms.provider_balance` | `0 * * * *` | M3 |
 | `comms.weekly_digest` | `0 18 * * 6` | M5 |

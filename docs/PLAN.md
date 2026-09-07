@@ -147,6 +147,44 @@ exit criterion on all three engines.
 > Not yet: sports fixtures and league tables.
 
 
+### Facilities and maintenance — shipped
+
+> **Status (7 Sep 2026): implemented.** `facilities`: room bookings that refuse an overlap and lose to the
+> timetable, because a class has nowhere else to go; work orders whose deadline comes from their priority
+> (4 hours urgent, 24 high, 72 normal, a week low), are assigned, and post their cost as an expense in the
+> same books as everything else; cleaning schedules that say how many hours late they are; meter readings
+> that must count up — a lower one needs the meter-replaced flag rather than quietly averaging into a
+> chart — with the bill booked against utilities; safety drills tracked per kind against the school's own
+> interval. One daily watch chases what is past its deadline and names the drills nobody has held.
+> Console page: institution.
+> Not yet: asset depreciation schedules and a QR code on each room for reporting from a phone.
+
+### Governance — shipped
+
+> **Status (7 Sep 2026): implemented.** `governance`: committees whose members' terms end themselves;
+> meetings with an agenda, minutes, and resolutions that become tasks with an owner and a date — the
+> difference between minutes that are filed and minutes that are acted on — chased daily while they are
+> open; policies where a new version is a new row (what somebody acknowledged must not change under them)
+> and the status names who has not read it rather than reporting a percentage; and student-council
+> elections with a secret ballot: the vote row keeps an HMAC of the voter's id keyed to that election, so
+> the school can prove nobody voted twice and can never work out who anyone voted for. An election past
+> its closing time counts itself. Console page: institution.
+> Not yet: voting from the student PWA, and minutes circulated for approval before they are final.
+
+### Compliance and government reporting — shipped
+
+> **Status (7 Sep 2026): implemented.** `compliance`: the BANBEIS census built from the register on the
+> day it is asked for — pupils by class and sex, staff by category, rooms and library stock, MPO-listed
+> teachers — kept with the numbers it was built from and frozen once submitted; the stipend list an
+> authority asks for, with disbursements recorded per period so arrears are visible; the MPO salary sheet
+> (Phase 5) filed as a return; consent recorded as an append-only history, because the school must be
+> able to show what it was allowed to do at the time it did it; a person's right to see what is held
+> about them, produced as one JSON bundle, while a deletion request goes to a person rather than being
+> carried out silently; and retention rules that report what is past its date and delete nothing.
+> `tests/year2b.test.mjs` covers all three modules on SQLite, MariaDB 11.4 and Postgres 16.
+> Not yet: board registration and result import (needs a board API), and automatic archival.
+
+
 ---
 
 ## Milestones
