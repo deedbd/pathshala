@@ -39,6 +39,9 @@ export { TransportService, type RouteInput, type GpsPacket } from './modules/tra
 export { HostelService } from './modules/hostel.js';
 export { InventoryService, type PoLine } from './modules/inventory.js';
 export { FrontOfficeService } from './modules/frontoffice.js';
+export { WelfareService } from './modules/welfare.js';
+export { LmsService, type CourseInput, type AssignmentInput } from './modules/lms.js';
+export { EngagementService, type SurveyInput } from './modules/engagement.js';
 export { DocumentService, type IssueInput, type DocType } from './modules/documents.js';
 export { AdmissionsService, type CampaignInput, type ApplicationInput } from './modules/admissions.js';
 export { HrService, type StructureInput, type LoanInput, type ExitInput, type TaxSlab } from './modules/hr.js';

@@ -39,6 +39,9 @@ import { TransportService } from './modules/transport.js';
 import { HostelService } from './modules/hostel.js';
 import { InventoryService } from './modules/inventory.js';
 import { FrontOfficeService } from './modules/frontoffice.js';
+import { WelfareService } from './modules/welfare.js';
+import { LmsService } from './modules/lms.js';
+import { EngagementService } from './modules/engagement.js';
 
 export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
@@ -46,7 +49,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -106,6 +109,9 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const hostel = new HostelService(db, outbox, notifications, tasks, approvals);
   const inventory = new InventoryService(db, outbox, notifications, numbering, tasks, approvals, accounting);
   const frontOffice = new FrontOfficeService(db, outbox, notifications, numbering, tasks);
+  const welfare = new WelfareService(db, outbox, notifications, tasks, approvals, inventory, config.appKey);
+  const lms = new LmsService(db, outbox, notifications, academic);
+  const engagement = new EngagementService(db, outbox, notifications);
 
   const installer = new InstallerService(db, config, adapters, {
     auth, outbox, notifications, relay, log,
@@ -129,6 +135,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
       await documents.ensureTemplates(schoolId);
       await library.ensureCategories(schoolId);
       await inventory.ensureSetup(schoolId);
+      await welfare.ensureCategories(schoolId);
     },
   });
 
@@ -152,12 +159,15 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(hostel.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(inventory.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(frontOffice.jobs())) adapters.scheduler.register(key, fn);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory });
+  for (const [key, fn] of Object.entries(welfare.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(lms.jobs())) adapters.scheduler.register(key, fn);
+  for (const [key, fn] of Object.entries(engagement.jobs())) adapters.scheduler.register(key, fn);
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -184,7 +194,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -261,6 +271,11 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
   h.on('approval.decided', 'inventory-approvals', async e => {
     if (e.payload.decision === 'rejected') return;
     if (e.payload.entityType === 'inventory.issue_request') await d.inventory.issueApproved(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`issue request: ${(err as Error).message}`));
+  });
+  // an approved disciplinary action is carried out (guardian told, incident closed)
+  h.on('approval.decided', 'welfare-approvals', async e => {
+    if (e.payload.decision === 'rejected') return;
+    if (e.payload.entityType === 'welfare.disciplinary_action') await d.welfare.approveAction(e.schoolId, e.payload.entityId as string).catch(err => d.log.error(`disciplinary action: ${(err as Error).message}`));
   });
   h.on('test.ping', 'log', async e => { d.log.info(`test.ping from ${e.schoolId}: ${e.payload.note ?? ''}`); });
 }

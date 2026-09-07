@@ -58,6 +58,10 @@ export interface EventPayloads {
   'hostel.allocated': { allocationId: string; studentId: string; bedId: string; monthlyFee: number };
   'outpass.applied': { outpassId: string; studentId: string; expectedReturn: string };
   'po.received': { poId: string; grnId: string; value: number; assets: number };
+  'incident.reported': { incidentId: string; studentId: string; points: number; severity: string };
+  'course.published': { courseId: string; title: string; enrolled: number };
+  'assignment.published': { assignmentId: string; sectionId: string; title: string; dueAt: string };
+  'event.created': { eventId: string; title: string; startsAt: string };
   'complaint.created': { complaintId: string; ticketNo: string; category: string; priority: string; slaDueAt: string };
   'document.requested': { requestId: string; docType: string; eligible: boolean; blockers: string[] };
   'document.issued': { documentId: string; docType: string; documentNo: string; verificationCode: string };
@@ -99,7 +103,7 @@ export const EVENT_TYPES = Object.freeze([
   'school.created', 'user.created', 'user.invited', 'user.logged_in', 'user.locked', 'settings.changed', 'file.uploaded', 'installer.completed',
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
-  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
+  'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'incident.reported', 'course.published', 'assignment.published', 'event.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected',
   'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping',
 ] as const satisfies readonly EventType[]);
 
