@@ -62,6 +62,7 @@ const LINES = {
   again: { bn: 'আবার মেনু শুনতে ০ চাপুন।', en: 'Press 0 to hear the menu again.' },
   // A number we do not know is told the truth and nothing else: no names, no numbers, no questions.
   notOnFile: { bn: 'এই নম্বরটি আমাদের খাতায় নেই। অনুগ্রহ করে স্কুল অফিসে যোগাযোগ করুন। ধন্যবাদ।', en: 'We do not have this number on our records. Please contact the school office. Thank you.' },
+  moreChildren: { bn: (n: string) => `আরও ${n} জন সন্তান আছে; তাদের কথা জানতে অফিসে ফোন করুন।`, en: (n: string) => `There are ${n} more children on this number; please ring the office for them.` },
   noChildren: { bn: 'এই নম্বরে এখন আমাদের কোনো শিক্ষার্থী নেই। অনুগ্রহ করে স্কুল অফিসে যোগাযোগ করুন। ধন্যবাদ।', en: 'No student is on this number now. Please contact the school office. Thank you.' },
   busy: { bn: 'এখন লাইন ব্যস্ত। অনুগ্রহ করে কিছুক্ষণ পরে আবার ফোন করুন।', en: 'The line is busy. Please call again in a few minutes.' },
   callback: { bn: 'ঠিক আছে। অফিস থেকে আপনাকে ফোন করা হবে। ধন্যবাদ।', en: 'Thank you. The office will call you back.' },
@@ -102,6 +103,8 @@ const MAX_MISSES = 3;
 /** Per caller number, per process. A flood from one number must not become a flood of queries. */
 const STEPS_PER_WINDOW = 40;
 const WINDOW_MS = 5 * 60_000;
+/** One callback per number per hour: the office rings back once, however many times the line is asked. */
+const CALLBACK_WINDOW_MS = 60 * 60_000;
 
 /**
  * The voice line. A guardian who cannot read gets nothing out of an SMS, a portal or a PDF — they
@@ -145,10 +148,13 @@ export class IvrService {
 
   // ---------- the gateway's credentials ----------
   /**
-   * The shared secret the gateway sends with every step. `IVR_SECRET` in `.env` covers the usual
-   * one-school cPanel install; a per-school setting covers a host serving several schools. It is
-   * stored encrypted (as `{ enc }`, valid JSON on every engine) because settings are readable by
-   * anyone who can read the settings table.
+   * The shared secret the gateway sends with every step. The school's own setting is the answer
+   * wherever it has one; `IVR_SECRET` in `.env` only stands in for a school that has never set one,
+   * which is the single-school cPanel install the env var was written for. The other order lets one
+   * gateway operator's env value answer for every tenant on the host — including schools that never
+   * turned the voice line on — and makes the console's "saved" a lie, because the secret it just
+   * stored is then refused at the door. It is stored encrypted (as `{ enc }`, valid JSON on every
+   * engine) because settings are readable by anyone who can read the settings table.
    */
   async setSecret(schoolId: string, secret: string) {
     if (secret.length < 12) throw badRequest('use a secret of at least 12 characters');
@@ -156,11 +162,11 @@ export class IvrService {
     return { configured: true };
   }
   private async secretFor(schoolId: string): Promise<string | null> {
-    const fromEnv = this.env.IVR_SECRET?.trim();
-    if (fromEnv) return fromEnv;
     const stored = await this.settings.get<{ enc?: string }>(schoolId, 'ivr.webhook_secret');
-    if (!stored?.enc) return null;
-    try { return decryptSecret(stored.enc, this.appKey); } catch { return null; }
+    if (stored?.enc) {
+      try { return decryptSecret(stored.enc, this.appKey); } catch { return null; }
+    }
+    return this.env.IVR_SECRET?.trim() || null;
   }
   /**
    * Refuses anything that does not carry the secret, in constant time. An IVR with no secret
@@ -190,7 +196,7 @@ export class IvrService {
 
     // the flood guard speaks rather than erroring: the caller must hear something, and there is
     // nothing here worth brute-forcing anyway — the secret was already checked at the door
-    if (this.throttled(phone)) return reply(LINES.busy[locale], '', true);
+    if (this.throttled(phone) || this.throttled(`school:${schoolId}`)) return reply(LINES.busy[locale], '', true);
 
     const { guardianId, guardianName, children } = await this.people.childrenOfPhone(schoolId, phone);
     if (!guardianId || !children.length) {
@@ -199,8 +205,10 @@ export class IvrService {
       await this.record(schoolId, callId, phone, guardianName, guardianId ? 'IVR (no active student)' : 'IVR (number not on file)', `[-] ${say}`, { known: !!guardianId, children: 0 });
       return reply(say, '', true);
     }
-    // nine is as many as anyone can choose from one keypad
+    // nine is as many as anyone can choose from one keypad; a family with more is told to ring the
+    // office rather than left wondering where the tenth child went
     const chooseFrom = children.slice(0, 9);
+    const moreChildren = children.length - chooseFrom.length;
     const walked = this.walk(keys, chooseFrom);
     await this.record(schoolId, callId, phone, guardianName, this.purpose(walked.visited), null, { known: true, children: children.length });
 
@@ -211,7 +219,8 @@ export class IvrService {
     }
     if (walked.stage === 'child') {
       const say = [keys.length ? '' : LINES.welcome[locale](schoolName), walked.misses ? LINES.notCaught[locale] : '', LINES.whichChild[locale],
-        ...chooseFrom.map((c, i) => LINES.childKey[locale](this.childName(c, locale), speakNumber(i + 1, locale)))].filter(Boolean).join(' ');
+        ...chooseFrom.map((c, i) => LINES.childKey[locale](this.childName(c, locale), speakNumber(i + 1, locale))),
+        moreChildren > 0 ? LINES.moreChildren[locale](speakNumber(moreChildren, locale)) : ''].filter(Boolean).join(' ');
       return reply(say, chooseFrom.map((_, i) => String(i + 1)).join(''), false);
     }
     if (walked.stage === 'menu' || !walked.topic) {
@@ -222,7 +231,9 @@ export class IvrService {
 
     const child = walked.child!;
     const answer = await this.answer(school, locale, child, walked.topic, { callId, phone, guardianId, guardianName });
-    await this.record(schoolId, callId, phone, guardianName, null, `[${walked.topic.key}] ${answer.say}`, null);
+    // what was asked, never what was answered: the register is read with `frontoffice.view`, and a
+    // clerk who is refused the fees page must not read a child's balance out of a call note
+    await this.record(schoolId, callId, phone, guardianName, null, `[${walked.topic.key}] ${walked.topic.label}`, null);
     if (answer.end) return reply(answer.say, '', true);
     // after an answer the caller may press any menu key straight away, or 0 to hear the menu again
     return reply(`${answer.say} ${LINES.again[locale]}`, `0${MENU.map(m => m.key).join('')}`, false);
@@ -281,7 +292,7 @@ export class IvrService {
       return { say: due > 0 ? LINES.dues[locale](name, speakNumber(Math.round(due), locale), billsPhrase) : LINES.noDues[locale](name), end: false };
     }
     if (item.topic === 'exam') {
-      const exam = await this.ai.nextExam(schoolId);
+      const exam = await this.ai.nextExam(schoolId, this.schoolDate(school));
       return { say: exam ? LINES.nextExam[locale](String(exam.name), speakDate(String(exam.startDate), locale)) : LINES.noExam[locale], end: false };
     }
     if (item.topic === 'result') {
@@ -289,7 +300,11 @@ export class IvrService {
       return { say: last ? LINES.result[locale](name, last.exam, speakNumber(Number(last.gpa).toFixed(2), locale), String(last.grade)) : LINES.noResult[locale](name), end: false };
     }
     // 9: the one thing this call can change. The task is raised by the call register, keyed by the
-    // call id, so a replayed step never asks the office to ring the same guardian twice.
+    // call id, so a replayed step never asks the office to ring the same guardian twice — and the
+    // call id comes from the gateway, so a fresh one per request would raise a fresh task per
+    // request. The number itself is therefore the second key: one callback per family per hour is
+    // as much as any office can act on anyway.
+    if (await this.calledBackRecently(schoolId, call.phone)) return { say: LINES.callback[locale], end: true };
     const followUpAt = nowSql(new Date(Date.now() + 4 * 3600_000));
     const r = await this.frontOffice.recordCall(schoolId, this.callRowId(schoolId, call.callId), {
       direction: 'inbound', phone: call.phone, callerName: call.guardianName, followUpAt, relatedType: 'ivr.call', relatedId: child.id,
@@ -320,6 +335,15 @@ export class IvrService {
    * asked and what they were told. The row id is derived from the gateway's call id, which is what
    * makes every step of the call — and every retry of a step — land on the same line.
    */
+  /** Whether this number already has an open callback from the voice line in the last hour. */
+  private async calledBackRecently(schoolId: string, phone: string) {
+    const since = nowSql(new Date(Date.now() - CALLBACK_WINDOW_MS));
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM call_logs WHERE school_id = ? AND phone = ? AND related_type = 'ivr.call' AND follow_up_at IS NOT NULL AND called_at >= ?`,
+      [schoolId, phone, since]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
   private async record(schoolId: string, callId: string, phone: string, callerName: string, purpose: string | null, note: string | null, first: { known: boolean; children: number } | null) {
     const r = await this.frontOffice.recordCall(schoolId, this.callRowId(schoolId, callId), { direction: 'inbound', phone, callerName: callerName || null, purpose, note, relatedType: 'ivr.call' });
     if (r.created && first) await this.outbox.emitNow({ type: 'ivr.call_received', schoolId, aggregateType: 'frontoffice.call', aggregateId: r.id, payload: { callId, phone, known: first.known, children: first.children } });
@@ -359,11 +383,18 @@ export class IvrService {
     for (let i = 0; i < 26; i++) { out = ALPHABET[Number(h % 32n)] + out; h /= 32n; }
     return out;
   }
-  private throttled(phone: string) {
-    const recent = (this.hits.get(phone) ?? []).filter(t => Date.now() - t < WINDOW_MS);
+  /**
+   * The budget is per caller *and* per school. Keyed on the caller alone it protects the caller and
+   * not the database: every spoofed number arrives with a fresh budget, and a hundred of them write a
+   * hundred register rows and a hundred events that the relay then has to carry — on a host where
+   * `node:sqlite` is synchronous and every one of those blocks somebody's page.
+   */
+  private throttled(key: string) {
+    const budget = key.startsWith('school:') ? STEPS_PER_WINDOW * 25 : STEPS_PER_WINDOW;
+    const recent = (this.hits.get(key) ?? []).filter(t => Date.now() - t < WINDOW_MS);
     recent.push(Date.now());
-    this.hits.set(phone, recent);
+    this.hits.set(key, recent);
     if (this.hits.size > 5000) for (const [k, v] of this.hits) if (!v.some(t => Date.now() - t < WINDOW_MS)) this.hits.delete(k);
-    return recent.length > STEPS_PER_WINDOW;
+    return recent.length > budget;
   }
 }

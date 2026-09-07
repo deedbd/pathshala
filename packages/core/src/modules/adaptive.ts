@@ -1,5 +1,5 @@
 import type { Db, Row } from '@pathshala/db';
-import { nowSql } from '@pathshala/db';
+import { json, nowSql, ulid } from '@pathshala/db';
 import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
@@ -15,6 +15,8 @@ export interface RevisionIndicator {
   lessons: CoverageItem[]; quizzes: CoverageItem[]; materials: CoverageItem[];
 }
 
+/** Where the weekly pass stopped, so the next one starts after it instead of at the top again. */
+const CURSOR_KEY = 'adaptive.weekly_cursor';
 /** A plan longer than this is a reading list, not something a child starts on tonight. */
 const MAX_INDICATORS = 20;
 /** How many indicators go into the message itself. The rest are in the plan when they open it. */
@@ -118,13 +120,16 @@ export class AdaptiveService {
     });
     const body = `${plan.name}: ${lines.join(' · ')}`;
     let sent = 0;
+    // what the service actually wrote, not how many people we meant to write to: an in-app message to
+    // a guardian with no account writes nothing, and counting it hides a family that was never told.
+    // A guardian reached only by phone gets the SMS the rest of the school's family messages use.
     const notify = async (userId: string | null, address?: string | null) => {
       if (!userId && !address) return;
-      await this.notifications.notify({
-        schoolId, userId, address: address ?? null, channels: ['in_app', 'push'], eventKey: 'adaptive.revision_plan',
+      const written = await this.notifications.notify({
+        schoolId, userId, address: address ?? null, channels: userId ? ['in_app', 'push'] : ['sms'], eventKey: 'adaptive.revision_plan',
         title: 'What to revise this week', body, entityType: 'adaptive.revision_plan', entityId: studentId,
       });
-      sent++;
+      sent += Array.isArray(written) ? written.length : 1;
     };
     await notify((await this.db.findOne<{ user_id: string | null }>('students', { id: studentId }))?.user_id ?? null);
     const guardians = await this.db.query<{ user_id: string | null; phone: string }>(
@@ -165,10 +170,12 @@ export class AdaptiveService {
    * The weekly pass. It only considers children somebody has actually rated this term — a plan built
    * from no assessment would be a message saying nothing, sent to every guardian in the school.
    *
-   * The children already told this week are excluded in the query rather than skipped in the loop.
-   * A plain `LIMIT 200` would hand back the same first two hundred every tick, and once they had all
-   * been written to, every later pass would skip all of them and the school's remaining children
-   * would never get a plan at all. Excluding them first makes the window walk forward.
+   * The children already told this week are excluded in the query rather than skipped in the loop,
+   * and the pass remembers where it stopped. Excluding the ones that were written to is not enough on
+   * its own: a child who has met every indicator they were rated on leaves no message behind, stays a
+   * candidate for ever and holds a place in the window — two hundred of them and nobody else in the
+   * school is ever planned for again. The cursor moves whatever the outcome was, and wraps when the
+   * end of the school is reached.
    */
   async runWeekly(schoolId: string, opts: { termId?: string | null; limit?: number } = {}) {
     const term = await this.academic.currentTerm(schoolId);
@@ -176,11 +183,12 @@ export class AdaptiveService {
     const termId = opts.termId ?? String(term!.id);
     const limit = Math.min(MAX_STUDENTS_PER_PASS, Math.max(1, opts.limit ?? MAX_STUDENTS_PER_PASS));
     const since = this.resendCutoff();
+    const cursor = await this.cursor(schoolId);
     const candidates = await this.db.query<{ student_id: string }>(
       `SELECT DISTINCT a.student_id FROM competency_assessments a
-       WHERE a.school_id = ? AND a.term_id = ?
+       WHERE a.school_id = ? AND a.term_id = ? AND a.student_id > ?
          AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.school_id = a.school_id AND n.event_key = 'adaptive.revision_plan' AND n.entity_id = a.student_id AND n.created_at >= ?)
-       LIMIT ${limit}`, [schoolId, termId, since]);
+       ORDER BY a.student_id LIMIT ${limit}`, [schoolId, termId, cursor, since]);
     let planned = 0, sent = 0, skipped = 0;
     for (const c of candidates) {
       const studentId = String(c.student_id);
@@ -190,7 +198,21 @@ export class AdaptiveService {
       const r = await this.push(schoolId, studentId, termId);
       if (r.sent) { planned++; sent += r.sent; } else skipped++;
     }
-    return { planned, sent, skipped, termId, term: String(term?.name ?? ''), considered: candidates.length };
+    // a short pass means the end of the school: start again from the top next week
+    const last = candidates.length ? String(candidates[candidates.length - 1]!.student_id) : '';
+    await this.setCursor(schoolId, candidates.length < limit ? '' : last);
+    return { planned, sent, skipped, termId, term: String(term?.name ?? ''), considered: candidates.length, cursor: candidates.length < limit ? '' : last };
+  }
+
+  /** Where the last weekly pass stopped. An empty string starts again at the first child. */
+  private async cursor(schoolId: string) {
+    const row = await this.db.findOne<Row>('settings', { school_id: schoolId, key_name: CURSOR_KEY });
+    return String(json<string>(row?.value) ?? '');
+  }
+  private async setCursor(schoolId: string, studentId: string) {
+    const row = await this.db.findOne<Row>('settings', { school_id: schoolId, key_name: CURSOR_KEY });
+    if (row) await this.db.update('settings', { value: JSON.stringify(studentId), updated_at: nowSql() }, { id: String(row.id) });
+    else await this.db.insert('settings', { id: ulid(), school_id: schoolId, key_name: CURSOR_KEY, value: JSON.stringify(studentId) });
   }
 
   /**

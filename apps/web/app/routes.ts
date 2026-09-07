@@ -29,6 +29,8 @@ export default [
     route('community', 'routes/community.tsx'),
     route('institution', 'routes/institution.tsx'),
     route('insights', 'routes/insights.tsx'),
+    route('college', 'routes/college.tsx'),
+    route('group', 'routes/group.tsx'),
     route('platform', 'routes/platform.tsx'),
   ]),
   route('teach', 'routes/teach.tsx'),

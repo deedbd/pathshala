@@ -47,6 +47,13 @@ export class CollegeService {
   // ---------- programmes ----------
   async createProgram(schoolId: string, p: ProgramInput & { classIds?: string[] }) {
     if (p.durationTerms != null && p.durationTerms < 1) throw badRequest('a programme runs for at least one term');
+    // a create is a create. Quietly rewriting the programme that already holds this code would move
+    // the per-term ceiling a cohort is registering against and the credits its certificate asks for,
+    // from a form somebody opened to fix a typo in the name.
+    const code = p.code.trim().toUpperCase();
+    if (await this.db.findOne('programs', { school_id: schoolId, code })) {
+      throw new HttpError(409, `a programme with the code ${code} already exists; edit that one instead`, 'duplicate');
+    }
     const id = await this.academic.createProgram(schoolId, p);
     for (const classId of p.classIds ?? []) await this.academic.setClassProgram(schoolId, classId, id);
     return { id, ceiling: this.termCeiling({ total_credits: p.totalCredits, duration_terms: p.durationTerms }) };
@@ -339,7 +346,11 @@ export class CollegeService {
       if (open.length) throw new HttpError(409, 'this student already has a payment plan for this course', 'duplicate');
     }
     if (!feeHeadId) {
-      feeHeadId = await this.fees.ensureHead(schoolId, { name: `Course: ${course.title}`, code: `CRS-${String(course.slug).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 15)}`, kind: 'course' });
+      // the code carries the course id, not the first letters of its slug: "Spoken English Batch A"
+      // and "Spoken English Batch B" agree for fifteen characters, and one fee head between them
+      // would bill the two batches as one and hand a seat in each to whoever paid for either
+      const slug = String(course.slug).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+      feeHeadId = await this.fees.ensureHead(schoolId, { name: `Course: ${course.title}`, code: `CRS-${slug}-${s.courseId.slice(-6).toUpperCase()}`, kind: 'course' });
       await this.lms.setCourseFeeHead(schoolId, s.courseId, feeHeadId);
     }
     const plan = await this.fees.createInstalmentPlan(schoolId, {
@@ -393,18 +404,29 @@ export class CollegeService {
     if (!course) throw notFound('course');
     const feeHeadId = (course.fee_head_id as string) ?? null;
     if (!feeHeadId) return { courseId, studentId, billed: 0, unbilled: 0, outstanding: 0 };
-    // EXISTS rather than a join: an invoice carrying two lines of the same head would otherwise have
-    // its balance added twice and the student would be told they owe double
-    const billed = await this.db.query<{ due: number }>(`SELECT COALESCE(SUM(i.balance), 0) AS due FROM invoices i
-      WHERE i.school_id = ? AND i.student_id = ? AND i.status <> 'cancelled'
-        AND EXISTS (SELECT 1 FROM invoice_items it WHERE it.invoice_id = i.id AND it.fee_head_id = ?)`, [schoolId, studentId, feeHeadId]);
+    // Only this course's share of each invoice. A monthly bill carrying the course fee beside tuition
+    // has one balance, and charging the whole of it to the course tells a guardian they owe eight
+    // thousand for a three-thousand-taka batch — and holds the certificate over the tuition.
+    // A payment is allocated to the invoice rather than to its lines, so the share is proportional:
+    // the head's own lines over the invoice total, applied to what is left unpaid.
+    const touching = await this.db.query<{ balance: number; total: number; head_amount: number }>(
+      `SELECT i.balance, i.total, (SELECT COALESCE(SUM(it.amount), 0) FROM invoice_items it WHERE it.invoice_id = i.id AND it.fee_head_id = ?) AS head_amount
+       FROM invoices i WHERE i.school_id = ? AND i.student_id = ? AND i.status <> 'cancelled'
+         AND EXISTS (SELECT 1 FROM invoice_items it WHERE it.invoice_id = i.id AND it.fee_head_id = ?)`,
+      [feeHeadId, schoolId, studentId, feeHeadId]);
+    let billedDue = 0;
+    for (const inv of touching) {
+      const total = Number(inv.total ?? 0), balance = Number(inv.balance ?? 0), head = Number(inv.head_amount ?? 0);
+      if (balance <= 0) continue;
+      billedDue = round(billedDue + (total > 0 ? Math.min(balance, round((balance * Math.min(head, total)) / total)) : balance));
+    }
     const plans = await this.db.findMany<Row>('instalment_plans', { school_id: schoolId, student_id: studentId, fee_head_id: feeHeadId });
     let unbilled = 0;
     for (const p of plans) {
       if (p.status === 'cancelled') continue;
       for (const i of json<{ due: string; amount: number; invoiceId: string | null }[]>(p.instalments) ?? []) if (!i.invoiceId) unbilled = round(unbilled + Number(i.amount));
     }
-    return { courseId, studentId, billed: round(Number(billed[0]?.due ?? 0)), unbilled, outstanding: round(Number(billed[0]?.due ?? 0) + unbilled) };
+    return { courseId, studentId, billed: round(billedDue), unbilled, outstanding: round(billedDue + unbilled) };
   }
 
   /** The certificate for a batch that met in a room. It waits for the last instalment: a certificate handed over with money owing never gets that money. */
@@ -462,8 +484,10 @@ export class CollegeService {
        * R1: a week into every semester, the students who have registered for barely anything are
        * chased. A week is the whole rule — any earlier and half of them simply have not got round to
        * it, any later and the timetable has already been built around the wrong numbers. Firing on
-       * exactly one day is also what keeps a nightly job from sending the same family the same message
-       * twenty times, without needing a column to remember that it did.
+       * exactly one day narrows it to one date; the guard against sending the same family the same
+       * message twice is on what was actually delivered, because the scheduler is at-least-once and a
+       * process recycled mid-job (which is the normal end of a Passenger app on shared hosting) leaves
+       * `next_run_at` in the past and runs the whole job again.
        */
       'college.registration_watch': async ({ schoolId, payload }) => {
         const today = String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10);
@@ -480,6 +504,7 @@ export class CollegeService {
             const ceiling = this.termCeiling(s);
             // half a load is the line: below it the student either loses the semester or has simply forgotten to register
             if (ceiling == null || Number(s.credits) >= round(ceiling / 2)) continue;
+            if (await this.chasedToday(schoolId, String(s.student_id), today)) continue;
             await this.tellTheFamily(schoolId, String(s.student_id), 'college.registration_short',
               `${term.name} registration`, `${s.first_name} has registered for ${round(Number(s.credits))} of ${ceiling} credits in ${term.name}. ${s.program_name} needs a full load — please see the registrar this week.`);
             chased++;
@@ -488,6 +513,14 @@ export class CollegeService {
         return { terms: due.length, chased };
       },
     };
+  }
+
+  /** Whether this family has already been chased about registration today, whichever run did it. */
+  private async chasedToday(schoolId: string, studentId: string, day: string) {
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = 'college.registration_short' AND entity_id = ? AND created_at >= ?`,
+      [schoolId, studentId, `${day} 00:00:00`]);
+    return Number(rows[0]?.n ?? 0) > 0;
   }
 
   private async tellTheFamily(schoolId: string, studentId: string, eventKey: string, title: string, body: string) {

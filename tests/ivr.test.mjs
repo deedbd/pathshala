@@ -83,7 +83,9 @@ describe('year 5: voice-first guardian interactions', () => {
 
     assert.equal((await call(FATHER, '', { secret: 'wrong-secret-entirely' })).status, 403);
     assert.equal((await call(FATHER, '', { secret: '' })).status, 403);
-    assert.equal((await call(FATHER, '', { school: 'no-such-school' })).status, 404);
+    // an unknown school answers exactly as a wrong secret does: 404 here would tell anyone who
+    // asked which schools this host serves, before anything had been authenticated
+    assert.equal((await call(FATHER, '', { school: 'no-such-school' })).status, 403);
     assert.equal((await call(FATHER, '')).status, 200);
   });
 
@@ -154,7 +156,11 @@ describe('year 5: voice-first guardian interactions', () => {
     const noExam = (await call(FATHER, '13')).body;
     assert.match(noExam.say, /পরীক্ষার তারিখ দেওয়া হয়নি/);
 
-    await app.assessment.createExam(schoolId, { name: 'অর্ধবার্ষিক', startDate: day(20), endDate: day(24) });
+    // a draft schedule has been sent to nobody, so the line does not read it out either
+    const examId = (await app.assessment.createExam(schoolId, { name: 'অর্ধবার্ষিক', startDate: day(20), endDate: day(24) })).id;
+    const draft = (await call(FATHER, '13')).body;
+    assert.match(draft.say, /পরীক্ষার তারিখ দেওয়া হয়নি/, 'an exam still in draft is not announced');
+    await app.db.update('exams', { status: 'scheduled' }, { id: examId });
     const exam = (await call(FATHER, '13')).body;
     assert.match(exam.say, /অর্ধবার্ষিক/);
     const d = day(20).split('-').map(Number);
@@ -200,19 +206,25 @@ describe('year 5: voice-first guardian interactions', () => {
     assert.ok(events.some(e => String(e.event_type) === 'ivr.call_received'));
   });
 
-  test('one call is one line in the register, with what was asked and what was answered', async () => {
+  test('one call is one line in the register, saying what was asked and never what was answered', async () => {
     const callId = 'CALL-register-01';
     await call(FATHER, '', { callId });
     await call(FATHER, '1', { callId });
     await call(FATHER, '11', { callId });
     await call(FATHER, '112', { callId });
-    const rows = (await api('/ivr/calls')).filter(c => String(c.notes ?? '').includes('রহিম'));
+    const rows = await api('/ivr/calls');
     const mine = rows.filter(c => String(c.purpose ?? '').includes('attendance') && String(c.purpose).includes('fees due'));
     assert.equal(mine.length >= 1, true, 'the line says what the caller asked for');
     const row = mine[0];
     assert.equal(String(row.direction), 'inbound');
     assert.equal(String(row.phone), FATHER);
     assert.match(String(row.caller_name), /Abdul Karim/);
+    // the register is read with frontoffice.view; a clerk refused the fees page must not read a
+    // child's balance out of a call note, so the note says what was asked and not what was said
+    const notes = String(row.notes ?? '');
+    assert.match(notes, /fees due/, 'the note says which key was pressed');
+    assert.equal(notes.includes('১৫০০'), false, 'and never the figure the caller was told');
+    assert.equal(notes.includes('রহিম'), false, 'nor the answer it was said in');
     assert.match(String(row.notes), /\[1\]/);
     assert.match(String(row.notes), /\[2\]/);
     // four requests, one row

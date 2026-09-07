@@ -134,7 +134,8 @@ export class FrontOfficeService {
   async calls(schoolId: string, limit = 200, relatedType?: string) {
     const where: Row = { school_id: schoolId };
     if (relatedType) where.related_type = relatedType;
-    return this.db.findMany<Row>('call_logs', where, { orderBy: 'called_at DESC', limit });
+    // second-precision timestamps on every engine, and the voice line writes several rows a second
+    return this.db.findMany<Row>('call_logs', where, { orderBy: 'called_at DESC, id DESC', limit });
   }
   async logPost(schoolId: string, p: { direction: 'dispatch' | 'receive'; referenceNo?: string | null; fromParty?: string | null; toParty?: string | null; subject?: string | null; recordDate?: string; fileId?: string | null; loggedBy?: string | null }) {
     const id = ulid();

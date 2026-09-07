@@ -21,6 +21,8 @@ export interface UnitCoverage { unitId: string; unitTitle: string | null; lesson
 const WATCHED_ENOUGH_PCT = 85;
 /** The most seconds one heartbeat may add to a lesson. See `watch`. */
 const MAX_BEAT_SECONDS = 180;
+/** A beat may run a few seconds ahead of the clock: the request took time, and no two clocks agree. */
+const BEAT_SLACK_SECONDS = 10;
 /** Similarity is measured over overlapping runs of this many words. */
 const SHINGLE_WORDS = 5;
 /** Below this many words an answer is not compared at all — see `similarityReport`. */
@@ -123,9 +125,14 @@ export class LmsService {
     const done = Number((await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM lesson_progress p JOIN lessons l ON l.id = p.lesson_id JOIN course_modules m ON m.id = l.module_id WHERE m.course_id = ? AND p.student_id = ? AND p.status = 'completed'`, [courseId, p.studentId]))[0]?.n ?? 0);
     const pct = total ? round((done * 100) / total) : 0;
     await this.db.execute(`UPDATE course_enrollments SET progress_pct = ?, completed_at = ?, updated_at = ? WHERE course_id = ? AND student_id = ?`, [pct, pct >= 100 ? nowSql() : null, nowSql(), courseId, p.studentId]);
-    // the certificate is part of finishing, not a separate errand for the office
+    // The certificate is part of finishing, not a separate errand for the office — but only where
+    // nothing is owed for the seat. A paid batch is certified through `CollegeService.certifyCourse`,
+    // which waits for the last instalment; issuing here as well would hand the certificate to a
+    // student who watched the videos and never paid, and a certificate handed over with money owing
+    // never gets that money.
     let certificateId: string | null = null;
-    if (pct >= 100) certificateId = (await this.issueCourseCertificate(schoolId, courseId, p.studentId).catch(() => null))?.certificateId ?? null;
+    const paid = Number((await this.db.findOne<Row>('courses', { id: courseId, school_id: schoolId }))?.is_paid ?? 0);
+    if (pct >= 100 && !paid) certificateId = (await this.issueCourseCertificate(schoolId, courseId, p.studentId).catch(() => null))?.certificateId ?? null;
     return { courseId, progressPct: pct, lessonsDone: done, lessons: total, certificateId };
   }
 
@@ -133,10 +140,12 @@ export class LmsService {
    * A heartbeat from the video player: how many seconds went past since the last one, and where the
    * needle is now. Two things make the number mean something.
    *
-   * A beat may only ever add a few minutes. Without that cap a page can post "3600 seconds" once and
-   * finish an hour-long lesson nobody sat through — which is exactly what a student does when the
-   * certificate at the end of the course is the point. The running time is the other ceiling: total
-   * watch time can never exceed the lesson's own length however many beats arrive.
+   * A beat may only ever add a few minutes, and never more seconds than have actually passed since
+   * the last one. The cap alone stops a page posting "3600 seconds" once; it does not stop twenty
+   * beats of three minutes arriving in the same second, which finishes an hour-long lesson nobody
+   * sat through — and that is exactly what a student does when the certificate at the end of the
+   * course is the point. The running time is the third ceiling: total watch time can never exceed
+   * the lesson's own length however many beats arrive.
    *
    * `last_position` is where the needle is, and dragging it moves the needle without watching
    * anything, so it is kept only to resume where the student left off and never counted towards
@@ -147,7 +156,11 @@ export class LmsService {
     const lesson = await this.db.findOne<Row>('lessons', { id: p.lessonId, school_id: schoolId });
     if (!lesson) throw notFound('lesson');
     const before = await this.db.findOne<Row>('lesson_progress', { lesson_id: p.lessonId, student_id: p.studentId });
-    const beat = Math.min(Math.max(0, Math.round(Number(p.seconds ?? 0) || 0)), MAX_BEAT_SECONDS);
+    // a first beat has nothing to measure against, so it gets the cap; after that the wall clock is
+    // the ceiling, with a few seconds of slack for a round trip and a clock that is not quite ours
+    const lastBeat = before?.last_beat_at ? Date.parse(`${String(before.last_beat_at).slice(0, 19).replace(' ', 'T')}Z`) : NaN;
+    const elapsed = Number.isNaN(lastBeat) ? MAX_BEAT_SECONDS : Math.max(0, Math.round((Date.now() - lastBeat) / 1000)) + BEAT_SLACK_SECONDS;
+    const beat = Math.min(Math.max(0, Math.round(Number(p.seconds ?? 0) || 0)), MAX_BEAT_SECONDS, elapsed);
     const durationSec = Math.max(0, Math.round(Number(lesson.duration_min ?? 0) * 60));
     const already = Math.max(0, Number(before?.seconds_watched ?? 0));
     const total = durationSec ? Math.min(already + beat, durationSec) : already + beat;
@@ -160,6 +173,7 @@ export class LmsService {
     const wasDone = String(before?.status ?? '') === 'completed';
     const status = done || wasDone ? 'completed' : total > 0 ? 'in_progress' : 'not_started';
     const progress = await this.markProgress(schoolId, { lessonId: p.lessonId, studentId: p.studentId, status, secondsWatched: total, lastPosition: position });
+    await this.db.execute(`UPDATE lesson_progress SET last_beat_at = ? WHERE lesson_id = ? AND student_id = ?`, [nowSql(), p.lessonId, p.studentId]);
     // only the crossing is an event; a beat every thirty seconds would otherwise flood the outbox
     if (done && !wasDone) {
       await this.outbox.emitNow({ type: 'lesson.completed', schoolId, aggregateType: 'lms.lesson', aggregateId: p.lessonId, payload: { lessonId: p.lessonId, courseId: progress.courseId, studentId: p.studentId, watchedPct } });

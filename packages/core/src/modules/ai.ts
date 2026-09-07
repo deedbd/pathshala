@@ -120,11 +120,14 @@ export class AiService {
    */
   async outstandingFor(schoolId: string, scope: string[] | null) {
     const where = scope?.length ? ` AND student_id IN (${scope.map(() => '?').join(',')})` : '';
-    const rows = await this.db.query<{ due: number; n: number }>(`SELECT COALESCE(SUM(balance), 0) AS due, COUNT(*) AS n FROM invoices WHERE school_id = ? AND balance > 0${where}`, scope?.length ? [schoolId, ...scope] : [schoolId]);
+    // a cancelled or written-off bill is not owed: `FeesService` excludes them everywhere, and a
+    // voice line that asks for money the office already dropped is worse than one that says nothing
+    const rows = await this.db.query<{ due: number; n: number }>(`SELECT COALESCE(SUM(balance), 0) AS due, COUNT(*) AS n FROM invoices WHERE school_id = ? AND balance > 0 AND status NOT IN ('cancelled', 'written_off')${where}`, scope?.length ? [schoolId, ...scope] : [schoolId]);
     return { due: round(Number(rows[0]?.due ?? 0)), bills: Number(rows[0]?.n ?? 0) };
   }
-  async nextExam(schoolId: string) {
-    const rows = await this.db.query<Row>(`SELECT name, start_date FROM exams WHERE school_id = ? AND start_date >= ? ORDER BY start_date LIMIT 1`, [schoolId, nowSql().slice(0, 10)]);
+  /** Only an exam the school has actually announced: a draft schedule has been sent to nobody. */
+  async nextExam(schoolId: string, onDate?: string) {
+    const rows = await this.db.query<Row>(`SELECT name, start_date FROM exams WHERE school_id = ? AND start_date >= ? AND status <> 'draft' ORDER BY start_date, id LIMIT 1`, [schoolId, (onDate ?? nowSql()).slice(0, 10)]);
     return rows[0] ? { name: String(rows[0].name), startDate: String(rows[0].start_date).slice(0, 10) } : null;
   }
 

@@ -153,10 +153,16 @@ export class ForecastService {
     const plans = await this.db.findMany<Row>('instalment_plans', { school_id: schoolId, status: 'active' }, { limit: 5000 });
     const instalmentsByMonth = new Map<string, number>();
     let unbilledInstalments = 0;
+    let overdueInstalments = 0;
     for (const p of plans) {
       for (const r of json<{ due: string; amount: number; invoiceId: string | null }[]>(p.instalments) ?? []) {
         if (r.invoiceId) continue;                                  // already an invoice: it is in the arrears figure, not here
-        const month = String(r.due).slice(0, 7);
+        // an instalment whose day has passed with no invoice behind it — the billing job did not run,
+        // or ran before the plan was agreed. Dropping it into a month that is already gone would take
+        // the money out of the forecast altogether: it is not in arrears either, because no invoice
+        // was ever raised. It falls due in the first month ahead, which is when it will be billed.
+        const month = String(r.due).slice(0, 7) <= thisMonth ? addMonths(thisMonth, 1) : String(r.due).slice(0, 7);
+        if (String(r.due).slice(0, 10) < asOf) overdueInstalments++;
         instalmentsByMonth.set(month, round((instalmentsByMonth.get(month) ?? 0) + Number(r.amount)));
         unbilledInstalments++;
       }
@@ -416,7 +422,11 @@ export class ForecastService {
       this.db.query<Row>(`SELECT student_id, COUNT(*) AS n FROM safeguarding_cases WHERE school_id = ? AND status IN ('open', 'monitoring') GROUP BY student_id`, [schoolId]),
       // second-precision timestamps tie on the same batch of marks, so id breaks the tie and the
       // "last two exams" are the same two on every engine and every re-run
-      this.db.query<Row>(`SELECT student_id, percentage, created_at, id FROM exam_results WHERE school_id = ? AND percentage IS NOT NULL ORDER BY student_id ASC, created_at DESC, id DESC LIMIT 30000`, [schoolId]),
+      // only the exams inside the window: the whole history is one row per pupil per exam, and a row
+      // cap over three years of terminals truncates by student id — a stable block of children at the
+      // end of the ordering would silently lose the results signal for ever, and nothing would say so
+      this.db.query<Row>(`SELECT r.student_id, r.percentage, r.created_at, r.id FROM exam_results r JOIN exams e ON e.id = r.exam_id
+        WHERE r.school_id = ? AND r.percentage IS NOT NULL AND e.start_date >= ? ORDER BY r.student_id ASC, r.created_at DESC, r.id DESC`, [schoolId, addDays(from, -365)]),
     ]);
     const att = new Map(attendance.map(r => [String(r.student_id), { present: Number(r.present ?? 0), total: Number(r.total ?? 0) }]));
     const beh = new Map(behaviour.map(r => [String(r.student_id), { points: Number(r.points ?? 0), n: Number(r.n ?? 0) }]));

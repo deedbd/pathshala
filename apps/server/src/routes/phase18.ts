@@ -49,16 +49,21 @@ export function mountPhase18(api: Router, app: App, wrap: Wrap, requirePerm: (re
       secret: z.string().max(200).optional(),
     }).parse(req.body ?? {});
     const q = (k: string) => (typeof req.query[k] === 'string' ? String(req.query[k]) : undefined);
+    // A header where the gateway can set one, the body where it cannot — never the query string,
+    // which Cloudflare, Passenger and every proxy in between write to a log in the clear.
+    // An unknown school answers exactly as a wrong secret does: 404 here and 403 there would tell
+    // anyone who asks which schools this host serves, before anything has been authenticated.
+    const secret = String(req.headers['x-ivr-secret'] || b.secret || '');
     const school = await app.ivr.resolveSchool(req.params.school as string);
-    if (!school) { res.status(404); return { error: 'unknown school' }; }
-    // a header where the gateway can set one, the body where it cannot; an empty header falls through
-    await app.ivr.authenticate(String(school.id), String(req.headers['x-ivr-secret'] || b.secret || q('secret') || ''));
+    if (!school) throw new HttpError(403, 'bad IVR secret', 'forbidden');
+    await app.ivr.authenticate(String(school.id), secret);
 
     const callId = b.callId ?? b.call_id ?? q('callId');
     const from = b.from ?? b.caller ?? b.phone ?? q('from');
     if (!callId || !from) throw new HttpError(400, 'callId and from are required', 'bad_request');
     const keys = `${b.keys ?? q('keys') ?? ''}${b.digits ?? b.input ?? q('digits') ?? ''}`;
     const reply = await app.ivr.step(school, { callId, from, keys });
+    // the gateway posts the secret with every step, so `next` carries the path and the keys only
     return { ...reply, next: reply.end ? null : `${app.config.appUrl}/api/ivr/${req.params.school}/step?keys=${reply.keys}` };
   }));
 }

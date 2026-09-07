@@ -101,6 +101,13 @@ describe('year 3: advanced LMS and adaptive learning', () => {
   });
 
   // ---------------- video progress that means something ----------------
+  // A beat may never claim more seconds than have actually passed, so a test that means to watch a
+  // lesson has to let time pass. Moving the last beat's stamp back is that, without the wait.
+  const timePasses = async (lessonId, seconds) => {
+    const row = await app.db.findOne('lesson_progress', { lesson_id: lessonId, student_id: students[0].id });
+    if (row) await app.db.execute('UPDATE lesson_progress SET last_beat_at = ? WHERE id = ?', [new Date(Date.now() - seconds * 1000).toISOString().slice(0, 19).replace('T', ' '), row.id]);
+  };
+
   test('watch time only counts what actually went past the player', async () => {
     // a genuine two-minute beat on a ten-minute lesson
     const first = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 120, position: 120 }, 'POST', { cookie: studentCookie });
@@ -109,21 +116,32 @@ describe('year 3: advanced LMS and adaptive learning', () => {
     assert.equal(first.status, 'in_progress');
 
     // a page claiming an hour in one beat gets three minutes, which is all a beat may ever add
+    await timePasses(videoLessonId, 300);
     const greedy = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 3600, position: 300 }, 'POST', { cookie: studentCookie });
     assert.equal(greedy.secondsWatched, 300, 'one beat may add at most three minutes');
     assert.equal(greedy.watchedPct, 50);
     assert.equal(greedy.status, 'in_progress');
+
 
     // dragging the needle to the end is not watching
     const seeked = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 0, position: 600 }, 'POST', { cookie: studentCookie });
     assert.equal(seeked.secondsWatched, 300);
     assert.equal(seeked.lastPosition, 600, 'where to resume from is still remembered');
     assert.equal(seeked.status, 'in_progress', 'seeking to the end does not finish a lesson');
+
+    // and a beat arriving the moment after the last one adds only the seconds that have passed:
+    // twenty of these in one second is how a player finishes an hour nobody sat through
+    const rapid = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 180, position: 480 }, 'POST', { cookie: studentCookie });
+    assert.ok(rapid.secondsWatched <= 320, `a beat cannot outrun the clock (got ${rapid.secondsWatched})`);
+    assert.equal(rapid.status, 'in_progress', 'a burst of beats does not finish a lesson');
   });
 
   test('a lesson watched through completes, once, and moves the course bar', async () => {
     let last;
-    for (let i = 0; i < 3; i++) last = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 120, position: 600 }, 'POST', { cookie: studentCookie });
+    for (let i = 0; i < 3; i++) {
+      await timePasses(videoLessonId, 200);
+      last = await api(`/portal/lessons/${videoLessonId}/watch`, { seconds: 120, position: 600 }, 'POST', { cookie: studentCookie });
+    }
     assert.equal(last.secondsWatched, 600, 'and never more than the lesson is long');
     assert.equal(last.watchedPct, 100);
     assert.equal(last.status, 'completed');
@@ -233,11 +251,14 @@ describe('year 3: advanced LMS and adaptive learning', () => {
 
     assert.equal(await told('lms.similarity_found'), 1, 'the teacher is asked to look');
     assert.equal(await events('assignment.similarity_flagged'), 1);
-    // and nobody at home hears a word about it
-    assert.equal(await told('lms.plagiarism'), 0);
+    // and nobody at home hears a word about it: every notice about this went to a member of staff
+    const home = await app.db.query(`SELECT COUNT(*) AS n FROM notifications n JOIN users u ON u.id = n.recipient_user_id
+      WHERE n.school_id = ? AND n.event_key = 'lms.similarity_found' AND u.user_type IN ('guardian', 'student')`, [schoolId]);
+    assert.equal(Number(home[0].n), 0, 'similarity is a teacher\u2019s business, not a family\u2019s');
   });
 
   test('a class where nobody copied reports nothing at all', async () => {
+    const noticesBefore = await app.db.query(`SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = 'lms.similarity_found'`, [schoolId]);
     const clean = (await api('/lms/assignments', { sectionId, classSubjectId, teacherId, title: 'Describe your village', dueAt: `${new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)} 23:59:00`, submissionType: 'text' })).id;
     await app.lms.submit(schoolId, { assignmentId: clean, studentId: students[0].id, textAnswer: 'Our village sits beside a slow brown river that swells every monsoon until the jackfruit trees at the bottom of the field stand in water up to their lowest branches and the ferry stops running for a week at a time. My uncle keeps the ferry rope tied to a post outside his shop until the water goes down again.' });
     await app.lms.submit(schoolId, { assignmentId: clean, studentId: students[1].id, textAnswer: 'My father keeps four ducks behind the kitchen and every morning before school I carry their bowl down to the pond and wait while they eat because otherwise the neighbour’s goat pushes its head into the bowl. In the evening I count them back into the shed and shut the door with a brick.' });
@@ -245,7 +266,8 @@ describe('year 3: advanced LMS and adaptive learning', () => {
     assert.equal(r.checked, 2);
     assert.equal(r.pairs.length, 0);
     assert.equal(r.highestPct, 0);
-    assert.equal(await told('lms.similarity_found'), 1, 'and the teacher is not pestered about a clean set');
+    const noticesAfter = await app.db.query(`SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = 'lms.similarity_found'`, [schoolId]);
+    assert.equal(Number(noticesAfter[0].n), Number(noticesBefore[0].n), 'and the teacher is not pestered about a clean set');
   });
 
   // ---------------- adaptive learning ----------------

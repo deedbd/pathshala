@@ -2944,6 +2944,7 @@ CREATE TABLE `lesson_progress` (
   `status` VARCHAR(40) NOT NULL DEFAULT 'not_started',
   `seconds_watched` INT NOT NULL DEFAULT 0,
   `last_position` INT NOT NULL DEFAULT 0,
+  `last_beat_at` DATETIME NULL COMMENT 'when the last heartbeat arrived, so a beat cannot claim more seconds than have passed',
   `completed_at` DATETIME NULL,
   PRIMARY KEY (`id`),
   KEY `ix_lesson_progress_school_id` (`school_id`),

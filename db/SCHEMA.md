@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 357 tables · 4123 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 357 tables · 4124 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -2631,6 +2631,7 @@ Per student per lesson.
 | status | enum(not_started|in_progress|completed) | required · default not_started |
 | seconds_watched | int | required · default 0 |
 | last_position | int | required · default 0 |
+| last_beat_at | dt | when the last heartbeat arrived, so a beat cannot claim more seconds than have passed |
 | completed_at | dt |  |
 
 ### `lesson_quiz_attempts`

@@ -2942,6 +2942,7 @@ CREATE TABLE IF NOT EXISTS "lesson_progress" (
   "status" VARCHAR(40) NOT NULL DEFAULT 'not_started',
   "seconds_watched" INTEGER NOT NULL DEFAULT 0,
   "last_position" INTEGER NOT NULL DEFAULT 0,
+  "last_beat_at" TIMESTAMP(3),
   "completed_at" TIMESTAMP(3),
   PRIMARY KEY ("id"),
   UNIQUE ("lesson_id", "student_id"),

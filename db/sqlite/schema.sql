@@ -2943,6 +2943,7 @@ CREATE TABLE `lesson_progress` (
   `status` TEXT NOT NULL DEFAULT 'not_started',
   `seconds_watched` INTEGER NOT NULL DEFAULT 0,
   `last_position` INTEGER NOT NULL DEFAULT 0,
+  `last_beat_at` TEXT,
   `completed_at` TEXT,
   PRIMARY KEY (`id`),
   UNIQUE (`lesson_id`, `student_id`),

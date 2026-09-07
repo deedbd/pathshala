@@ -35,9 +35,9 @@ export function mountPhase16(api: Router, app: App, wrap: Wrap, requirePerm: (re
   // matches in order, so they are registered before anything parameterised
   api.get('/groups/rates', wrap(async req => { requirePerm(req, 'accounting.view'); return app.groups.rates({ baseCcy: q(req, 'baseCcy'), quoteCcy: q(req, 'quoteCcy') }); }));
   api.post('/groups/rates', wrap(async req => {
-    requirePerm(req, 'accounting.edit');
+    const u = requirePerm(req, 'accounting.edit');
     const b = z.object({ baseCcy: currency, quoteCcy: currency, rate: z.coerce.number().positive().max(1_000_000), asOf: dateSchema.optional(), source: z.string().max(60).optional().nullable() }).parse(req.body);
-    const r = await app.groups.setRate(b);
+    const r = await app.groups.setRate(u.school_id, b);
     await app.audit.log({ action: r.updated ? 'update' : 'create', entityType: 'core.currency_rate', entityId: r.id, after: b });
     return r;
   }));
@@ -63,7 +63,11 @@ export function mountPhase16(api: Router, app: App, wrap: Wrap, requirePerm: (re
 
   api.get('/groups/:id/consolidated', wrap(async req => {
     const u = requirePerm(req, 'platform.view');
-    return app.groups.consolidated(req.params.id as string, u.school_id, { day: q(req, 'day'), days: q(req, 'days') ? Number(q(req, 'days')) : undefined });
+    // an unparsed date reaches `new Date` and throws a RangeError as a 500; every other module
+    // validates its dates at the door, and this one had the schema imported and unused
+    const b = z.object({ day: dateSchema.optional(), days: z.coerce.number().int().min(1).max(180).optional() })
+      .parse({ day: q(req, 'day'), days: q(req, 'days') });
+    return app.groups.consolidated(req.params.id as string, u.school_id, b);
   }));
   api.get('/groups/:id/staff', wrap(async req => {
     const u = requirePerm(req, 'hr.view');

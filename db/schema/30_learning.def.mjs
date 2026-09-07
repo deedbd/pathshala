@@ -417,6 +417,7 @@ export default [
     status       enum(not_started|in_progress|completed) ! =not_started
     seconds_watched int ! =0
     last_position int ! =0
+    last_beat_at dt            # when the last heartbeat arrived, so a beat cannot claim more seconds than have passed
     completed_at dt
   `, unique:[['lesson_id','student_id']] },
   lesson_quiz_attempts:{ ts:false, desc:'A go at the quiz inside a lesson: answers, score, and whether it passed.', cols:`

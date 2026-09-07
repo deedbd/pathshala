@@ -157,7 +157,11 @@ export class GroupsService {
     for (const m of members) {
       const schoolId = String(m.school_id);
       if (refresh) await this.analytics.computeDay(schoolId, day);
-      const kpi = await this.db.query<Row>(`SELECT day, students_active, attendance_pct, fees_collected, fees_outstanding FROM kpi_daily WHERE school_id = ? AND day BETWEEN ? AND ? ORDER BY day DESC`, [schoolId, from, day]);
+      // a school joined last week has no figures from before it joined, and reading them would let
+      // the head add a school, read its whole history and remove it again
+      const joined = m.joined_on ? String(m.joined_on).slice(0, 10) : from;
+      const windowFrom = joined > from ? joined : from;
+      const kpi = await this.db.query<Row>(`SELECT day, students_active, attendance_pct, fees_collected, fees_outstanding FROM kpi_daily WHERE school_id = ? AND day BETWEEN ? AND ? ORDER BY day DESC`, [schoolId, windowFrom, day]);
       const latest = kpi[0] ?? null;
       const staff = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM staff WHERE school_id = ? AND status IN ('active','probation','on_leave') AND deleted_at IS NULL`, [schoolId]);
       schools.push({
@@ -168,6 +172,7 @@ export class GroupsService {
         outstanding: latest ? round(Number(latest.fees_outstanding ?? 0)) : 0,
         staff: Number(staff[0]?.n ?? 0),
         daysCovered: kpi.length,
+        from: windowFrom,
       });
     }
     const totals = {
@@ -180,8 +185,23 @@ export class GroupsService {
         return roll ? round(weighted.reduce((a, s) => a + s.attendancePct! * s.roll, 0) / roll) : null;
       })(),
     };
+    // A school whose nightly pass did not run has no row for the day, and `0` is not what we know
+    // about it — it is what we do not. Adding it in would tell a trust it is owed half of what it is
+    // owed, with nothing on the page to say a school is missing, so the total refuses just as it
+    // does for a missing exchange rate and names the schools it could not read.
+    const silent = schools.filter(s => s.daysCovered === 0).map(s => ({ schoolId: s.schoolId, schoolName: s.schoolName }));
     const money = await this.consolidateMoney(schools, base, day);
-    return { groupId, group: String(group.name), baseCurrency: base, day, from, days, schools: schools.map(s => ({ ...s, ...(money.bySchool[s.schoolId] ?? {}) })), totals, money: money.total };
+    const total = silent.length
+      ? {
+          ...money.total, collected: null, outstanding: null,
+          error: `${silent.map(x => x.schoolName).join(', ')} ${silent.length === 1 ? 'has' : 'have'} no figures for ${day}; the nightly pass has not run there, so a group total would be short by whatever they collected`,
+        }
+      : money.total;
+    return {
+      groupId, group: String(group.name), baseCurrency: base, day, from, days,
+      schools: schools.map(s => ({ ...s, ...(money.bySchool[s.schoolId] ?? {}) })),
+      totals: { ...totals, schoolsWithoutFigures: silent.length }, money: total, silent,
+    };
   }
   /**
    * Adds the money up, or refuses to. A school billing in the group's own currency needs no rate; any
@@ -227,7 +247,7 @@ export class GroupsService {
     const params: unknown[] = [...ids];
     if (f.category) { where.push('st.staff_category = ?'); params.push(f.category); }
     if (f.q) { where.push('(st.first_name LIKE ? OR st.last_name LIKE ? OR st.employee_no LIKE ?)'); const like = `%${f.q}%`; params.push(like, like, like); }
-    const limit = Math.min(500, f.limit ?? 200);
+    const limit = Math.min(500, Math.max(1, Math.round(Number(f.limit) || 200)));
     const staff = await this.db.query<Row>(`SELECT st.id, st.school_id, st.employee_no, st.first_name, st.last_name, st.phone, st.staff_category, st.employment_type, st.status, st.join_date,
       sc.name AS school_name, sc.code AS school_code, d.name AS designation, dep.name AS department
       FROM staff st JOIN schools sc ON sc.id = st.school_id LEFT JOIN designations d ON d.id = st.designation_id LEFT JOIN departments dep ON dep.id = st.department_id
@@ -259,8 +279,17 @@ export class GroupsService {
     if (!student) throw notFound('student');
     // the relay delivers at least once and administrators double-click: a repeat must return the first
     // transfer, never create a second child in the receiving school
-    const already = await this.db.findOne<Row>('student_transfers', { school_id: fromSchoolId, student_id: input.studentId, status: 'completed' });
+    const already = await this.db.findOne<Row>('student_transfers', { school_id: fromSchoolId, student_id: input.studentId, to_school_id: input.toSchoolId, status: 'completed' });
+    const elsewhere = already ? null : await this.db.findOne<Row>('student_transfers', { school_id: fromSchoolId, student_id: input.studentId, status: 'completed' });
+    if (elsewhere) {
+      const to = await this.db.findOne<Row>('schools', { id: String(elsewhere.to_school_id) });
+      throw new HttpError(409, `this child was already transferred to ${to ? String(to.name) : String(elsewhere.to_school_id)}; the move from here has happened`, 'conflict');
+    }
     if (already) {
+      // the same move asked for twice: return the first one, and make sure the row this school kept
+      // was actually closed — the status change happens after the transaction commits, so a process
+      // that died in between would leave the child active in two schools and billed by both
+      await this.db.update('students', { status: 'transferred', updated_at: nowSql() }, { id: input.studentId, school_id: fromSchoolId, status: 'active' });
       const arrived = already.to_student_id ? await this.db.findOne<Row>('students', { id: String(already.to_student_id) }) : null;
       return { id: String(already.id), studentId: input.studentId, toStudentId: arrived ? String(arrived.id) : null, admissionNo: arrived ? String(arrived.admission_no) : null, dues: round(Number(already.dues_at_transfer ?? 0)), alreadyTransferred: true };
     }
@@ -305,7 +334,7 @@ export class GroupsService {
   }
   /** Transfers this school sent or received, each row saying plainly which school it came from. */
   async transfers(schoolId: string, f: { limit?: number } = {}) {
-    const limit = Math.min(500, f.limit ?? 100);
+    const limit = Math.min(500, Math.max(1, Math.round(Number(f.limit) || 100)));
     return this.db.query<Row>(`SELECT t.id, t.school_id AS from_school_id, t.to_school_id, t.student_id, t.to_student_id, t.reason, t.dues_at_transfer, t.status, t.transferred_at,
       s.first_name, s.last_name, s.admission_no, fs.name AS from_school, ts.name AS to_school
       FROM student_transfers t JOIN students s ON s.id = t.student_id JOIN schools fs ON fs.id = t.school_id JOIN schools ts ON ts.id = t.to_school_id
@@ -349,6 +378,12 @@ export class GroupsService {
    * The amounts are deliberately not added up: two schools may bill in different currencies, and a
    * family's total is not a number this can invent.
    */
+  /**
+   * Every child of this guardian, in their own school and in any school that shares a group with it.
+   * The group is the boundary: a phone number is not a credential, and matching on it across the
+   * whole installation would let any school put a row into a stranger's family app — a typo, or a
+   * name and a balance placed in front of somebody deliberately — from inside an app they trust.
+   */
   async familyChildren(user: { id: string; school_id: string; user_type: string }) {
     if (user.user_type !== 'guardian') throw forbidden('the family view belongs to a guardian account');
     const me = await this.db.findOne<Row>('guardians', { user_id: user.id });
@@ -358,7 +393,9 @@ export class GroupsService {
       sc.id AS school_id, sc.name AS school_name, sc.code AS school_code, sc.currency, c.name AS class_name, sec.name AS section_name, sg.relation, sg.is_primary
       FROM guardians g JOIN student_guardians sg ON sg.guardian_id = g.id JOIN students s ON s.id = sg.student_id JOIN schools sc ON sc.id = s.school_id
       LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN sections sec ON sec.id = s.current_section_id
-      WHERE g.phone = ? AND s.status = 'active' ORDER BY sc.name, s.date_of_birth, s.id`, [phone]);
+      WHERE g.phone = ? AND s.status = 'active'
+        AND (s.school_id = ? OR EXISTS (SELECT 1 FROM school_group_members a JOIN school_group_members b ON b.group_id = a.group_id WHERE a.school_id = ? AND b.school_id = s.school_id))
+      ORDER BY sc.name, s.date_of_birth, s.id`, [phone, user.school_id, user.school_id]);
     const children = [];
     for (const r of rows) {
       const dues = await this.db.query<{ due: number }>(`SELECT COALESCE(SUM(balance), 0) AS due FROM invoices WHERE student_id = ? AND balance > 0 AND status <> 'cancelled'`, [String(r.student_id)]);
@@ -378,8 +415,15 @@ export class GroupsService {
   }
 
   // ---------- currency ----------
-  /** Records a rate. One row per pair per day, so a corrected rate replaces the day's own figure. */
-  async setRate(r: RateInput) {
+  /**
+   * Records a rate. One row per pair per day, so a corrected rate replaces the day's own figure.
+   *
+   * `currency_rates` is installation-wide, so the write belongs to the founder school and nobody
+   * else: an accountant in any tenant could otherwise rewrite the rate a trust's consolidated total
+   * is built from, and turn another school's sixty thousand into five hundred.
+   */
+  async setRate(callerSchoolId: string, r: RateInput) {
+    await this.requireFounder(callerSchoolId);
     const base = r.baseCcy.trim().toUpperCase(), quote = r.quoteCcy.trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(base) || !/^[A-Z]{3}$/.test(quote)) throw badRequest('currencies are three-letter codes such as BDT or USD');
     if (base === quote) throw badRequest('a currency needs no rate against itself');
@@ -395,7 +439,7 @@ export class GroupsService {
     const where: string[] = []; const params: unknown[] = [];
     if (f.baseCcy) { where.push('base_ccy = ?'); params.push(f.baseCcy.toUpperCase()); }
     if (f.quoteCcy) { where.push('quote_ccy = ?'); params.push(f.quoteCcy.toUpperCase()); }
-    const limit = Math.min(500, f.limit ?? 100);
+    const limit = Math.min(500, Math.max(1, Math.round(Number(f.limit) || 100)));
     return this.db.query<Row>(`SELECT * FROM currency_rates${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY as_of DESC, base_ccy, quote_ccy LIMIT ${limit}`, params);
   }
   /**

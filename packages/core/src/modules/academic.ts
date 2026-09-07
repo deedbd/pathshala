@@ -74,7 +74,11 @@ export class AcademicService {
     const day = onDate ?? new Date().toISOString().slice(0, 10);
     const hit = await this.db.query<Row>(`SELECT * FROM terms WHERE school_id = ? AND start_date <= ? AND end_date >= ? ORDER BY start_date DESC, id DESC LIMIT 1`, [schoolId, day, day]);
     if (hit[0]) return hit[0];
-    return (await this.db.findMany<Row>('terms', { school_id: schoolId }, { orderBy: 'start_date DESC', limit: 1 }))[0] ?? null;
+    // the most recent term that has actually started. Next year's calendar is usually entered before
+    // this year ends, and a term that has not begun has no marks, no register and no assessments —
+    // planning against it looks like healthy output and does nothing at all.
+    const past = await this.db.query<Row>(`SELECT * FROM terms WHERE school_id = ? AND start_date <= ? ORDER BY start_date DESC, id DESC LIMIT 1`, [schoolId, day]);
+    return past[0] ?? null;
   }
 
   // ---------- programmes ----------
