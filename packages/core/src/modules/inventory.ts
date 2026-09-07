@@ -91,7 +91,8 @@ export class InventoryService {
     const open = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM purchase_order_items pi JOIN purchase_orders p ON p.id = pi.po_id WHERE pi.item_id = ? AND p.status IN ('draft','pending_approval','approved','ordered','partially_received')`, [itemId]);
     if (Number(open[0]?.n ?? 0) > 0) return null;
     if (!item.preferred_vendor_id) {
-      await this.tasks.create({ schoolId, title: `${item.name} is down to ${quantity} ${item.unit} — choose a vendor and order`, taskType: 'inventory.reorder', assignedRole: 'admin', entityType: 'inventory.item', entityId: itemId, priority: 'high' });
+      // one open "order this" per item: a shelf that runs down over a week is one problem, not seven
+      await this.tasks.ensure({ schoolId, title: `${item.name} is down to ${quantity} ${item.unit} — choose a vendor and order`, taskType: 'inventory.reorder', assignedRole: 'admin', entityType: 'inventory.item', entityId: itemId, priority: 'high' });
       return null;
     }
     const qty = Number(item.reorder_qty ?? item.reorder_level);
@@ -252,14 +253,64 @@ export class InventoryService {
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // L4: servicing and warranties, thirty days out
+      /**
+       * L4: servicing and warranties.
+       *
+       * As with the fleet, the old pass wrote a new task every night for thirty nights and then went
+       * quiet on the day the date passed — so an asset that was actually overdue for service was the
+       * one the office heard nothing about. The window now has no floor, an overdue service is called
+       * overdue, and `tasks.ensure` keeps one open task per service record rather than thirty.
+       */
       'inventory.maintenance_due': async ({ schoolId }) => {
         const today = nowSql().slice(0, 10), soon = addDays(today, 30);
-        const due = await this.db.query<Row>(`SELECT m.*, a.name, a.asset_tag FROM asset_maintenance m JOIN assets a ON a.id = m.asset_id WHERE m.school_id = ? AND m.next_due_date BETWEEN ? AND ?`, [schoolId, today, soon]);
-        for (const m of due) await this.tasks.create({ schoolId, title: `Service ${m.name} (${m.asset_tag})`, taskType: 'inventory.maintenance', assignedRole: 'admin', entityType: 'inventory.asset', entityId: String(m.asset_id), dueAt: String(m.next_due_date).slice(0, 10) });
-        const warranty = await this.db.query<Row>(`SELECT * FROM assets WHERE school_id = ? AND warranty_until BETWEEN ? AND ? AND status <> 'disposed'`, [schoolId, today, soon]);
-        for (const a of warranty) await this.tasks.create({ schoolId, title: `Warranty on ${a.name} (${a.asset_tag}) ends on ${String(a.warranty_until).slice(0, 10)}`, taskType: 'inventory.warranty', assignedRole: 'admin', entityType: 'inventory.asset', entityId: String(a.id), dueAt: String(a.warranty_until).slice(0, 10) });
-        return { maintenance: due.length, warranty: warranty.length };
+        const due = await this.db.query<Row>(`SELECT m.*, a.name, a.asset_tag FROM asset_maintenance m JOIN assets a ON a.id = m.asset_id WHERE m.school_id = ? AND m.next_due_date IS NOT NULL AND m.next_due_date <= ? AND a.status <> 'disposed'`, [schoolId, soon]);
+        let raised = 0, overdue = 0;
+        for (const m of due) {
+          const on = String(m.next_due_date).slice(0, 10);
+          if (on < today) overdue++;
+          if (await this.tasks.ensure({ schoolId, title: on < today ? `${m.name} (${m.asset_tag}) was due for service on ${on}` : `Service ${m.name} (${m.asset_tag}) by ${on}`, taskType: 'inventory.maintenance', assignedRole: 'admin', entityType: 'inventory.maintenance', entityId: String(m.id), dueAt: on, priority: on < today ? 'high' : 'normal' })) raised++;
+        }
+        const warranty = await this.db.query<Row>(`SELECT * FROM assets WHERE school_id = ? AND warranty_until IS NOT NULL AND warranty_until BETWEEN ? AND ? AND status <> 'disposed'`, [schoolId, today, soon]);
+        for (const a of warranty) { if (await this.tasks.ensure({ schoolId, title: `Warranty on ${a.name} (${a.asset_tag}) ends on ${String(a.warranty_until).slice(0, 10)}`, taskType: 'inventory.warranty', assignedRole: 'admin', entityType: 'inventory.asset', entityId: String(a.id), dueAt: String(a.warranty_until).slice(0, 10) })) raised++; }
+        return { maintenance: due.length, overdue, warranty: warranty.length, tasks: raised };
+      },
+      /**
+       * L7: everything below its reorder level, whether or not anything moved.
+       *
+       * `checkReorder` fires on a stock movement, which covers the ordinary case and misses three
+       * that are not rare: a reorder level raised after the fact, an automatic order somebody
+       * cancelled, and an item that simply sat at zero because nothing has moved it in months. A
+       * daily sweep asks the question of every item instead of waiting to be asked, and it takes the
+       * same two roads `checkReorder` takes — a draft order when the item has a preferred vendor, a
+       * task naming the shortfall when it does not, and neither when an order is already open. The
+       * draft still waits for approval: spending money stays a decision.
+       */
+      'inventory.reorder_sweep': async ({ schoolId }) => {
+        const low = await this.db.query<Row>(`SELECT i.id, i.name, i.sku, i.unit, i.reorder_level, i.reorder_qty, i.preferred_vendor_id, i.last_cost, l.store_id, COALESCE(l.quantity, 0) AS quantity
+          FROM inventory_items i LEFT JOIN stock_levels l ON l.item_id = i.id
+          WHERE i.school_id = ? AND i.status = 'active' AND i.reorder_level > 0 AND COALESCE(l.quantity, 0) <= i.reorder_level ORDER BY i.name LIMIT 300`, [schoolId]);
+        const store = (await this.stores(schoolId))[0];
+        let drafted = 0, flagged = 0;
+        const seen = new Set<string>();
+        for (const i of low) {
+          const itemId = String(i.id);
+          if (seen.has(itemId)) continue;                          // one item, one decision, whichever store is short
+          seen.add(itemId);
+          const open = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM purchase_order_items pi JOIN purchase_orders p ON p.id = pi.po_id WHERE pi.item_id = ? AND p.status IN ('draft','pending_approval','approved','ordered','partially_received')`, [itemId]);
+          if (Number(open[0]?.n ?? 0) > 0) continue;
+          const storeId = (i.store_id as string) ?? (store ? String(store.id) : null);
+          let poId: string | null = null;
+          if (i.preferred_vendor_id && storeId) {
+            const qty = Number(i.reorder_qty ?? i.reorder_level);
+            poId = (await this.createPurchaseOrder(schoolId, { vendorId: String(i.preferred_vendor_id), storeId, lines: [{ itemId, quantity: qty, unitCost: Number(i.last_cost ?? 0) }], isAuto: true })).id;
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'inventory.reorder_drafted', title: 'Stock is low', body: `${i.name} is down to ${Number(i.quantity)} ${i.unit}. A draft order for ${qty} is waiting for approval.`, entityType: 'inventory.purchase_order', entityId: poId, withinHours: 24 });
+            drafted++;
+          } else {
+            if (await this.tasks.ensure({ schoolId, title: `${i.name} is down to ${Number(i.quantity)} ${i.unit} — choose a vendor and order`, taskType: 'inventory.reorder', assignedRole: 'admin', entityType: 'inventory.item', entityId: itemId, priority: 'high' })) flagged++;
+          }
+          await this.outbox.emitNow({ type: 'stock.below_reorder', schoolId, aggregateType: 'inventory.item', aggregateId: itemId, payload: { itemId, sku: String(i.sku), name: String(i.name), quantity: Number(i.quantity), reorderLevel: Number(i.reorder_level), purchaseOrderId: poId } });
+        }
+        return { low: seen.size, drafted, flagged };
       },
     };
   }

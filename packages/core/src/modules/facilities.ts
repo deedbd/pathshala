@@ -81,7 +81,9 @@ export class FacilitiesService {
     const id = ulid();
     const dueAt = w.dueAt ?? nowSql(new Date(Date.now() + (FacilitiesService.SLA_HOURS[priority] ?? 72) * 3600_000));
     await this.db.insert('work_orders', { id, school_id: schoolId, title: w.title.slice(0, 160), description: w.description ?? null, location_room_id: w.roomId ?? null, asset_id: w.assetId ?? null, category: w.category ?? 'other', priority, reported_by: w.reportedBy ?? null, assigned_to: w.assignedTo ?? null, vendor_id: null, status: w.assignedTo ? 'assigned' : 'open', due_at: dueAt, cost: null, expense_id: null, completed_at: null });
-    await this.tasks.create({ schoolId, title: `Work order: ${w.title}`, description: w.description ?? null, taskType: 'maintenance', assignedTo: w.assignedTo ?? null, assignedRole: w.assignedTo ? null : 'admin', entityType: 'facilities.work_order', entityId: id, dueAt, priority });
+    // the work order holds a staff id; the task holds that person's user account, or nobody's
+    const owner = w.assignedTo ? ((await this.db.findOne<Row>('staff', { id: w.assignedTo }))?.user_id as string) ?? null : null;
+    await this.tasks.create({ schoolId, title: `Work order: ${w.title}`, description: w.description ?? null, taskType: 'maintenance', assignedTo: owner, assignedRole: owner ? null : 'admin', entityType: 'facilities.work_order', entityId: id, dueAt, priority });
     await this.outbox.emitNow({ type: 'work_order.raised', schoolId, aggregateType: 'facilities.work_order', aggregateId: id, payload: { workOrderId: id, title: w.title, category: w.category ?? 'other', priority, dueAt } });
     return { id, dueAt, priority };
   }
@@ -105,6 +107,7 @@ export class FacilitiesService {
       expenseId = (await this.accounting.createExpense(schoolId, { categoryId, amount: round(p.cost), description: `Work order: ${w.title}`, expenseDate: nowSql().slice(0, 10), requestedBy: p.completedBy ?? null })).id;
     }
     await this.db.update('work_orders', { status: 'done', completed_at: nowSql(), cost: p.cost ?? null, expense_id: expenseId, updated_at: nowSql() }, { id });
+    await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'facilities.work_order' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, id]);
     if (w.reported_by) await this.notifications.notify({ schoolId, userId: String(w.reported_by), channels: ['in_app', 'push'], eventKey: 'facilities.work_done', title: 'Fixed', body: `${w.title}${p.note ? ` — ${p.note}` : ''}.`, entityType: 'facilities.work_order', entityId: id });
     await this.outbox.emitNow({ type: 'work_order.done', schoolId, aggregateType: 'facilities.work_order', aggregateId: id, payload: { workOrderId: id, cost: round(p.cost ?? 0), expenseId: expenseId ?? '' } });
     return { id, status: 'done' as const, expenseId };
@@ -128,6 +131,8 @@ export class FacilitiesService {
   }
   async markCleaned(schoolId: string, id: string) {
     if (!(await this.db.update('cleaning_schedules', { last_done_at: nowSql(), updated_at: nowSql() }, { id, school_id: schoolId }))) throw notFound('cleaning schedule');
+    // the round is done, so the chase for it is done: the next one is a new task, not this one again
+    await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'facilities.cleaning' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, id]);
     return { id, lastDoneAt: nowSql() };
   }
   /** Areas whose turn has come round again, worked out from when each was last done. */
@@ -168,6 +173,7 @@ export class FacilitiesService {
   async recordDrill(schoolId: string, d: { kind: 'fire' | 'earthquake' | 'evacuation' | 'first_aid' | 'inspection'; heldOn?: string; participants?: number | null; findings?: string | null; fileId?: string | null }) {
     const id = ulid();
     await this.db.insert('safety_drills', { id, school_id: schoolId, kind: d.kind, held_on: d.heldOn ?? nowSql().slice(0, 10), participants: d.participants ?? null, findings: d.findings ?? null, file_id: d.fileId ?? null });
+    await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'facilities.drill' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, d.kind]);
     return id;
   }
   /** Each kind of drill, when it last happened, and whether that is too long ago. */
@@ -200,18 +206,39 @@ export class FacilitiesService {
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // a job past its deadline is chased once a day, not left to be discovered
+      /**
+       * L6, L8: the building's own to-do list, chased rather than repeated.
+       *
+       * The old pass told the office about the same overdue work order every single night, which is
+       * how a school learns to ignore the message. Escalation now reaches a person once — the one it
+       * is assigned to, not only the admin role — and comes back at most every other day. The drill
+       * that is due is said once a fortnight, not fifty times. Cleaning rounds nobody had ever looked
+       * at (`cleaningDue` existed and nothing called it) now become one open task per area, which
+       * closes when somebody marks the area done.
+       */
       'facilities.sla_watch': async ({ schoolId }) => {
         const late = await this.workOrders(schoolId, { overdueOnly: true });
         for (const w of late) {
-          await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'facilities.work_overdue', title: 'Maintenance overdue', body: `${w.title} was due ${String(w.due_at).slice(0, 16)} and is still ${w.status}.`, entityType: 'facilities.work_order', entityId: String(w.id) });
+          const body = `${w.title} was due ${String(w.due_at).slice(0, 16)} and is still ${w.status}.`;
+          // the person holding the job hears first; the office hears in any case
+          const staff = w.assigned_to ? await this.db.findOne<Row>('staff', { id: String(w.assigned_to) }) : null;
+          if (staff?.user_id) await this.notifications.notifyOnce({ schoolId, userId: String(staff.user_id), channels: ['in_app', 'push'], eventKey: 'facilities.work_assignee_overdue', title: 'A job of yours is overdue', body, entityType: 'facilities.work_order', entityId: String(w.id), withinHours: 48 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'facilities.work_overdue', title: 'Maintenance overdue', body, entityType: 'facilities.work_order', entityId: String(w.id), withinHours: 48 });
         }
         const drills = await this.drillStatus(schoolId);
         const overdue = drills.drills.filter(d => d.overdue);
         for (const d of overdue) {
-          await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'facilities.drill_due', title: `${d.kind} drill is due`, body: d.lastOn ? `The last one was ${d.lastOn}.` : 'There is no record of one ever being held.', entityType: 'facilities.drill', entityId: d.kind });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'facilities.drill_due', title: `${d.kind} drill is due`, body: d.lastOn ? `The last one was ${d.lastOn}.` : 'There is no record of one ever being held.', entityType: 'facilities.drill', entityId: d.kind, withinHours: 24 * 14 });
+          await this.tasks.ensure({ schoolId, title: `Hold the ${d.kind} drill`, description: d.lastOn ? `The last one was on ${d.lastOn}; the school holds one every ${drills.everyMonths} months.` : 'There is no record of one ever being held.', taskType: 'facilities.drill', assignedRole: 'admin', entityType: 'facilities.drill', entityId: d.kind, priority: d.kind === 'fire' ? 'high' : 'normal' });
         }
-        return { overdue: late.length, drills: overdue.length };
+        const dirty = await this.cleaningDue(schoolId);
+        for (const c of dirty) {
+          // `cleaning_schedules.assigned_to` is a staff row and `tasks.assigned_to` is a user account
+          const staff = c.assigned_to ? await this.db.findOne<Row>('staff', { id: String(c.assigned_to) }) : null;
+          const owner = (staff?.user_id as string) ?? null;
+          await this.tasks.ensure({ schoolId, title: `Clean ${c.area}`, description: c.last_done_at ? `Last done ${String(c.last_done_at).slice(0, 16)}; it is on a ${c.frequency} round.` : 'It has never been marked done.', taskType: 'facilities.cleaning', assignedTo: owner, assignedRole: owner ? null : 'admin', entityType: 'facilities.cleaning', entityId: String(c.id) });
+        }
+        return { overdue: late.length, drills: overdue.length, cleaning: dirty.length };
       },
     };
   }

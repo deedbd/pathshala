@@ -112,12 +112,15 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 |---|---|---|---|---|
 | H1 | ⏰ `payroll.run_day` monthly | — | **Draft payroll**: per staff structure + attendance (present/LOP/lates) + approved leave + loans + tax slab + overtime; totals; approval request | `payroll_runs`, `payslips`, `approval_requests` |
 | H2 | 🔒 `payroll.approved` | — | Payslip PDFs; bank bulk-transfer file; journal (Dr salary expense, Cr bank, Cr PF/tax payable); SMS/push to staff; loan balances reduced | `payslips`, `files`, `journal_entries`, `staff_loans` |
-| H3 | ⏰ daily | contract `end_date − 30d` / probation end | Alert HR; create appraisal task | `tasks`, `notifications` |
-| H4 | ⏰ daily | `staff_documents.expires_at − 30d` | Reminder to staff + HR | `notifications` |
+| H3 | ⏰ daily | contract `end_date − 30d`; probation end reached **or already passed** | Alert HR; one open task per contract or probation, not one a night | `tasks`, `notifications` |
+| H4 | ⏰ daily | `staff_documents.expires_at − 30d`, and papers that have already expired | Reminder to the member of staff themselves + one task for HR naming the document | `notifications`, `tasks` |
 | H5 | 🔒 `staff.joined` | — | User account + role by designation, ID card job, biometric enrol task, salary structure task, welcome email | `users`, `id_cards`, `tasks` |
 | H6 | 🔒 `staff.left` | — | Deactivate user, revoke sessions, final settlement (leave encashment, loan recovery), reassign timetable slots → substitution needed | `users`, `auth_sessions`, `timetable_substitutions` |
 | H7 | ⚙️ appraisal cycle opens | — | Pre-fill `auto_metrics` (attendance %, syllabus completion, class result average) | `staff_appraisals` |
 | H8 | ⏰ daily | birthday / work anniversary | Greeting (staff & students) | `notifications` |
+| H9 | ⏰ daily | run `calculated` and the pay day (`hr.pay_day`, 28th) has passed | **Prepared, confirmed by a person**: the run is complete to the last taka; one task and one message a fortnight name the month, the head count and the net, and approving it is one button. A run stuck in `draft` had its calculation lost and is queued again | `tasks`, `notifications`, `background_jobs` |
+| H10 | ⏰ daily | `staff_exits.last_working_day` passed and status ≠ `settled` | **Prepared, confirmed by a person**: leave encashment, provident fund, gratuity and loan recovery are all computed and named in one task with the net. Settling posts the journal and closes the account, so it stays a button | `tasks`, `notifications` |
+| H11 | 🔒 `staff.joined` | leave types exist for staff | Accrue this year's leave balances at once, instead of leaving a mid-month joiner with no leave until the 1st | `leave_balances` |
 
 ## 9. Library
 
@@ -140,8 +143,10 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | J4 | ⏰ every 5 min | trip not started 10 min after schedule | Alert transport manager + guardians on route | `vehicle_trips.delay_alert_sent_at` |
 | J5 | 🔒 GPS packet | speed > limit | Over-speed alert to manager; log for driver appraisal | `notifications` |
 | J6 | 🔒 drop trip ended | student boarded but not alighted | Critical alert to helper, manager, guardian | `notifications` |
-| J7 | ⏰ daily | insurance/fitness/tax/permit expiring in 30d; maintenance due by date/km | Tasks + reminders | `tasks` |
+| J7 | ⏰ daily | insurance/fitness/tax/permit expiring in 30d; maintenance due by date | One open task per vehicle per paper (not one a night) | `tasks` |
 | J8 | 🔒 `student_transport` created | — | Route fee joins monthly invoicing (F1) | `invoice_items` |
+| J9 | ⏰ daily 17:00 | tomorrow: an active route with riders whose vehicle has no driver, is off the road, or has expired papers | Name the routes and the reason to the transport manager, once for that date, with a task. Nothing is cancelled and no driver is reassigned — who drives is a decision about people | `tasks`, `notifications` |
+| J10 | ⏰ daily | a vehicle paper whose date has **already** passed | Called expired rather than dropping out of the 30-day window; urgent task to renew it or take the vehicle off the road | `tasks` |
 
 ## 11. Hostel
 
@@ -153,9 +158,14 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | K4 | ⏰ nightly after roll call | absent in night roll call, no outpass | Alert warden + guardian | `notifications` |
 | K5 | ⚙️ complaint logged | category maintenance | Task to maintenance; SLA 48h | `tasks` |
 | K6 | ⏰ 1st of the month 03:00 | per-meal billing is on | Bill last month's meals at the rate each was taken at; a student already billed is skipped | `meal_records`, `invoices` |
-| L6 | ⏰ daily 09:00 | work order past the deadline its priority set | Chase the assignee and the office; overdue safety drills are named too | `work_orders`, `safety_drills` |
-| O1 | ⏰ daily 09:00 | a resolution's due date has passed | Remind its owner (or the office if it has none); an election past its closing time counts itself | `resolutions`, `elections` |
-| O2 | ⏰ monthly | records older than a retention rule, or a return generated a fortnight ago and still unsent | Report what retention would touch — never delete — and name the unsent returns | `retention_policies`, `govt_reports` |
+| K7 | ⏰ nightly 22:30 | a hostel with residents has no `night` roll call marked for today; a room holding more residents than its capacity | Tell the warden and the office once for that night (K4 only fires when the call *is* taken, so a warden who forgets produced no alert at all); over-capacity rooms become one task — nobody is moved automatically | `notifications`, `tasks` |
+| L6 | ⏰ daily 09:00 | work order past the deadline its priority set | Chase the person holding it and the office, at most every other day; overdue safety drills are named once a fortnight and become a task | `work_orders`, `safety_drills`, `tasks` |
+| L8 | ⏰ daily 09:00 | a cleaning round past its frequency | One open task per area (`cleaningDue` existed and nothing called it); marking the area done closes it | `cleaning_schedules`, `tasks` |
+| O1 | ⏰ daily 09:00 | a resolution's due date has passed | Remind its owner (or the office if it has none) once a week; an election past its closing time counts itself | `resolutions`, `elections` |
+| O2 | ⏰ monthly | records older than a retention rule, or a return generated a fortnight ago and still unsent | Report what retention would touch — never delete — and name the unsent returns, with a task so it is chased rather than read | `retention_policies`, `govt_reports`, `tasks` |
+| O3 | ⏰ daily 09:00 | a meeting held 3 days ago with no minutes; a policy published a fortnight ago that people have not acknowledged | Task to write the minutes up; the people still missing are reminded **by name**, once a fortnight, and the office gets the list | `meetings`, `policy_documents`, `tasks` |
+| O4 | ⏰ daily 04:00 | a data request outstanding; consent whose `expires_at` has passed | An **export** is produced entirely by the system and is fulfilled and handed over automatically. A **delete or correct** is escalated on the statutory clock (`compliance.response_days`, 30) and never carried out this way — a school has records it must keep. Expired consent: the guardian is asked once to renew it and the office is told what lapsed | `data_requests`, `consent_records`, `notifications` |
+| O5 | ⏰ monthly | the census window (`compliance.census_months`, July) or a stipend period falling due | **Prepared, submitted by a person**: the return is built from the live register and a task names what to check before it goes. Submitting it is on a portal this system does not talk to | `govt_reports`, `tasks` |
 | P1 | ⏰ daily 00:30 | a metric departs from this school's own recent median by more than three deviations | One open alert per metric (never a daily duplicate) to the office, with the usual figure beside the actual one | `metric_values`, `kpi_daily`, `anomaly_alerts` |
 | P2 | ⏰ weekly | attendance, fees and results together put a student above the risk threshold | Name the student to their class teacher once, with the reasons — not a score on its own | `risk_scores`, `notifications` |
 | Q1 | ⏰ daily 02:00 | a subscription is a fortnight from its end, or an invoice is past its due date | Raise the next invoice; mark the overdue ones and pause new students and messages — never access to what the school already has | `saas_invoices`, `saas_subscriptions` |
@@ -167,8 +177,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | L1 | 🔒 stock movement | qty < `reorder_level` | Draft PO with preferred vendor & `reorder_qty`; notify store keeper | `purchase_orders (is_auto)` |
 | L2 | 🔒 PO received | — | Stock-in movements; expense + journal; asset rows for asset categories with QR tags | `stock_movements`, `expenses`, `assets` |
 | L3 | 🔒 issue request approved | — | Stock-out movements to staff/room | `stock_movements` |
-| L4 | ⏰ daily | maintenance `next_due_date` / warranty expiring | Tasks + reminders | `tasks` |
+| L4 | ⏰ daily | maintenance `next_due_date` (including dates already passed) / warranty expiring | One open task per service record, not one a night; an overdue service is called overdue instead of dropping out of the window | `tasks` |
 | L5 | 🔒 clinic visit with medicines | — | Stock-out from clinic store | `stock_movements` |
+| L7 | ⏰ daily 07:00 | any item at or below its reorder level, whether or not anything moved | The same two roads L1 takes — draft PO with the preferred vendor, or a task naming the shortfall — for the cases L1 misses: a reorder level raised afterwards, an auto order somebody cancelled, an item sitting at zero because nothing has moved it. The draft still waits for approval | `purchase_orders (is_auto)`, `tasks` |
 
 ## 13. Communication
 
@@ -197,6 +208,9 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | N10 | ⏰ nightly | — | Backups (PITR + object storage), retention purge of OTPs/expired sessions, outbox archive | — |
 | N11 | ⚙️ `rule.failed` ×3 | — | Alert school admin + platform ops | `notifications` |
 | N12 | 🔒 `import.finished` | — | Summary with error file link | `import_jobs`, `notifications` |
+| N13 | ⏰ daily 20:00 | a visitor badge with no out time; a gate pass past its `expected_in` with no return | Named to the office once for that day, with a task. **Nothing is closed automatically**: writing an out time the system invented would turn the one record a school produces after a fire into fiction. The guardian is not messaged — the office finds out what happened first | `visitor_logs`, `gate_passes`, `tasks` |
+| N14 | ⏰ daily | a safeguarding case open for 14 days | Review reminder to the case owner (the principal when it has none), then every fortnight. It carries the risk level and how long it has been open and **never the category or a word of the case** — the details are encrypted and only the owner decrypts them. The event payload carries the same three facts, for the same reason | `notifications`, `tasks` |
+| N15 | ⏰ daily | a counselling follow-up date passed with no later session; a special-needs plan past its review date; an insurance policy inside 30 days of lapsing | One open task each, to the counsellor, the coordinator and the office | `tasks` |
 
 ---
 
@@ -215,6 +229,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `fees.day_end_summary` | `0 18 * * *` | F10 |
 | `payroll.draft_run` | `0 9 25 * *` | H1 |
 | `hr.expiry_alerts` | `0 8 * * *` | H3, H4 |
+| `hr.pending_actions` | `0 10 * * *` | H9, H10 |
 | `exams.pre_exam_prep` | `0 7 * * *` | D2 |
 | `exams.marks_deadline_reminders` | `0 9 * * *` | D3 |
 | `lms.assignment_reminders` | `0 * * * *` | E2 |
@@ -222,14 +237,20 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `library.due_and_fines` | `0 7 * * *` | I2, I3 |
 | `transport.create_trips` | `0 5 * * 0-4` | J1 |
 | `transport.delay_watch` | `*/5 * * * *` | J4 |
-| `transport.document_expiry` | `0 8 * * *` | J7 |
+| `transport.document_expiry` | `0 8 * * *` | J7, J10 |
+| `transport.readiness` | `0 17 * * *` | J9 |
 | `hostel.curfew_watch` | `*/15 * * * *` | K3 |
 | `hostel.mess_billing` | `0 3 1 * *` | K6 |
+| `hostel.night_watch` | `30 22 * * *` | K7 |
 | `inventory.maintenance_due` | `0 8 * * *` | L4 |
+| `inventory.reorder_sweep` | `0 7 * * *` | L7 |
 | `frontoffice.sla_escalation` | `0 * * * *` | N8 |
-| `facilities.sla_watch` | `0 9 * * *` | L6 |
-| `governance.resolution_watch` | `0 9 * * *` | O1 |
-| `compliance.review` | `0 4 1 * *` | O2 |
+| `frontoffice.gate_watch` | `0 20 * * *` | N13 |
+| `facilities.sla_watch` | `0 9 * * *` | L6, L8 |
+| `governance.resolution_watch` | `0 9 * * *` | O1, O3 |
+| `compliance.review` | `0 4 1 * *` | O2, O5 |
+| `compliance.daily_watch` | `0 4 * * *` | O4 |
+| `welfare.followups` | `0 6 * * *` | N14, N15 |
 | `analytics.daily` | `30 0 * * *` | P1 |
 | `analytics.risk_scores` | `0 5 * * 1` | P2 |
 | `forecast.monthly` | `0 3 2 * *` | P24, P25 |

@@ -154,6 +154,8 @@ export class HostelService {
     }
     // K4: an unexplained absence at night is escalated immediately, not in the morning
     if (call === 'night') {
+      // the call has been taken, so the chase for it is over
+      await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'hostel.rollcall' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, `${hostelId}:${onDate}`]);
       for (const m of marks.filter(x => x.status === 'absent')) {
         const pass = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM hostel_outpasses WHERE student_id = ? AND status IN ('approved','out') AND leave_from <= ? AND expected_return >= ?`, [m.studentId, nowSql(), nowSql()]);
         if (Number(pass[0]?.n ?? 0) > 0) continue;
@@ -266,6 +268,44 @@ export class HostelService {
           await this.notifyGuardians(schoolId, String(o.student_id), 'hostel.late_return', 'Your child is late back', `${o.first_name} was due back in the hostel at ${String(o.expected_return).slice(0, 16)} and has not returned.`, String(o.id), ['sms', 'push', 'in_app']);
         }
         return { late: late.length };
+      },
+      /**
+       * K7: the two things a hostel discovers too late.
+       *
+       * The night roll call is the whole safety story of a boarding house, and K4 only fires when
+       * somebody takes it — a warden who forgets produces no alert at all, which is exactly the night
+       * you would want one. So the roll call itself is watched: if a hostel with residents has no
+       * night call marked for tonight, the warden and the office are told, once for that night.
+       *
+       * And a room holding more residents than its capacity, which happens when a room is
+       * re-designated rather than when a bed is allocated — allocation already refuses an occupied
+       * bed. It is a task, not an alarm: somebody has to decide who moves.
+       */
+      'hostel.night_watch': async ({ schoolId, payload }) => {
+        const onDate = typeof payload?.onDate === 'string' ? payload.onDate : nowSql().slice(0, 10);
+        const hostels = await this.db.query<Row>(`SELECT h.*, (SELECT COUNT(*) FROM hostel_allocations a JOIN hostel_beds b ON b.id = a.bed_id JOIN hostel_rooms r ON r.id = b.room_id WHERE r.hostel_id = h.id AND a.status = 'active') AS residents
+          FROM hostels h WHERE h.school_id = ? AND h.status = 'active'`, [schoolId]);
+        let missing = 0;
+        for (const h of hostels) {
+          if (!Number(h.residents)) continue;
+          const taken = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM hostel_attendance WHERE school_id = ? AND hostel_id = ? AND on_date = ? AND roll_call = 'night'`, [schoolId, String(h.id), onDate]);
+          if (Number(taken[0]?.n ?? 0) > 0) continue;
+          const warden = h.warden_id ? await this.db.findOne<Row>('staff', { id: String(h.warden_id) }) : null;
+          const body = `No night roll call has been marked in ${h.name} for ${onDate}. ${Number(h.residents)} resident(s) are unaccounted for on paper.`;
+          if (warden?.user_id) await this.notifications.notifyOnce({ schoolId, userId: String(warden.user_id), channels: ['push', 'in_app', 'sms'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, withinHours: 20 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, withinHours: 20 });
+          const wardenUser = (warden?.user_id as string) ?? null;   // a task is held by a user account, not a staff row
+          await this.tasks.ensure({ schoolId, title: `Take the night roll call in ${h.name} (${onDate})`, taskType: 'hostel.rollcall', assignedTo: wardenUser, assignedRole: wardenUser ? null : 'admin', entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, priority: 'urgent' });
+          await this.outbox.emitNow({ type: 'hostel.rollcall_missing', schoolId, aggregateType: 'hostel.hostel', aggregateId: String(h.id), payload: { hostelId: String(h.id), onDate, call: 'night', residents: Number(h.residents) } });
+          missing++;
+        }
+        const over = await this.db.query<Row>(`SELECT r.id, r.room_no, r.capacity, h.name AS hostel_name, COUNT(a.id) AS occupied
+          FROM hostel_rooms r JOIN hostels h ON h.id = r.hostel_id JOIN hostel_beds b ON b.room_id = r.id JOIN hostel_allocations a ON a.bed_id = b.id AND a.status = 'active'
+          WHERE r.school_id = ? GROUP BY r.id, r.room_no, r.capacity, h.name HAVING COUNT(a.id) > r.capacity`, [schoolId]);
+        for (const r of over) {
+          await this.tasks.ensure({ schoolId, title: `Room ${r.room_no} in ${r.hostel_name} holds ${Number(r.occupied)} against a capacity of ${Number(r.capacity)}`, description: 'Somebody has to be moved, or the room re-rated. Nothing has been changed automatically.', taskType: 'hostel.capacity', assignedRole: 'admin', entityType: 'hostel.room', entityId: String(r.id), priority: 'high' });
+        }
+        return { hostels: hostels.length, rollCallMissing: missing, overCapacity: over.length };
       },
     };
   }

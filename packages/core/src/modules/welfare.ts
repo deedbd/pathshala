@@ -234,9 +234,74 @@ export class WelfareService {
             proposed++;
           }
         }
+        // N3: a vaccination falling due. The window is a week wide, so without a guard the same
+        // family was texted about the same jab on each of seven nights; one message per dose is
+        // enough, and a booster months later is a different row and gets its own.
         const due = await this.db.query<Row>(`SELECT v.*, s.first_name FROM vaccinations v JOIN students s ON s.id = v.student_id WHERE v.school_id = ? AND v.next_due_on IS NOT NULL AND v.next_due_on BETWEEN ? AND ?`, [schoolId, nowSql().slice(0, 10), addDays(nowSql().slice(0, 10), 7)]);
-        for (const v of due) await this.notifyGuardians(schoolId, String(v.student_id), 'welfare.vaccination_due', 'Vaccination due', `${v.first_name}: ${v.vaccine} dose ${v.dose_no} is due on ${String(v.next_due_on).slice(0, 10)}.`, String(v.id), ['sms', 'push', 'in_app']);
-        return { proposed, vaccinationReminders: due.length };
+        let reminded = 0;
+        for (const v of due) {
+          if (await this.notifications.sentSince(schoolId, 'welfare.vaccination_due', String(v.id), 24 * 30)) continue;
+          await this.notifyGuardians(schoolId, String(v.student_id), 'welfare.vaccination_due', 'Vaccination due', `${v.first_name}: ${v.vaccine} dose ${v.dose_no} is due on ${String(v.next_due_on).slice(0, 10)}.`, String(v.id), ['sms', 'push', 'in_app']);
+          reminded++;
+        }
+        return { proposed, vaccinationReminders: reminded };
+      },
+      /**
+       * N14 and N15 (P21 of the year-2 list): the welfare work that has no deadline of its own and so
+       * gets forgotten.
+       *
+       * A safeguarding case that stays open is reviewed every fortnight. The reminder says a case
+       * needs looking at, its risk level and how long it has been open — never the category and never
+       * a word of what is in it, because the details are encrypted and only the case owner decrypts
+       * them, and an alert is read on a phone screen anybody can see over a shoulder. The event
+       * payload carries the same three facts for the same reason.
+       *
+       * Beside it: a counselling follow-up whose date has gone by with no later session, a special
+       * needs plan past its review date, and an insurance policy about to lapse. Each becomes one
+       * open task, which is the difference between a duty and an intention.
+       */
+      'welfare.followups': async ({ schoolId }) => {
+        const today = nowSql().slice(0, 10);
+        const fortnight = nowSql(new Date(Date.now() - 14 * 86_400_000));
+        const open = await this.db.query<Row>(`SELECT * FROM safeguarding_cases WHERE school_id = ? AND status = 'open' AND created_at < ? ORDER BY created_at LIMIT 200`, [schoolId, fortnight]);
+        let reviews = 0;
+        for (const c of open) {
+          if (await this.notifications.sentSince(schoolId, 'welfare.case_review_due', String(c.id), 24 * 14)) continue;
+          const daysOpen = Math.max(0, Math.round((Date.now() - Date.parse(`${String(c.created_at).replace(' ', 'T')}Z`)) / 86_400_000));
+          const body = `A case opened ${daysOpen} day(s) ago is still open. Risk level ${c.risk_level}. Open the case to see it.`;
+          const alert = { channels: ['push', 'in_app'] as ('push' | 'in_app')[], eventKey: 'welfare.case_review_due', title: 'A safeguarding case is due for review', body, entityType: 'welfare.safeguarding', entityId: String(c.id) };
+          const owner = c.case_owner_id ? await this.db.findOne<Row>('staff', { id: String(c.case_owner_id) }) : null;
+          if (owner?.user_id) await this.notifications.notify({ schoolId, userId: String(owner.user_id), ...alert });
+          else {
+            // as when the case was opened: a reminder nobody receives is worse than none, so a school
+            // with no principal account falls back to the admins
+            const sent = await this.notifications.notifyRole(schoolId, 'principal', alert);
+            if (!sent.length) await this.notifications.notifyRole(schoolId, 'admin', alert);
+          }
+          const ownerUser = (owner?.user_id as string) ?? null;      // a task is held by a user account, not a staff row
+          await this.tasks.ensure({ schoolId, title: 'Review an open safeguarding case', description: `Open for ${daysOpen} day(s), risk level ${c.risk_level}. Open the case itself for the details.`, taskType: 'welfare.safeguarding', assignedTo: ownerUser, assignedRole: ownerUser ? null : 'principal', entityType: 'welfare.safeguarding', entityId: String(c.id), priority: c.risk_level === 'high' ? 'urgent' : 'high' });
+          await this.outbox.emitNow({ type: 'safeguarding.review_due', schoolId, aggregateType: 'welfare.safeguarding', aggregateId: String(c.id), payload: { caseId: String(c.id), riskLevel: String(c.risk_level), daysOpen } });
+          reviews++;
+        }
+        // a counselling follow-up nobody kept: the date passed and no session has happened since
+        const followUps = await this.db.query<Row>(`SELECT c.* FROM counselling_sessions c WHERE c.school_id = ? AND c.follow_up_at IS NOT NULL AND c.follow_up_at < ? AND c.status IN ('scheduled','done')
+          AND NOT EXISTS (SELECT 1 FROM counselling_sessions later WHERE later.student_id = c.student_id AND later.session_at > c.follow_up_at) ORDER BY c.follow_up_at LIMIT 200`, [schoolId, nowSql()]);
+        for (const s of followUps) {
+          const counsellor = (await this.db.findOne<Row>('staff', { id: String(s.counsellor_id) }))?.user_id as string ?? null;
+          await this.tasks.ensure({ schoolId, title: 'A counselling follow-up is overdue', description: `The follow-up was set for ${String(s.follow_up_at).slice(0, 16)} and no session has been held since. Open the session for the rest.`, taskType: 'welfare.counselling', assignedTo: counsellor, assignedRole: counsellor ? null : 'principal', entityType: 'welfare.counselling', entityId: String(s.id), dueAt: String(s.follow_up_at) });
+        }
+        // special needs plans past their review date
+        const plans = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name FROM special_needs_plans p JOIN students s ON s.id = p.student_id WHERE p.school_id = ? AND p.review_date IS NOT NULL AND p.review_date < ? LIMIT 200`, [schoolId, today]);
+        for (const p of plans) {
+          const coordinator = p.coordinator_id ? ((await this.db.findOne<Row>('staff', { id: String(p.coordinator_id) }))?.user_id as string) ?? null : null;
+          await this.tasks.ensure({ schoolId, title: `Review the support plan for ${p.first_name} ${p.last_name ?? ''}`.trim(), description: `The review was due on ${String(p.review_date).slice(0, 10)}.`, taskType: 'welfare.plan_review', assignedTo: coordinator, assignedRole: coordinator ? null : 'principal', entityType: 'welfare.plan', entityId: String(p.id), dueAt: String(p.review_date).slice(0, 10) });
+        }
+        // insurance about to lapse — a month is enough notice to renew a policy
+        const policies = await this.db.query<Row>(`SELECT * FROM insurance_policies WHERE school_id = ? AND valid_to IS NOT NULL AND valid_to <= ? LIMIT 200`, [schoolId, addDays(today, 30)]);
+        for (const p of policies) {
+          await this.tasks.ensure({ schoolId, title: `${p.provider ?? 'Insurance'} policy ${p.policy_no ?? ''} ${String(p.valid_to).slice(0, 10) < today ? 'has lapsed' : `expires on ${String(p.valid_to).slice(0, 10)}`}`.trim(), taskType: 'welfare.insurance', assignedRole: 'admin', entityType: 'welfare.insurance', entityId: String(p.id), dueAt: String(p.valid_to).slice(0, 10), priority: String(p.valid_to).slice(0, 10) < today ? 'high' : 'normal' });
+        }
+        return { caseReviews: reviews, counsellingFollowUps: followUps.length, planReviews: plans.length, insurance: policies.length };
       },
     };
   }

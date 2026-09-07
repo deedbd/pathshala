@@ -55,6 +55,11 @@
     "rows": "H3, H4"
   },
   {
+    "job_key": "hr.pending_actions",
+    "cron_expr": "0 10 * * *",
+    "rows": "H9, H10"
+  },
+  {
     "job_key": "exams.pre_exam_prep",
     "cron_expr": "0 7 * * *",
     "rows": "D2"
@@ -92,7 +97,12 @@
   {
     "job_key": "transport.document_expiry",
     "cron_expr": "0 8 * * *",
-    "rows": "J7"
+    "rows": "J7, J10"
+  },
+  {
+    "job_key": "transport.readiness",
+    "cron_expr": "0 17 * * *",
+    "rows": "J9"
   },
   {
     "job_key": "hostel.curfew_watch",
@@ -105,9 +115,19 @@
     "rows": "K6"
   },
   {
+    "job_key": "hostel.night_watch",
+    "cron_expr": "30 22 * * *",
+    "rows": "K7"
+  },
+  {
     "job_key": "inventory.maintenance_due",
     "cron_expr": "0 8 * * *",
     "rows": "L4"
+  },
+  {
+    "job_key": "inventory.reorder_sweep",
+    "cron_expr": "0 7 * * *",
+    "rows": "L7"
   },
   {
     "job_key": "frontoffice.sla_escalation",
@@ -115,19 +135,34 @@
     "rows": "N8"
   },
   {
+    "job_key": "frontoffice.gate_watch",
+    "cron_expr": "0 20 * * *",
+    "rows": "N13"
+  },
+  {
     "job_key": "facilities.sla_watch",
     "cron_expr": "0 9 * * *",
-    "rows": "L6"
+    "rows": "L6, L8"
   },
   {
     "job_key": "governance.resolution_watch",
     "cron_expr": "0 9 * * *",
-    "rows": "O1"
+    "rows": "O1, O3"
   },
   {
     "job_key": "compliance.review",
     "cron_expr": "0 4 1 * *",
-    "rows": "O2"
+    "rows": "O2, O5"
+  },
+  {
+    "job_key": "compliance.daily_watch",
+    "cron_expr": "0 4 * * *",
+    "rows": "O4"
+  },
+  {
+    "job_key": "welfare.followups",
+    "cron_expr": "0 6 * * *",
+    "rows": "N14, N15"
   },
   {
     "job_key": "analytics.daily",

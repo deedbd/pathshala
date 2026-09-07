@@ -111,7 +111,11 @@ export class HrService {
     if (!(await this.db.findOne('onboarding_checklists', { staff_id: staffId }))) {
       await this.db.insert('onboarding_checklists', { id: ulid(), school_id: schoolId, staff_id: staffId, items: items as never, completed_at: null });
     }
-    await this.tasks.create({ schoolId, title: 'Set the salary structure for a new colleague', taskType: 'hr.onboarding', assignedRole: 'accountant', entityType: 'hr.staff', entityId: staffId, priority: 'high' });
+    await this.tasks.ensure({ schoolId, title: 'Set the salary structure for a new colleague', taskType: 'hr.onboarding', assignedRole: 'accountant', entityType: 'hr.staff', entityId: staffId, priority: 'high' });
+    // A joiner's leave balances used to wait for the first of the next month, so somebody who started
+    // on the 5th had no leave to apply for until they had been there three weeks. Accrual runs for
+    // them the moment they join; the monthly pass then tops them up like everybody else.
+    await this.accrueLeave(schoolId, staffId);
     await this.outbox.emitNow({ type: 'staff.joined', schoolId, aggregateType: 'people.staff', aggregateId: staffId, payload: { staffId, userId: userId ?? null } });
     return items.length;
   }
@@ -671,11 +675,19 @@ export class HrService {
     await this.tasks.create({ schoolId, title: `Clearance for ${staff.first_name} ${staff.last_name ?? ''}`.trim(), taskType: 'hr.exit', assignedRole: 'admin', entityType: 'hr.exit', entityId: id, dueAt: e.lastWorkingDay, priority: 'high' });
     return id;
   }
-  /** Final settlement: encashable leave paid, the loan balance recovered, then the account is closed. */
-  async settleExit(schoolId: string, id: string, opts: { encashDays?: number; gratuity?: number } = {}) {
+  /**
+   * What a settlement would come to, without paying it. The daily watch uses this to put the figures
+   * in front of the office; settling itself posts a journal and closes the account, which is a
+   * decision, not a calculation, so it stays a button.
+   */
+  async settlementPreview(schoolId: string, id: string, opts: { encashDays?: number; gratuity?: number } = {}) {
     const ex = await this.db.findOne<Row>('staff_exits', { id, school_id: schoolId });
     if (!ex) throw notFound('exit');
-    if (ex.status === 'settled') return { ...(json<Record<string, unknown>>(ex.settlement) ?? {}), alreadySettled: true };
+    if (ex.status === 'settled') return { ...(json<Record<string, unknown>>(ex.settlement) ?? {}), alreadySettled: true } as Record<string, unknown>;
+    return { ...(await this.settlementFigures(schoolId, ex, opts)).settlement, alreadySettled: false } as Record<string, unknown>;
+  }
+  /** The arithmetic behind a settlement, shared by the preview and the settlement itself. */
+  private async settlementFigures(schoolId: string, ex: Row, opts: { encashDays?: number; gratuity?: number }) {
     const staffId = String(ex.staff_id);
     const structure = await this.structureFor(schoolId, staffId, String(ex.last_working_day));
     const basic = Number(structure?.basic ?? 0);
@@ -689,15 +701,23 @@ export class HrService {
     const pfPayable = pf ? round(Number(pf.employee_total) + Number(pf.employer_total) + Number(pf.interest_total) - Number(pf.withdrawn_total)) : 0;
     const gratuity = await this.gratuityFor(schoolId, staffId, String(ex.last_working_day), String(ex.exit_type), basic, opts.gratuity);
     const net = round(encashment + pfPayable + gratuity.amount - loanBalance);
-    const settlement = { encashDays, encashment, pfPayable, gratuity: gratuity.amount, gratuityYears: gratuity.years, loanRecovered: loanBalance, net };
+    return { staffId, loan, pf, pfPayable, loanBalance, settlement: { encashDays, encashment, pfPayable, gratuity: gratuity.amount, gratuityYears: gratuity.years, loanRecovered: loanBalance, net } };
+  }
+  /** Final settlement: encashable leave paid, the loan balance recovered, then the account is closed. */
+  async settleExit(schoolId: string, id: string, opts: { encashDays?: number; gratuity?: number } = {}) {
+    const ex = await this.db.findOne<Row>('staff_exits', { id, school_id: schoolId });
+    if (!ex) throw notFound('exit');
+    if (ex.status === 'settled') return { ...(json<Record<string, unknown>>(ex.settlement) ?? {}), alreadySettled: true };
+    const { staffId, loan, pf, pfPayable, loanBalance, settlement } = await this.settlementFigures(schoolId, ex, opts);
+    const { encashment, gratuity, net } = settlement;
     const lines = [
-      { accountCode: '5100', debit: round(encashment + gratuity.amount), description: gratuity.amount ? 'Leave encashment and gratuity' : 'Leave encashment' },
+      { accountCode: '5100', debit: round(encashment + gratuity), description: gratuity ? 'Leave encashment and gratuity' : 'Leave encashment' },
       { accountCode: '2300', debit: pfPayable, description: 'Provident fund paid out' },
       { accountCode: '1400', credit: loanBalance, description: 'Loan recovered from settlement' },
       { accountCode: '1100', credit: net > 0 ? net : 0, description: 'Final settlement paid' },
       { accountCode: '1100', debit: net < 0 ? -net : 0, description: 'Recovered from the leaver' },
     ];
-    const j = round(encashment + pfPayable + gratuity.amount) > 0 || loanBalance > 0 ? await this.accounting.post(schoolId, { entryDate: String(ex.last_working_day), memo: `Final settlement ${staffId}`, sourceType: 'hr.exit', sourceId: id, lines }) : null;
+    const j = round(encashment + pfPayable + gratuity) > 0 || loanBalance > 0 ? await this.accounting.post(schoolId, { entryDate: String(ex.last_working_day), memo: `Final settlement ${staffId}`, sourceType: 'hr.exit', sourceId: id, lines }) : null;
     await this.db.transaction(async tx => {
       await tx.update('staff_exits', { settlement: settlement as never, settlement_journal_id: j?.id ?? null, status: 'settled', updated_at: nowSql() }, { id });
       if (loan) await tx.update('staff_loans', { balance: 0, status: 'closed', updated_at: nowSql() }, { id: String(loan.id) });
@@ -725,6 +745,34 @@ export class HrService {
     const minYears = policy.minYears ?? 5;
     if (years < minYears) return { amount: 0, years, reason: `${years} years of service, ${minYears} needed` };
     return { amount: round(basic * (policy.monthsPerYear ?? 1) * years), years, reason: `${years} years of service` };
+  }
+
+  /**
+   * Tops leave balances up for the current academic year — for one member of staff when somebody has
+   * just joined, and for everybody on the monthly pass. A monthly leave type accrues a twelfth for
+   * each month elapsed; a balance is only ever raised, never lowered, so a school that grants extra
+   * days by hand does not lose them on the first of the month.
+   */
+  async accrueLeave(schoolId: string, staffId?: string) {
+    const year = await this.academic.requireYear(schoolId, null);
+    const types = await this.db.findMany<Row>('leave_types', { school_id: schoolId, audience: 'staff' });
+    if (!types.length) return { balances: 0 };
+    const staff = staffId
+      ? await this.db.query<Row>(`SELECT id FROM staff WHERE school_id = ? AND id = ?`, [schoolId, staffId])
+      : await this.db.query<Row>(`SELECT id FROM staff WHERE school_id = ? AND status IN ('active','probation')`, [schoolId]);
+    let made = 0;
+    for (const st of staff) {
+      for (const t of types) {
+        const allocated = Number(t.days_per_year ?? 0);
+        if (!allocated) continue;
+        const monthly = String(t.accrual) === 'monthly' ? round((allocated * (new Date().getUTCMonth() + 1)) / 12) : allocated;
+        const ex = await this.db.findOne<Row>('leave_balances', { staff_id: String(st.id), leave_type_id: String(t.id), academic_year_id: String(year.id) });
+        if (ex) { if (Number(ex.allocated) < monthly) { await this.db.update('leave_balances', { allocated: monthly, updated_at: nowSql() }, { id: String(ex.id) }); made++; } continue; }
+        await this.db.insert('leave_balances', { id: ulid(), school_id: schoolId, staff_id: String(st.id), leave_type_id: String(t.id), academic_year_id: String(year.id), allocated: monthly, carried_forward: 0, used: 0, encashed: 0 });
+        made++;
+      }
+    }
+    return { balances: made };
   }
 
   // ---------- helpers ----------
@@ -777,40 +825,92 @@ export class HrService {
         if (ex && String(ex.status) !== 'draft') return { skipped: String(ex.status) };
         return this.draftRun(schoolId, { periodMonth: month });
       },
-      // H3/H4: contracts ending, probation finishing
+      /**
+       * H3, H4 and H11: papers with a date on them. Contracts ending, probation finishing — and now
+       * the staff documents H4 always promised, which nothing looked at: an expired NID, teaching
+       * certificate or medical is the thing an inspector asks for and the office finds missing on the
+       * day. A probation end that has already gone by is chased too, because "next Tuesday" stops
+       * being a warning once Tuesday is behind you.
+       *
+       * Every row goes through `tasks.ensure` and `notifyRoleOnce`, so a paper thirty days from
+       * expiry raises one task and one message, not thirty of each.
+       */
       'hr.expiry_alerts': async ({ schoolId }) => {
-        const soon = isoDay(nowSql().slice(0, 10), 30);
         const today = nowSql().slice(0, 10);
+        const soon = isoDay(today, 30);
         const contracts = await this.db.query<Row>(`SELECT c.*, s.first_name, s.last_name FROM staff_contracts c JOIN staff s ON s.id = c.staff_id WHERE c.school_id = ? AND c.end_date IS NOT NULL AND c.end_date BETWEEN ? AND ? AND s.status IN ('active','probation')`, [schoolId, today, soon]);
-        const probations = await this.db.query<Row>(`SELECT * FROM staff WHERE school_id = ? AND status = 'probation' AND probation_end IS NOT NULL AND probation_end BETWEEN ? AND ?`, [schoolId, today, soon]);
+        // probation that ends within the month, or ended and nobody confirmed the person
+        const probations = await this.db.query<Row>(`SELECT * FROM staff WHERE school_id = ? AND status = 'probation' AND probation_end IS NOT NULL AND probation_end <= ?`, [schoolId, soon]);
+        const documents = await this.db.query<Row>(`SELECT d.*, s.first_name, s.last_name, s.user_id, s.phone FROM staff_documents d JOIN staff s ON s.id = d.staff_id WHERE d.school_id = ? AND d.expires_at IS NOT NULL AND d.expires_at <= ? AND s.status IN ('active','probation','on_leave')`, [schoolId, soon]);
         for (const c of contracts) {
-          await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'hr.contract_expiring', title: 'Contract ending soon', body: `${c.first_name} ${c.last_name ?? ''}: contract ends on ${String(c.end_date).slice(0, 10)}.`, entityType: 'hr.contract', entityId: String(c.id) });
-          await this.tasks.create({ schoolId, title: `Renew or close the contract of ${c.first_name}`, taskType: 'hr.contract', assignedRole: 'admin', entityType: 'hr.contract', entityId: String(c.id), dueAt: String(c.end_date).slice(0, 10) });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'hr.contract_expiring', title: 'Contract ending soon', body: `${c.first_name} ${c.last_name ?? ''}: contract ends on ${String(c.end_date).slice(0, 10)}.`, entityType: 'hr.contract', entityId: String(c.id), withinHours: 24 * 14 });
+          await this.tasks.ensure({ schoolId, title: `Renew or close the contract of ${c.first_name}`, taskType: 'hr.contract', assignedRole: 'admin', entityType: 'hr.contract', entityId: String(c.id), dueAt: String(c.end_date).slice(0, 10) });
         }
         for (const s of probations) {
-          await this.tasks.create({ schoolId, title: `Probation review for ${s.first_name}`, taskType: 'hr.probation', assignedRole: 'admin', entityType: 'hr.staff', entityId: String(s.id), dueAt: String(s.probation_end).slice(0, 10) });
+          const ended = String(s.probation_end).slice(0, 10) < today;
+          await this.tasks.ensure({ schoolId, title: ended ? `Probation of ${s.first_name} ended on ${String(s.probation_end).slice(0, 10)} — confirm or extend` : `Probation review for ${s.first_name}`, taskType: 'hr.probation', assignedRole: 'admin', entityType: 'hr.staff', entityId: String(s.id), dueAt: String(s.probation_end).slice(0, 10), priority: ended ? 'high' : 'normal' });
         }
-        return { contracts: contracts.length, probations: probations.length };
+        // H4: the member of staff hears about their own paper, and HR gets the task
+        for (const d of documents) {
+          const on = String(d.expires_at).slice(0, 10);
+          const gone = on < today;
+          await this.notifications.notifyOnce({ schoolId, userId: (d.user_id as string) ?? null, address: (d.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'hr.document_expiring', title: gone ? 'A document of yours has expired' : 'A document of yours is about to expire', body: `${String(d.doc_type).replace(/_/g, ' ')} ${gone ? 'expired on' : 'expires on'} ${on}. Please give the office a current copy.`, entityType: 'hr.staff_document', entityId: String(d.id), withinHours: 24 * 14 });
+          await this.tasks.ensure({ schoolId, title: `${d.first_name} ${d.last_name ?? ''}: ${String(d.doc_type).replace(/_/g, ' ')} ${gone ? 'has expired' : `expires on ${on}`}`.trim(), taskType: 'hr.document', assignedRole: 'admin', entityType: 'hr.staff_document', entityId: String(d.id), dueAt: on, priority: gone ? 'high' : 'normal' });
+        }
+        return { contracts: contracts.length, probations: probations.length, documents: documents.length };
+      },
+      /**
+       * H9 and H10: work the office has already been given and has not finished.
+       *
+       * A payroll run is *prepared* by the system down to the last taka, but paying people is a
+       * decision, so the run waits for approval. What went wrong before was silence: a run calculated
+       * on the 25th and never approved simply sat there, and the first anyone knew was staff asking
+       * where their salary was. From the pay day onward the run is put in front of whoever approves
+       * it, once a fortnight, with the figures it is asking them to approve. A run still in `draft`
+       * had its calculation lost (a queue that never drained); it is queued again, which is safe
+       * because a payslip is rewritten rather than added.
+       *
+       * The same for an exit: the leaving date has passed and no settlement was computed. The system
+       * works out the whole figure — encashable leave, provident fund, gratuity, loan recovered — and
+       * raises one task naming the net. A person presses settle, because settling posts a journal and
+       * closes an account.
+       */
+      'hr.pending_actions': async ({ schoolId }) => {
+        const today = nowSql().slice(0, 10);
+        const payDay = Number((await this.settings.get<number>(schoolId, 'hr.pay_day')) ?? 28);
+        const runs = await this.db.query<Row>(`SELECT * FROM payroll_runs WHERE school_id = ? AND status IN ('draft','calculated') AND period_month <= ? ORDER BY period_month`, [schoolId, `${today.slice(0, 7)}-01`]);
+        let awaiting = 0, requeued = 0;
+        for (const run of runs) {
+          const month = String(run.period_month).slice(0, 7);
+          // the pay day of the month the run is for; a run for a month already gone is due at once
+          const due = month < today.slice(0, 7) ? monthEnd(String(run.period_month).slice(0, 10)) : `${month}-${String(payDay).padStart(2, '0')}`;
+          if (today < due) continue;
+          if (run.status === 'draft') {
+            await this.adapters.queue.push({ name: 'payroll.calculate', queue: 'batch', schoolId, payload: { runId: String(run.id) }, triggeredBy: 'hr.pending_actions' });
+            requeued++;
+            continue;
+          }
+          const net = Number(run.total_net ?? 0);
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'hr.payroll_awaiting_approval', title: `Payroll for ${month} is waiting for approval`, body: `${Number(run.staff_count)} staff, ${net} net. It was due on ${due} and nobody has approved it.`, entityType: 'hr.payroll', entityId: String(run.id), withinHours: 24 * 14 });
+          await this.tasks.ensure({ schoolId, title: `Approve the ${month} payroll (${Number(run.staff_count)} staff, ${net} net)`, description: 'The run is calculated and the payslips are ready. Approving it renders them, writes the bank file and posts the journal.', taskType: 'hr.payroll', assignedRole: 'admin', entityType: 'hr.payroll', entityId: String(run.id), dueAt: due, priority: 'high' });
+          await this.outbox.emitNow({ type: 'payroll.approval_due', schoolId, aggregateType: 'hr.payroll', aggregateId: String(run.id), payload: { runId: String(run.id), month, staff: Number(run.staff_count), net, payDay: due } });
+          awaiting++;
+        }
+        // exits whose last working day has gone by with nothing computed
+        const exits = await this.db.query<Row>(`SELECT e.*, s.first_name, s.last_name FROM staff_exits e JOIN staff s ON s.id = e.staff_id WHERE e.school_id = ? AND e.status <> 'settled' AND e.last_working_day <= ?`, [schoolId, today]);
+        let settlements = 0;
+        for (const ex of exits) {
+          const figures = await this.settlementFigures(schoolId, ex, {});
+          const name = `${ex.first_name} ${ex.last_name ?? ''}`.trim();
+          await this.tasks.ensure({ schoolId, title: `Settle ${name}: ${figures.settlement.net} net`, description: `Left on ${String(ex.last_working_day).slice(0, 10)}. Leave encashment ${figures.settlement.encashment}, provident fund ${figures.settlement.pfPayable}, gratuity ${figures.settlement.gratuity}, loan recovered ${figures.settlement.loanRecovered}. Check the clearance, then settle.`, taskType: 'hr.settlement', assignedRole: 'accountant', entityType: 'hr.exit', entityId: String(ex.id), dueAt: String(ex.last_working_day).slice(0, 10), priority: 'high' });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'hr.settlement_due', title: `${name} has left and is not settled`, body: `Last working day ${String(ex.last_working_day).slice(0, 10)}. The settlement comes to ${figures.settlement.net}.`, entityType: 'hr.exit', entityId: String(ex.id), withinHours: 24 * 7 });
+          await this.outbox.emitNow({ type: 'staff.settlement_due', schoolId, aggregateType: 'hr.exit', aggregateId: String(ex.id), payload: { staffId: String(ex.staff_id), exitId: String(ex.id), lastWorkingDay: String(ex.last_working_day).slice(0, 10), net: figures.settlement.net } });
+          settlements++;
+        }
+        return { awaitingApproval: awaiting, requeued, settlements };
       },
       // leave accrual: top the balances up for the current year
-      'leave.accrue': async ({ schoolId }) => {
-        const year = await this.academic.requireYear(schoolId, null);
-        const types = await this.db.findMany<Row>('leave_types', { school_id: schoolId, audience: 'staff' });
-        const staff = await this.db.query<Row>(`SELECT id FROM staff WHERE school_id = ? AND status IN ('active','probation')`, [schoolId]);
-        let made = 0;
-        for (const st of staff) {
-          for (const t of types) {
-            const allocated = Number(t.days_per_year ?? 0);
-            if (!allocated) continue;
-            const monthly = String(t.accrual) === 'monthly' ? round((allocated * (new Date().getUTCMonth() + 1)) / 12) : allocated;
-            const ex = await this.db.findOne<Row>('leave_balances', { staff_id: String(st.id), leave_type_id: String(t.id), academic_year_id: String(year.id) });
-            if (ex) { if (Number(ex.allocated) < monthly) { await this.db.update('leave_balances', { allocated: monthly, updated_at: nowSql() }, { id: String(ex.id) }); made++; } continue; }
-            await this.db.insert('leave_balances', { id: ulid(), school_id: schoolId, staff_id: String(st.id), leave_type_id: String(t.id), academic_year_id: String(year.id), allocated: monthly, carried_forward: 0, used: 0, encashed: 0 });
-            made++;
-          }
-        }
-        return { balances: made };
-      },
+      'leave.accrue': async ({ schoolId }) => this.accrueLeave(schoolId),
     };
   }
 }
