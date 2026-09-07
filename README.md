@@ -17,25 +17,44 @@ Turnstile · SSLCommerz/bKash later. Pure-JS packages only (enforced in CI).
 
 ## Status
 
-**Phase 0 (foundation + zero-touch installer) and Phase 1 (academic core, people, website) are
-implemented** — see `docs/PLAN.md`. A fresh database goes from zip to dashboard through
-`install.php` → `/install`; the school then gets its academic year, classes, subjects, sections,
-periods and website from an institution preset. Students come in one at a time or 1,500 at a time
-from Excel (error workbook for bad rows), the timetable generator places every period without
-clashes, guardians sign in by OTP to a PWA that shows their children, the timetable and notices.
-Phase 2 (attendance, communication, diary) is next.
+**All nine phases of `docs/PLAN.md` are implemented.** Each phase carries a status paragraph in the
+plan saying what shipped and what did not, and each has a test suite that proves its exit criterion
+on SQLite, MySQL 8 and Postgres 16:
+
+| Phase | What it covers | Proven by |
+|---|---|---|
+| 0 | Monorepo, adapters, zero-touch installer, auth, tenancy, RBAC, automation core, notifications, release pipeline | zip → dashboard with no cPanel clicks; rule → SMS + PDF |
+| 1 | Academic structure, people, Excel import, timetable, curriculum, website, guardian PWA | 1,500 students imported in seconds; 40 sections timetabled with no clashes |
+| 2 | Attendance with device ingestion, leave, chat, PTM, diary, teacher PWA | absent SMS inside the five-minute window for every section |
+| 3 | Fees, gateways, counter cash, accounting | a month closes with a balanced trial balance and no hand-written fee journal |
+| 4 | Exams, marks with lock, the result engine, report cards, promotion, question bank | 1,500 report cards published in ~40 s, in chunks |
+| 5 | HR from vacancy to exit, payroll, payslips, bank file | 151 staff drafted, approved, paid and journaled in one pass |
+| 6 | Admissions from campaign to enrolment; documents with QR verification | 500 applications → 200 seats in strict merit order → enrolment on payment |
+| 7 | Library, transport, hostel, stores and assets, front office | fines reach the invoice, the bus tells the right guardians, a delivery becomes stock and a tagged asset |
+| 8 | Behaviour, health and the clinic, counselling and safeguarding, LMS, surveys, events | points propose an action; confidential notes stay encrypted |
+| 9 | Hardening: the security review as a test, backup and restore, the engine move, the load run | 5 schools × 1,500 students in one database; a request answers in 0.36 s with 11,800 events still queued |
+
+What is left needs a real school and a real host rather than more code: a run on an actual Namecheap
+account, a pilot school live with a real SMS gateway and payment merchant, and the smaller gaps each
+phase lists under "Not yet".
 
 ## Layout
 
 ```
 apps/
   server/       Express 5 host (Passenger startup file server.js): SSR, /api, /install, /cron/tick, /events, loops
-  web/          React Router app: install wizard, login, console (dashboard, automation); portals come in Phase 1
+  web/          React Router app: install wizard, login, the console (academic, students, staff, attendance,
+                timetable, exams, fees, accounts, hr, admissions, operations, learning, diary, chat, website),
+                the guardian and student PWA at /portal, the teacher PWA at /teach, the public site at /site
   installer/    install.php + index.php — the PHP bootstrap that runs when the domain is first opened
 packages/
   db/           engine adapters (mysql2 · node:sqlite · pg), boot-time migrations, seeds, generated Drizzle schema
   core/         domain services: auth, tenancy context, RBAC, audit, settings, files, custom fields,
-                automation (outbox, relay, rule engine, jobs), notifications, tasks, approvals, installer
+                automation (outbox, relay, rule engine, jobs), notifications, tasks, approvals, installer,
+                and one module per domain in core/src/modules: academic, people, importer, timetable,
+                curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr,
+                admissions, documents, library, transport, hostel, inventory, frontoffice, welfare, lms,
+                engagement, platform
   adapters/     queue · scheduler · storage · pdf · realtime · mail · sms · push (cPanel impls + VPS stubs), fonts/
   events/       typed event catalogue
   schemas/      Zod schemas shared by API, loaders/actions and forms
@@ -46,8 +65,10 @@ db/
   seeds/             build-seeds.mjs turns docs/AUTOMATION.md into automation_rules.json + scheduled_jobs.json
   migrations/<engine>/  delta migrations applied at boot after the baseline
 scripts/        check-native.mjs (no native addons in the server tree) · build-release.mjs (cPanel zip)
-tests/          smoke.test.mjs — the Phase 0 exit criterion, run on SQLite, MySQL and Postgres in CI
-docs/           ARCHITECTURE · HOSTING-CPANEL · ROADMAP-5Y · DESIGN-SYSTEM · AUTOMATION · PLAN · masterplan.html · console.html
+                verify-release.mjs (boots the built zip) · migrate-db.mjs (SQLite → MySQL) · update.mjs (update + rollback)
+tests/          smoke.test.mjs plus phase1–9.test.mjs — every exit criterion, run on SQLite, MySQL and Postgres in CI
+docs/           ARCHITECTURE · HOSTING-CPANEL · ROADMAP-5Y · DESIGN-SYSTEM · AUTOMATION · PLAN · MANUAL-bn (for the head teacher)
+                masterplan.html · console.html
 ```
 
 ## Develop
@@ -57,8 +78,11 @@ pnpm install
 pnpm db:generate      # regenerate SQL, schema.json, seeds JSON and Drizzle tables after editing db/schema/*.def.mjs
 pnpm build            # all packages + the web app
 pnpm typecheck
-pnpm smoke            # end-to-end on SQLite: installer → school → rule → SMS + PDF → scheduler → HTTP API
-TEST_DB_URL=mysql://root:root@127.0.0.1:3306/pathshala pnpm smoke     # same test on MySQL (or postgres://…)
+pnpm smoke            # every phase suite on SQLite: installer, academics, attendance, fees, exams, HR,
+                      # admissions, operations, learning, hardening
+TEST_DB_URL=mysql://root:root@127.0.0.1:3306/pathshala pnpm smoke     # the same suites on MySQL (or postgres://…)
+PHASE4_BIG=1 pnpm test:phase4    # the 1,500-student report-card run instead of the 120-student default
+PHASE9_LOAD=1 pnpm test:phase9   # the 5 schools × 1,500 students load run
 ```
 
 Run it locally (SQLite, no configuration): copy `.env.example` to `.env`, set `DB_ENGINE=sqlite`,
@@ -71,8 +95,24 @@ pnpm build && pnpm release:cpanel   # → release/pathshala-<version>-cpanel.zip
 docker compose up -d                # same commit on Postgres; open http://localhost:3000/install
 ```
 
-GitHub Actions builds the zip and the Docker image from every push to `main`, runs the smoke
-test against SQLite, MySQL 8 and Postgres 16, and attaches the zip to tagged releases.
+GitHub Actions builds the zip and the Docker image from every push to `main`, runs every phase suite
+against SQLite, MySQL 8 and Postgres 16, boots the built zip to prove it deploys, and attaches the zip
+to tagged releases.
+
+Updating a school that is already live:
+
+```bash
+node scripts/update.mjs --zip pathshala-<version>-cpanel.zip --root /home/user/public_html
+node scripts/update.mjs --rollback          # if the new one misbehaves
+```
+
+It backs up the database first, keeps the running release beside it, extracts over the top without
+touching `.env`, `uploads/` or `storage/`, boots the result and restores the old one if it does not
+answer. Moving a school off SQLite when it outgrows it:
+
+```bash
+node scripts/migrate-db.mjs --from sqlite:storage/pathshala.db --to "mysql://user:pass@localhost/school"
+```
 
 ## Regenerate the schema
 
