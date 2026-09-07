@@ -32,6 +32,24 @@ export function mountPhase4(api: Router, app: App, wrap: Wrap, requirePerm: (req
   // ---------- marks ----------
   api.get('/exams/marks', wrap(async req => { const u = requirePerm(req, 'assessment.view'); const scheduleId = q(req, 'scheduleId'); if (!scheduleId) throw new HttpError(400, 'scheduleId required'); return app.assessment.marksGrid(u.school_id, scheduleId, q(req, 'sectionId')); }));
   api.post('/exams/marks', wrap(async req => { const u = requirePerm(req, 'assessment.edit'); const b = marksSchema.parse(req.body); return app.assessment.saveMarks(u.school_id, b.scheduleId, b.marks as never, u.id); }));
+  api.get('/exams/marks/sheet', (req, res) => {
+    (async () => {
+      const u = requirePerm(req, 'assessment.view');
+      const scheduleId = q(req, 'scheduleId'); if (!scheduleId) throw new HttpError(400, 'scheduleId required');
+      const buf = await app.assessment.marksSheet(u.school_id, scheduleId, q(req, 'sectionId'));
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="marks-${scheduleId}.xlsx"`);
+      res.send(buf);
+    })().catch((e: unknown) => res.status((e as HttpError).status ?? 500).json({ error: (e as Error).message }));
+  });
+  api.post('/exams/marks/:scheduleId/import', wrap(async req => {
+    const u = requirePerm(req, 'assessment.edit');
+    let buffer: Buffer;
+    if (Buffer.isBuffer(req.body)) buffer = req.body;
+    else buffer = Buffer.from(z.object({ base64: z.string().min(10) }).parse(req.body).base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+    if (buffer.length > 5 * 1024 * 1024) throw new HttpError(413, 'file too large (5 MB max)');
+    return app.assessment.importMarks(u.school_id, req.params.scheduleId as string, buffer, u.id);
+  }));
   api.post('/exams/marks/:scheduleId/verify', wrap(async req => { const u = requirePerm(req, 'assessment.approve'); return app.assessment.verifyMarks(u.school_id, req.params.scheduleId as string, u.id); }));
   api.post('/exams/marks/:scheduleId/lock', wrap(async req => { const u = requirePerm(req, 'assessment.approve'); return app.assessment.lockMarks(u.school_id, req.params.scheduleId as string); }));
   api.post('/exams/marks/:scheduleId/unlock', wrap(async req => { const u = requirePerm(req, 'assessment.approve'); return app.assessment.unlockMarks(u.school_id, req.params.scheduleId as string); }));

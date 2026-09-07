@@ -91,6 +91,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | F10 | ⏰ daily 18:00 | — | Day-end cash summary to principal & accountant; variance alert if `cash_sessions.variance ≠ 0` | `notifications`, `kpi_daily` |
 | F11 | ⚙️ `discount.proposed` | — | Route approval (principal); on approve, re-rate current-month open invoices | `approval_requests`, `invoice_items` |
 | F12 | ⚙️ `student.status_changed` → transferred/dropped | — | Stop future invoices; final settlement statement; refund proposal for refundable heads | `invoices`, `refunds` |
+| F13 | ⏰ daily 06:00 | instalment falls due today | Raise that instalment's invoice only; the plan closes when the last one is billed | `instalment_plans`, `invoices` |
 
 ## 7. Accounting
 
@@ -148,6 +149,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | K3 | ⏰ every 15 min | `expected_return + curfew_alert_minutes` passed, not back | Alert warden + guardian | `hostel_outpasses.late_alert_sent_at` |
 | K4 | ⏰ nightly after roll call | absent in night roll call, no outpass | Alert warden + guardian | `notifications` |
 | K5 | ⚙️ complaint logged | category maintenance | Task to maintenance; SLA 48h | `tasks` |
+| K6 | ⏰ 1st of the month 03:00 | per-meal billing is on | Bill last month's meals at the rate each was taken at; a student already billed is skipped | `meal_records`, `invoices` |
 
 ## 12. Inventory & assets
 
@@ -199,6 +201,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `leave.accrue` | `5 0 1 * *` | C10 |
 | `fees.generate_invoices` | `0 6 1 * *` | F1 |
 | `fees.reminders` | `0 8 * * *` | F3 |
+| `fees.instalments_due` | `0 6 * * *` | F13 |
 | `fees.overdue_and_fines` | `30 0 * * *` | F4 |
 | `fees.day_end_summary` | `0 18 * * *` | F10 |
 | `payroll.draft_run` | `0 9 25 * *` | H1 |
@@ -211,6 +214,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `transport.delay_watch` | `*/5 * * * *` | J4 |
 | `transport.document_expiry` | `0 8 * * *` | J7 |
 | `hostel.curfew_watch` | `*/15 * * * *` | K3 |
+| `hostel.mess_billing` | `0 3 1 * *` | K6 |
 | `inventory.maintenance_due` | `0 8 * * *` | L4 |
 | `frontoffice.sla_escalation` | `0 * * * *` | N8 |
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |

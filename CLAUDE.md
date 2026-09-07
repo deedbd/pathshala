@@ -51,6 +51,7 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - Engines list their tables differently (SQLite in creation order, MySQL and Postgres alphabetically), so anything that copies whole tables — backup, restore, the engine move — orders them by `db/schema.json`, which is the order the foreign keys need.
 - Confidential text (counselling notes, safeguarding cases) is encrypted with `encryptSecret` and only ever decrypted by the service that owns it, for the person who owns the record. List endpoints strip the ciphertext, and the alert that a case exists never carries what is in it.
 - Never read a count on `this.db` to build a number while inserting inside a transaction: that read runs on a different connection and cannot see the rows the transaction is writing (and under MySQL's REPEATABLE READ it cannot see other connections' recent commits either). Document numbers come from `NumberingService`, which takes the transaction.
+- A service called from inside another module's transaction must take that transaction, not start its own: on SQLite a second `db.transaction()` on the one connection throws "cannot start a transaction within a transaction", and on MySQL it silently runs on another connection that cannot see the rows still being written. The staff import found both — `HrService.setStructure` now takes an optional `tx`, as `createStudent` and `createStaff` already did.
 - An automation that fans out from an event must be idempotent and must check its own preconditions: the relay delivers at least once, and several events of the same kind can arrive in a row (three batches of marks → three merit runs). Ranking waits for the last mark, and an applicant already holding an offer is never re-ranked.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
@@ -62,7 +63,7 @@ All nine phases of `docs/PLAN.md` are implemented and each has a test suite that
 3. Google Drive and S3 backup targets (Dropbox works today).
 4. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
 
-`pnpm smoke` runs every phase suite (SQLite by default, `TEST_DB_URL` selects MySQL or Postgres). `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
+`pnpm smoke` runs every phase suite plus `tests/gaps1` and `tests/gaps2` (the Year-1 gaps: staff and attendance imports, marks sheets, receipts, instalments, cheques, MPO, gratuity), on SQLite by default; `TEST_DB_URL` selects MySQL or Postgres. `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

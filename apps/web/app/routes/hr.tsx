@@ -53,6 +53,20 @@ export default function Hr() {
         <Button size="sm" variant="secondary" disabled={busy || String(cur.status) !== 'calculated'} onClick={() => run(async () => { await api(`/api/hr/payroll/${d.runId}/approve`, { method: 'POST', json: {} }); setMsg(tr('hr.approvedMsg')); })}>{tr('hr.approve')}</Button>
         <Button size="sm" disabled={busy || String(cur.status) !== 'approved'} onClick={() => run(async () => { const r = await api<{ amount: number }>(`/api/hr/payroll/${d.runId}/pay`, { method: 'POST', json: {} }); setMsg(`${tr('hr.paid')}: ${money(r.amount)}`); })}>{tr('hr.pay')}</Button>
         {cur.bank_file_id ? <Button size="sm" variant="secondary" onClick={async () => { const u = await api<{ url: string }>(`/api/files/${cur.bank_file_id}/url`); window.open(u.url, '_blank'); }}>{tr('hr.bankFile')}</Button> : null}
+        {Number(cur.total_mpo) > 0 && <>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => {
+            const r = await api<{ fileId: string; staff: number; total: number; missing: { name: string; why: string }[] }>(`/api/hr/payroll/${d.runId}/mpo`);
+            if (r.missing.length) setMsg(`${r.staff} on the return, ${money(r.total)} claimed — but ${r.missing.map(m => `${m.name} (${m.why})`).join('; ')}`);
+            else setMsg(`${r.staff} on the return, ${money(r.total)} claimed`);
+            const u = await api<{ url: string }>(`/api/files/${r.fileId}/url`); window.open(u.url, '_blank');
+          })}>{tr('hr.mpoSheet')}</Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => {
+            const files = await api<{ bank: string; fileId: string; total: number }[]>(`/api/hr/payroll/${d.runId}/bank-files`);
+            setMsg(files.map(f => `${f.bank}: ${money(f.total)}`).join(' · '));
+            for (const f of files) { const u = await api<{ url: string }>(`/api/files/${f.fileId}/url`); window.open(u.url, '_blank'); }
+          })}>{tr('hr.bankFiles')}</Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => { const released = prompt(tr('hr.mpoReleasedAsk')); if (released != null) run(async () => { const r = await api<{ gap: number }>(`/api/hr/payroll/${d.runId}/mpo-reconcile`, { method: 'POST', json: { released: Number(released) } }); setMsg(r.gap === 0 ? tr('hr.mpoMatched') : `${tr('hr.mpoShort')} ${money(r.gap)}`); }); }}>{tr('hr.mpoReconcile')}</Button>
+        </>}
       </div>}
 
       <div className="mt-6"><Tabs value={tab} onChange={setTab} tabs={[

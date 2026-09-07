@@ -226,6 +226,40 @@ describe('phase 7', () => {
     assert.ok(await notified('hostel.missing_at_rollcall') >= 1, 'the warden and the guardian both hear about it');
   });
 
+  test('a mess that charges by the meal bills what was actually eaten, once', async () => {
+    // a second resident, so the bill is not a single row that happens to work
+    const { vacantBeds } = await api(`/hostel/${hostelId}/rooms`);
+    await api('/hostel/allocations', { studentId: students[1].id, bedId: String(vacantBeds[0].id) });
+    await app.settings.set(schoolId, 'hostel.meal_rates', { breakfast: 30, lunch: 70, snack: 20, dinner: 60 });
+    const month = '2026-04';
+    for (const day of ['01', '02', '03']) {
+      await api(`/hostel/${hostelId}/meals`, { onDate: `${month}-${day}`, meal: 'lunch', rows: [{ studentId: students[0].id }, { studentId: students[1].id, taken: day !== '03' }] });
+      await api(`/hostel/${hostelId}/meals`, { onDate: `${month}-${day}`, meal: 'dinner', rows: [{ studentId: students[0].id }] });
+    }
+    const summary = await api(`/hostel/mess/summary?studentId=${students[0].id}&month=${month}`);
+    assert.equal(summary.meals.length, 2, 'lunches and dinners, counted apart');
+
+    const billed = await api('/hostel/mess/bill', { month });
+    assert.equal(billed.billed, 2, 'one invoice each, not one per meal');
+    assert.equal(billed.total, (3 * 70 + 3 * 60) + (2 * 70), 'three lunches and three dinners for one, two lunches for the other');
+    const invoices = await app.fees.invoices(schoolId, { studentId: students[0].id });
+    const mess = invoices.find(i => String(i.notes) === `mess:${month}`);
+    assert.ok(mess, 'the invoice says which month it settles');
+    assert.equal(Math.round(Number(mess.total)), 3 * 70 + 3 * 60);
+    const items = (await app.fees.invoice(schoolId, String(mess.id))).items;
+    assert.equal(items.length, 2);
+    assert.ok(items.every(i => /Mess (lunch|dinner) × 3/.test(String(i.description))), JSON.stringify(items.map(i => i.description)));
+    // the price each meal was charged at is kept on the meal itself
+    const meal = await app.db.findOne('meal_records', { student_id: students[0].id, on_date: `${month}-01`, meal: 'lunch' });
+    assert.equal(Number(meal.cost), 70);
+    // running the month again bills nobody twice, even after a rate change
+    await app.settings.set(schoolId, 'hostel.meal_rates', { breakfast: 30, lunch: 999, snack: 20, dinner: 60 });
+    const again = await api('/hostel/mess/bill', { month });
+    assert.equal(again.billed, 0);
+    assert.equal(again.skipped, 2);
+    assert.equal(Math.round(Number((await app.db.findOne('invoices', { id: String(mess.id) })).total)), 3 * 70 + 3 * 60, 'the old bill kept its old prices');
+  });
+
   // ---------------- inventory ----------------
   test('stock only moves through the ledger, and cannot go negative', async () => {
     const { stores, categories } = await api('/inventory/items');

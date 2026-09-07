@@ -179,10 +179,64 @@ describe('phase 8', () => {
     const mine = rows.find(r => String(r.student_id) === students[0].id);
     assert.equal(Number(mine.progress_pct), 100);
     assert.ok(mine.completed_at);
+    assert.ok(last.certificateId, 'finishing the course issued the certificate without anyone asking');
     const partial = await app.lms.markProgress(schoolId, { lessonId: lessonIds[0], studentId: students[1].id, status: 'completed' });
     assert.equal(partial.progressPct, 33.33);
     // somebody not on the course cannot log progress against it
     await assert.rejects(() => app.lms.markProgress(schoolId, { lessonId: lessonIds[0], studentId: 'not-a-student' }), /not enrolled/);
+  });
+
+  test('the certificate is issued once and can be verified by its code', async () => {
+    const enrolment = await app.db.findOne('course_enrollments', { course_id: courseId, student_id: students[0].id });
+    assert.ok(enrolment.certificate_doc_id, 'the enrolment keeps the document, not just a PDF somewhere');
+    const doc = await app.db.findOne('issued_documents', { id: String(enrolment.certificate_doc_id) });
+    assert.equal(String(doc.doc_type), 'certificate');
+    const verified = await app.documents.verify(String(doc.verification_code));
+    assert.equal(verified.valid, true);
+    // asking again does not print a second certificate
+    const again = await api(`/lms/courses/${courseId}/certificate`, { studentId: students[0].id });
+    assert.equal(again.alreadyIssued, true);
+    assert.equal(again.certificateId, String(enrolment.certificate_doc_id));
+    // and somebody a third of the way through is refused one
+    await assert.rejects(() => api(`/lms/courses/${courseId}/certificate`, { studentId: students[1].id }), /33/);
+  });
+
+  test('a quiz inside a lesson marks itself, and never shows the answers before the attempt', async () => {
+    const quizLesson = (await api('/lms/lessons', { moduleId, title: 'Check yourself', lessonType: 'quiz' })).id;
+    const set = await api(`/lms/lessons/${quizLesson}/quiz`, { passMark: 60, maxAttempts: 2, questions: [
+      { text: 'What is x in x + 2 = 5?', options: ['1', '3', '5'], answer: 1 },
+      { text: 'Is 2x = x + x?', options: ['yes', 'no'], answer: 0 },
+      { text: 'Which is a variable?', options: ['7', 'y', '+'], answer: 1, marks: 2 },
+    ] });
+    assert.equal(set.questions, 3);
+    assert.equal(set.maxScore, 4);
+    // a quiz that points at an option that is not there is refused
+    await assert.rejects(() => api(`/lms/lessons/${quizLesson}/quiz`, { questions: [{ text: 'bad', options: ['a', 'b'], answer: 5 }] }), /option that is not there|400/);
+
+    const paper = await api(`/lms/lessons/${quizLesson}/quiz?studentId=${students[1].id}`);
+    assert.equal(paper.questions.length, 3);
+    assert.equal(JSON.stringify(paper).includes('"answer"'), false, 'the right options are not in what the student is sent');
+    assert.equal(paper.attemptsLeft, 2);
+
+    // first attempt, mostly wrong
+    const failed = await app.lms.submitQuiz(schoolId, quizLesson, students[1].id, [0, 0, 0]);
+    assert.equal(failed.score, 1);
+    assert.equal(failed.passed, false);
+    assert.equal(failed.marked[0].correct, 1, 'now the right answer is shown, so the student learns something');
+    assert.equal(failed.attemptsLeft, 1);
+    assert.equal(String((await app.db.findOne('lesson_progress', { lesson_id: quizLesson, student_id: students[1].id })).status), 'in_progress');
+
+    // second attempt, right
+    const passed = await app.lms.submitQuiz(schoolId, quizLesson, students[1].id, [1, 0, 1]);
+    assert.equal(passed.score, 4);
+    assert.equal(passed.percent, 100);
+    assert.equal(passed.passed, true);
+    assert.equal(String((await app.db.findOne('lesson_progress', { lesson_id: quizLesson, student_id: students[1].id })).status), 'completed');
+    // a third go is refused: the quiz said two
+    await assert.rejects(() => app.lms.submitQuiz(schoolId, quizLesson, students[1].id, [1, 0, 1]), /allows 2 attempts/);
+    assert.equal((await app.db.findMany('lesson_quiz_attempts', { lesson_id: quizLesson, student_id: students[1].id })).length, 2);
+    // and somebody who is not on the course cannot sit it at all
+    await assert.rejects(() => app.lms.submitQuiz(schoolId, quizLesson, 'not-a-student', [1, 0, 1]), /not enrolled/);
   });
 
   test('a late submission is penalised once, at marking time', async () => {
@@ -295,6 +349,9 @@ describe('phase 8', () => {
   });
 
   test('the weekly digest says something only when there is something to say', async () => {
+    // give the week something to report, whatever hour the suite happens to run at
+    const today = new Date().toISOString().slice(0, 10);
+    await app.attendance.mark(schoolId, students[0].id, today, 'present', { notify: false });
     const r = await app.engagement.jobs()['comms.weekly_digest']({ schoolId, jobKey: 'comms.weekly_digest', payload: {}, deadline: Date.now() + 20_000 });
     assert.ok(r.sent >= 1, `${r.sent} digests`);
     const digest = await app.db.query(`SELECT title, body FROM notifications WHERE school_id = ? AND event_key = 'engagement.weekly_digest' LIMIT 1`, [schoolId]);

@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
 import type { Adapters, JobContext, ScheduledFn } from '@pathshala/adapters';
@@ -219,6 +220,74 @@ export class AssessmentService {
     });
     await this.db.update('exams', { status: 'marks_entry', updated_at: nowSql() }, { id: String(schedule.exam_id), status: 'scheduled' });
     return { saved };
+  }
+  /**
+   * The marks sheet a subject teacher fills in offline. It carries the student ids, so a row cannot
+   * be matched to the wrong child when someone sorts the sheet or a roll number changes mid-term.
+   */
+  async marksSheet(schoolId: string, scheduleId: string, sectionId?: string): Promise<Buffer> {
+    const { schedule, students } = await this.marksGrid(schoolId, scheduleId, sectionId);
+    const aoa: (string | number)[][] = [
+      [`${schedule.class_name} - ${schedule.subject_name}`, `full ${Number(schedule.full_marks)}`, `theory ${Number(schedule.theory_marks ?? 0)}`, `practical ${Number(schedule.practical_marks ?? 0)}`, `ca ${Number(schedule.ca_marks ?? 0)}`],
+      ['student_id', 'roll', 'name', 'theory', 'practical', 'ca', 'absent'],
+      ...students.map(r => [String(r.student_id), String(r.current_roll_no ?? ''), `${r.first_name} ${r.last_name ?? ''}`.trim(),
+        r.theory_obtained == null ? '' : Number(r.theory_obtained), r.practical_obtained == null ? '' : Number(r.practical_obtained),
+        r.ca_obtained == null ? '' : Number(r.ca_obtained), Number(r.is_absent) ? 'yes' : '']),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Marks');
+    return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
+  }
+  /**
+   * Reads that sheet back. Every row is checked before anything is saved — a sheet with one bad
+   * number saves nothing and comes back with the row numbers, because a half-entered subject is
+   * worse than an empty one.
+   */
+  async importMarks(schoolId: string, scheduleId: string, buffer: Buffer, enteredBy?: string | null) {
+    const schedule = await this.db.findOne<Row>('exam_schedules', { id: scheduleId, school_id: schoolId });
+    if (!schedule) throw notFound('exam schedule');
+    if (Number(schedule.marks_entry_locked)) throw new HttpError(409, 'marks for this subject are locked', 'locked');
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]!];
+    if (!ws) throw badRequest('the file has no sheet');
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: '' });
+    const headerAt = aoa.findIndex(r => String(r[0] ?? '').trim().toLowerCase() === 'student_id');
+    if (headerAt < 0) throw badRequest('the sheet needs a student_id column; download the template first');
+    const headers = (aoa[headerAt] as unknown[]).map(h => String(h ?? '').trim().toLowerCase());
+    const col = (name: string) => headers.indexOf(name);
+    const { students } = await this.marksGrid(schoolId, scheduleId);
+    const known = new Map(students.map(r => [String(r.student_id), `${r.first_name} ${r.last_name ?? ''}`.trim()]));
+    const full = Number(schedule.full_marks);
+    const errors: { row: number; message: string }[] = [];
+    const marks: MarkInput[] = [];
+    const seen = new Set<string>();
+    for (let i = headerAt + 1; i < aoa.length; i++) {
+      const r = aoa[i] as unknown[];
+      const studentId = String(r[col('student_id')] ?? '').trim();
+      if (!studentId) continue;
+      const line = i + 1;
+      if (!known.has(studentId)) { errors.push({ row: line, message: 'this student is not in the class for this subject' }); continue; }
+      if (seen.has(studentId)) { errors.push({ row: line, message: `${known.get(studentId)} appears twice in the sheet` }); continue; }
+      seen.add(studentId);
+      const absent = ['yes', 'y', 'true', '1', 'a'].includes(String(r[col('absent')] ?? '').trim().toLowerCase());
+      const num = (name: string): number | null | undefined => {
+        const at = col(name); if (at < 0) return null;
+        const raw = String(r[at] ?? '').trim(); if (!raw) return null;
+        const v = Number(raw);
+        if (!Number.isFinite(v)) { errors.push({ row: line, message: `"${raw}" in ${name} is not a number` }); return undefined; }
+        if (v < 0) { errors.push({ row: line, message: `${name} cannot be negative` }); return undefined; }
+        return round2(v);
+      };
+      const theory = num('theory'), practical = num('practical'), ca = num('ca');
+      if (theory === undefined || practical === undefined || ca === undefined) continue;
+      if (!absent && theory == null && practical == null && ca == null) continue;   // simply not entered yet
+      const total = round2((theory ?? 0) + (practical ?? 0) + (ca ?? 0));
+      if (!absent && total > full) { errors.push({ row: line, message: `${known.get(studentId)} has ${total}, more than the full marks (${full})` }); continue; }
+      marks.push({ studentId, theory, practical, ca, isAbsent: absent });
+    }
+    if (errors.length) return { saved: 0, errors, read: marks.length + errors.length };
+    const r = await this.saveMarks(schoolId, scheduleId, marks, enteredBy);
+    return { saved: r.saved, errors: [] as { row: number; message: string }[], read: marks.length };
   }
   /** Verification and lock: after this only an admin reversal can change a mark. */
   async verifyMarks(schoolId: string, scheduleId: string, verifiedBy?: string | null) {

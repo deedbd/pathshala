@@ -10,6 +10,7 @@ import type { ApprovalService } from '../approvals.js';
 import type { TaskService } from '../tasks.js';
 import type { FileService } from '../files.js';
 import type { PeopleService } from './people.js';
+import type { SettingsService } from '../settings.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface StructureInput { staffId: string; effectiveFrom: string; effectiveTo?: string | null; basic: number; mpoPortion?: number; payFrequency?: 'monthly' | 'weekly'; bankAccount?: { bankName?: string; accountNo?: string; branch?: string; routingNo?: string } | null; items?: { componentId: string; value: number }[] }
@@ -47,7 +48,7 @@ export class HrService {
   constructor(
     private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService,
     private accounting: AccountingService, private approvals: ApprovalService, private tasks: TaskService, private files: FileService,
-    private people: PeopleService, private adapters: Adapters,
+    private people: PeopleService, private settings: SettingsService, private adapters: Adapters,
   ) {}
 
   // ---------- recruitment ----------
@@ -149,11 +150,12 @@ export class HrService {
   }
 
   // ---------- salary structure ----------
-  async ensureSalaryComponents(schoolId: string) {
-    if (await this.db.count('salary_components', { school_id: schoolId })) return 0;
+  async ensureSalaryComponents(schoolId: string, tx?: Db) {
+    const t = tx ?? this.db;
+    if (await t.count('salary_components', { school_id: schoolId })) return 0;
     for (const c of DEFAULT_COMPONENTS) {
-      const gl = c.gl ? await this.db.findOne<{ id: string }>('gl_accounts', { school_id: schoolId, code: c.gl }) : null;
-      await this.db.insert('salary_components', { id: ulid(), school_id: schoolId, name: c.name, code: c.code, component_type: c.type, calc_type: c.calc, default_value: c.value, formula: null, is_taxable: c.taxable, is_statutory: c.statutory, gl_account_id: gl?.id ?? null, sort_order: c.sort });
+      const gl = c.gl ? await t.findOne<{ id: string }>('gl_accounts', { school_id: schoolId, code: c.gl }) : null;
+      await t.insert('salary_components', { id: ulid(), school_id: schoolId, name: c.name, code: c.code, component_type: c.type, calc_type: c.calc, default_value: c.value, formula: null, is_taxable: c.taxable, is_statutory: c.statutory, gl_account_id: gl?.id ?? null, sort_order: c.sort });
     }
     return DEFAULT_COMPONENTS.length;
   }
@@ -165,20 +167,22 @@ export class HrService {
     return id;
   }
   /** Sets the current structure; an earlier open-ended one is closed the day before this one starts. */
-  async setStructure(schoolId: string, s: StructureInput, approvedBy?: string | null) {
-    if (!(await this.db.findOne('staff', { id: s.staffId, school_id: schoolId }))) throw notFound('staff');
+  /** Takes a transaction because a bulk staff import sets the salary in the same breath as the hire. */
+  async setStructure(schoolId: string, s: StructureInput, approvedBy?: string | null, tx?: Db) {
+    if (!(await (tx ?? this.db).findOne('staff', { id: s.staffId, school_id: schoolId }))) throw notFound('staff');
     if (s.basic <= 0) throw badRequest('basic pay must be greater than zero');
     if ((s.mpoPortion ?? 0) < 0) throw badRequest('the MPO portion cannot be negative');
-    await this.ensureSalaryComponents(schoolId);
+    await this.ensureSalaryComponents(schoolId, tx);
     const id = ulid();
     const dayBefore = isoDay(s.effectiveFrom, -1);
-    await this.db.transaction(async tx => {
+    const run = async (tx: Db) => {
       await tx.execute(`UPDATE salary_structures SET effective_to = ?, updated_at = ? WHERE school_id = ? AND staff_id = ? AND effective_from < ? AND (effective_to IS NULL OR effective_to >= ?)`, [dayBefore, nowSql(), schoolId, s.staffId, s.effectiveFrom, s.effectiveFrom]);
       await tx.delete('salary_structures', { school_id: schoolId, staff_id: s.staffId, effective_from: s.effectiveFrom });
       await tx.insert('salary_structures', { id, school_id: schoolId, staff_id: s.staffId, effective_from: s.effectiveFrom, effective_to: s.effectiveTo ?? null, basic: round(s.basic), pay_frequency: s.payFrequency ?? 'monthly', mpo_portion: round(s.mpoPortion ?? 0), bank_account: (s.bankAccount ?? null) as never, approved_by: approvedBy ?? null });
       const items = s.items ?? (await tx.findMany<Row>('salary_components', { school_id: schoolId })).filter(c => c.calc_type !== 'slab').map(c => ({ componentId: String(c.id), value: Number(c.default_value ?? 0) }));
       if (items.length) await tx.insertMany('salary_structure_items', items.map(i => ({ id: ulid(), school_id: schoolId, structure_id: id, component_id: i.componentId, value: round(i.value) })));
-    });
+    };
+    if (tx) await run(tx); else await this.db.transaction(run);
     return id;
   }
   async structureFor(schoolId: string, staffId: string, onDate = nowSql().slice(0, 10)): Promise<(Row & { items: Row[] }) | null> {
@@ -463,6 +467,96 @@ export class HrService {
     return f.id;
   }
 
+  // ---------- MPO: the government's share of a recognised school's salaries ----------
+  /**
+   * The monthly MPO return. The government pays its share straight into each listed teacher's own
+   * account, bank by bank, so the sheet is grouped the way the office has to file it: one block per
+   * bank and branch, each teacher with the index number the MPO order was issued against.
+   */
+  async mpoSheet(schoolId: string, runId: string) {
+    const run = await this.db.findOne<Row>('payroll_runs', { id: runId, school_id: schoolId });
+    if (!run) throw notFound('payroll run');
+    const rows = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.employee_no, s.mpo_index_no, s.employment_type, d.name AS designation, ss.bank_account
+      FROM payslips p JOIN staff s ON s.id = p.staff_id LEFT JOIN designations d ON d.id = s.designation_id LEFT JOIN salary_structures ss ON ss.id = p.structure_id
+      WHERE p.payroll_run_id = ? ORDER BY s.employee_no`, [runId]);
+    const period = String(run.period_month).slice(0, 7);
+    const listed: { staffId: string; employeeNo: string; name: string; indexNo: string | null; designation: string; basic: number; mpo: number; bank: string; branch: string; accountNo: string }[] = [];
+    const missing: { employeeNo: string; name: string; why: string }[] = [];
+    for (const r of rows) {
+      const mpo = round(Number(json<{ mpo?: number }>(r.breakdown)?.mpo ?? 0));
+      if (mpo <= 0) continue;
+      const bank = json<{ bankName?: string; accountNo?: string; branch?: string }>(r.bank_account) ?? {};
+      const name = `${r.first_name} ${r.last_name ?? ''}`.trim();
+      if (!r.mpo_index_no) missing.push({ employeeNo: String(r.employee_no), name, why: 'no MPO index number on the staff record' });
+      else if (!bank.accountNo) missing.push({ employeeNo: String(r.employee_no), name, why: 'no bank account on the salary structure' });
+      listed.push({ staffId: String(r.staff_id), employeeNo: String(r.employee_no), name, indexNo: (r.mpo_index_no as string) ?? null, designation: String(r.designation ?? ''), basic: round(Number(r.basic)), mpo, bank: bank.bankName ?? '', branch: bank.branch ?? '', accountNo: bank.accountNo ?? '' });
+    }
+    const byBank = new Map<string, typeof listed>();
+    for (const r of listed) { const k = `${r.bank}|${r.branch}`; byBank.set(k, [...(byBank.get(k) ?? []), r]); }
+    const lines = [`MPO salary sheet,${period}`, ''];
+    for (const [k, group] of [...byBank.entries()].sort()) {
+      const [bank, branch] = k.split('|');
+      lines.push([`Bank: ${bank || 'not recorded'}`, `Branch: ${branch || 'not recorded'}`].map(csv).join(','));
+      lines.push('employee_no,mpo_index_no,name,designation,account_no,basic,govt_share');
+      for (const r of group) lines.push([r.employeeNo, r.indexNo ?? '', r.name, r.designation, r.accountNo, r.basic.toFixed(2), r.mpo.toFixed(2)].map(csv).join(','));
+      lines.push(['', '', '', '', 'Subtotal', '', round(group.reduce((a, r) => a + r.mpo, 0)).toFixed(2)].map(csv).join(','));
+      lines.push('');
+    }
+    const total = round(listed.reduce((a, r) => a + r.mpo, 0));
+    lines.push(['', '', '', '', 'Total claimed', '', total.toFixed(2)].map(csv).join(','));
+    const f = await this.files.store({ schoolId, data: Buffer.from(lines.join('\r\n'), 'utf8'), fileName: `mpo-${period}.csv`, mimeType: 'text/csv', purpose: 'mpo_sheet', entityType: 'hr.payroll', entityId: runId });
+    return { fileId: f.id, period, staff: listed.length, total, banks: byBank.size, missing };
+  }
+  /** One transfer file per bank, because a bank will not take another bank's rows. */
+  async bankFiles(schoolId: string, runId: string) {
+    const run = await this.db.findOne<Row>('payroll_runs', { id: runId, school_id: schoolId });
+    if (!run) throw notFound('payroll run');
+    const rows = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.employee_no, ss.bank_account FROM payslips p JOIN staff s ON s.id = p.staff_id LEFT JOIN salary_structures ss ON ss.id = p.structure_id WHERE p.payroll_run_id = ? ORDER BY s.employee_no`, [runId]);
+    const period = String(run.period_month).slice(0, 7);
+    const groups = new Map<string, string[]>();
+    const totals = new Map<string, number>();
+    for (const r of rows) {
+      const bank = json<{ bankName?: string; accountNo?: string; branch?: string }>(r.bank_account) ?? {};
+      const payable = round(Number(r.net_pay) - Number(json<{ mpo?: number }>(r.breakdown)?.mpo ?? 0));
+      if (payable <= 0) continue;
+      const key = bank.bankName || 'unbanked';
+      if (!groups.has(key)) groups.set(key, ['account_no,account_name,bank,branch,amount,reference']);
+      groups.get(key)!.push([bank.accountNo ?? '', `${r.first_name} ${r.last_name ?? ''}`.trim(), bank.bankName ?? '', bank.branch ?? '', payable.toFixed(2), `SAL-${period}-${r.employee_no}`].map(csv).join(','));
+      totals.set(key, round((totals.get(key) ?? 0) + payable));
+    }
+    const files: { bank: string; fileId: string; rows: number; total: number }[] = [];
+    for (const [bank, lines] of groups) {
+      const f = await this.files.store({ schoolId, data: Buffer.from(lines.join('\r\n'), 'utf8'), fileName: `payroll-${period}-${bank.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.csv`, mimeType: 'text/csv', purpose: 'payroll_bank_file', entityType: 'hr.payroll', entityId: runId });
+      files.push({ bank, fileId: f.id, rows: lines.length - 1, total: totals.get(bank) ?? 0 });
+    }
+    return files;
+  }
+  /**
+   * What the government actually released. The payroll journal already recognised the claim as grant
+   * income, so a short release is not a rounding note: the school itself owes the difference, and the
+   * books say so before anyone asks where the money went.
+   */
+  async reconcileMpo(schoolId: string, runId: string, released: number, opts: { releasedOn?: string; note?: string | null } = {}) {
+    const run = await this.db.findOne<Row>('payroll_runs', { id: runId, school_id: schoolId });
+    if (!run) throw notFound('payroll run');
+    if (!['approved', 'paid', 'locked'].includes(String(run.status))) throw new HttpError(409, `a ${run.status} run has nothing to reconcile yet`, 'conflict');
+    if (released < 0) throw badRequest('the released amount cannot be negative');
+    const existing = await this.db.findOne('journal_entries', { school_id: schoolId, source_type: 'hr.mpo', source_id: runId });
+    if (existing) throw new HttpError(409, 'this run has already been reconciled', 'conflict');
+    const claimed = (await this.runTotals(runId)).mpo;
+    const gap = round(claimed - released);
+    const on = opts.releasedOn ?? nowSql().slice(0, 10);
+    let journalEntryId: string | null = null;
+    if (gap !== 0) {
+      const lines = gap > 0
+        ? [{ accountCode: '4200', debit: gap, description: 'MPO released short of the claim' }, { accountCode: '2200', credit: gap, description: 'The school owes the difference' }]
+        : [{ accountCode: '2200', debit: -gap, description: 'MPO released above the claim' }, { accountCode: '4200', credit: -gap, description: 'Additional government grant' }];
+      journalEntryId = (await this.accounting.post(schoolId, { entryDate: on, memo: `MPO reconciliation ${String(run.period_month).slice(0, 7)}`, sourceType: 'hr.mpo', sourceId: runId, lines })).id;
+      await this.tasks.create({ schoolId, title: `MPO short by ${Math.abs(gap)} for ${String(run.period_month).slice(0, 7)}`, description: opts.note ?? 'The government released a different amount from the claim. Check the MPO order and the bank advice.', taskType: 'finance', priority: 'high', dueAt: nowSql() });
+    }
+    return { runId, claimed, released: round(released), gap, journalEntryId };
+  }
+
   /** Pays an approved run from a bank account: Dr salary payable, Cr bank. */
   async payRun(schoolId: string, runId: string, p: { bankAccountId?: string | null; paidAt?: string; reference?: string | null } = {}) {
     const run = await this.db.findOne<Row>('payroll_runs', { id: runId, school_id: schoolId });
@@ -578,7 +672,7 @@ export class HrService {
     return id;
   }
   /** Final settlement: encashable leave paid, the loan balance recovered, then the account is closed. */
-  async settleExit(schoolId: string, id: string, opts: { encashDays?: number } = {}) {
+  async settleExit(schoolId: string, id: string, opts: { encashDays?: number; gratuity?: number } = {}) {
     const ex = await this.db.findOne<Row>('staff_exits', { id, school_id: schoolId });
     if (!ex) throw notFound('exit');
     if (ex.status === 'settled') return { ...(json<Record<string, unknown>>(ex.settlement) ?? {}), alreadySettled: true };
@@ -593,16 +687,17 @@ export class HrService {
     const loanBalance = loan ? round(Number(loan.balance)) : 0;
     const pf = await this.db.findOne<Row>('provident_fund_accounts', { school_id: schoolId, staff_id: staffId });
     const pfPayable = pf ? round(Number(pf.employee_total) + Number(pf.employer_total) + Number(pf.interest_total) - Number(pf.withdrawn_total)) : 0;
-    const net = round(encashment + pfPayable - loanBalance);
-    const settlement = { encashDays, encashment, pfPayable, loanRecovered: loanBalance, net };
+    const gratuity = await this.gratuityFor(schoolId, staffId, String(ex.last_working_day), String(ex.exit_type), basic, opts.gratuity);
+    const net = round(encashment + pfPayable + gratuity.amount - loanBalance);
+    const settlement = { encashDays, encashment, pfPayable, gratuity: gratuity.amount, gratuityYears: gratuity.years, loanRecovered: loanBalance, net };
     const lines = [
-      { accountCode: '5100', debit: encashment, description: 'Leave encashment' },
+      { accountCode: '5100', debit: round(encashment + gratuity.amount), description: gratuity.amount ? 'Leave encashment and gratuity' : 'Leave encashment' },
       { accountCode: '2300', debit: pfPayable, description: 'Provident fund paid out' },
       { accountCode: '1400', credit: loanBalance, description: 'Loan recovered from settlement' },
       { accountCode: '1100', credit: net > 0 ? net : 0, description: 'Final settlement paid' },
       { accountCode: '1100', debit: net < 0 ? -net : 0, description: 'Recovered from the leaver' },
     ];
-    const j = round(encashment + pfPayable) > 0 || loanBalance > 0 ? await this.accounting.post(schoolId, { entryDate: String(ex.last_working_day), memo: `Final settlement ${staffId}`, sourceType: 'hr.exit', sourceId: id, lines }) : null;
+    const j = round(encashment + pfPayable + gratuity.amount) > 0 || loanBalance > 0 ? await this.accounting.post(schoolId, { entryDate: String(ex.last_working_day), memo: `Final settlement ${staffId}`, sourceType: 'hr.exit', sourceId: id, lines }) : null;
     await this.db.transaction(async tx => {
       await tx.update('staff_exits', { settlement: settlement as never, settlement_journal_id: j?.id ?? null, status: 'settled', updated_at: nowSql() }, { id });
       if (loan) await tx.update('staff_loans', { balance: 0, status: 'closed', updated_at: nowSql() }, { id: String(loan.id) });
@@ -611,6 +706,25 @@ export class HrService {
     });
     await this.outbox.emitNow({ type: 'staff.left', schoolId, aggregateType: 'people.staff', aggregateId: staffId, payload: { staffId, exitId: id, lastWorkingDay: String(ex.last_working_day), settlement } as never });
     return settlement;
+  }
+
+  /**
+   * Gratuity: a month of basic pay for every completed year of service once the qualifying period is
+   * behind them, on the school's own policy (`hr.gratuity`). Someone dismissed for cause forfeits it,
+   * which is why the exit type matters and not only the length of service.
+   */
+  async gratuityFor(schoolId: string, staffId: string, lastWorkingDay: string, exitType: string, basic: number, override?: number) {
+    const policy = (await this.settings.get<{ enabled?: boolean; minYears?: number; monthsPerYear?: number; forfeitOn?: string[] }>(schoolId, 'hr.gratuity')) ?? {};
+    const staff = await this.db.findOne<Row>('staff', { id: staffId });
+    const joined = String(staff?.join_date ?? lastWorkingDay);
+    const years = Math.floor((Date.parse(`${lastWorkingDay}T00:00:00Z`) - Date.parse(`${joined.slice(0, 10)}T00:00:00Z`)) / (365.25 * 86400_000));
+    if (override != null) return { amount: round(override), years, reason: 'set by hand' };
+    if (policy.enabled === false) return { amount: 0, years, reason: 'the school does not pay gratuity' };
+    const forfeit = policy.forfeitOn ?? ['termination'];
+    if (forfeit.includes(exitType)) return { amount: 0, years, reason: `forfeited on ${exitType}` };
+    const minYears = policy.minYears ?? 5;
+    if (years < minYears) return { amount: 0, years, reason: `${years} years of service, ${minYears} needed` };
+    return { amount: round(basic * (policy.monthsPerYear ?? 1) * years), years, reason: `${years} years of service` };
   }
 
   // ---------- helpers ----------

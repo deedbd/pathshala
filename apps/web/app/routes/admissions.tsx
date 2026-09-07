@@ -26,13 +26,22 @@ export default function Admissions() {
   const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [tab, setTab] = useState<'applications' | 'enquiries' | 'offers' | 'documents'>('applications');
-  const [drawer, setDrawer] = useState<null | 'campaign' | 'test' | 'document' | 'cards'>(null);
+  const [drawer, setDrawer] = useState<null | 'campaign' | 'test' | 'document' | 'cards' | 'slots' | 'papers'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [papers, setPapers] = useState<{ id: string; missing: string[]; unverified: string[]; uploaded: { id: string; doc_type: string; file_id: string; verified_at: string | null }[] } | null>(null);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   const setParam = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n); };
+  // run() closes whatever drawer is open when it finishes, so the papers drawer opens on its own
+  const openPapers = async (applicationId: string) => {
+    setErr(null);
+    try { setPapers({ ...(await api(`/api/admissions/applications/${applicationId}/documents`)), id: applicationId }); setDrawer('papers'); }
+    catch (e) { setErr((e as Error).message); }
+  };
   const c = d.campaign;
   const money = (n: unknown) => formatMoney(Number(n ?? 0), d.locale);
   const counts = (status: string) => d.applications.filter(a => String(a.status) === status).length;
+  // the merit sheet is per class; default to the class this campaign has the most applicants in
+  const classOf = [...d.applications.reduce((m, a) => m.set(String(a.class_id), (m.get(String(a.class_id)) ?? 0) + 1), new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
   return (
     <div>
@@ -61,6 +70,12 @@ export default function Admissions() {
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => setDrawer('test')}>{tr('adm.newTest')}</Button>
         <Button size="sm" disabled={busy} onClick={() => run(async () => { await api(`/api/admissions/campaigns/${c.id}/merit`, { method: 'POST', json: {} }); setMsg(tr('adm.meritQueued')); })}>{tr('adm.merit')}</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => { const r = await api<{ offers: number }>(`/api/admissions/campaigns/${c.id}/offers`, { method: 'POST', json: {} }); setMsg(`${r.offers} ${tr('adm.offers').toLowerCase()}`); })}>{tr('adm.makeOffers')}</Button>
+        <Button size="sm" variant="secondary" disabled={busy || !classOf} onClick={() => run(async () => {
+          const r = await api<{ fileId: string; ranked: number; seats: number }>(`/api/admissions/campaigns/${c.id}/merit/pdf?classId=${classOf}`, { method: 'POST', json: {} });
+          setMsg(`${r.ranked} ranked for ${r.seats} seats`);
+          const u = await api<{ url: string }>(`/api/files/${r.fileId}/url`); window.open(u.url, '_blank');
+        })}>{tr('adm.meritPdf')}</Button>
+        {d.tests.length > 0 && <Button size="sm" variant="secondary" disabled={busy} onClick={() => setDrawer('slots')}>{tr('adm.makeSlots')}</Button>}
       </div>}
 
       <div className="mt-6"><Tabs value={tab} onChange={setTab} tabs={[
@@ -78,7 +93,10 @@ export default function Admissions() {
         { key: 'guardian_phone', label: tr('common.phone'), className: 'num' },
         { key: 'test_score', label: tr('adm.score'), className: 'num', render: r => r.test_score == null ? '—' : String(Number(r.test_score)) },
         { key: 'status', label: tr('common.status'), render: r => <Chip status={statusChip(String(r.status))}>{String(r.status)}</Chip> },
-        { key: 'id', label: '', render: r => String(r.status) === 'offered' ? <Button size="sm" onClick={() => run(async () => { const e = await api<{ admissionNo: string }>(`/api/admissions/applications/${r.id}/enrol`, { method: 'POST', json: {} }); setMsg(`${tr('adm.enrolled')}: ${e.admissionNo}`); })}>{tr('adm.enrol')}</Button> : null },
+        { key: 'id', label: '', render: r => <div className="flex gap-1">
+          <Button size="sm" variant="secondary" onClick={() => openPapers(String(r.id))}>{tr('adm.docs')}</Button>
+          {String(r.status) === 'offered' && <Button size="sm" onClick={() => run(async () => { const e = await api<{ admissionNo: string }>(`/api/admissions/applications/${r.id}/enrol`, { method: 'POST', json: {} }); setMsg(`${tr('adm.enrolled')}: ${e.admissionNo}`); })}>{tr('adm.enrol')}</Button>}
+        </div> },
       ]} /></div>}
 
       {tab === 'enquiries' && <div className="mt-4"><DataTable locale={d.locale} rows={d.enquiries} columns={[
@@ -121,6 +139,33 @@ export default function Admissions() {
         </>}
       </div>}
 
+      <Drawer open={drawer === 'slots'} onClose={() => setDrawer(null)} title={tr('adm.makeSlots')}>
+        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(async () => { const r = await api<{ slots: number }>(`/api/admissions/tests/${f.testId}/interviews`, { method: 'POST', json: { from: `${f.date} ${f.time}:00`, minutes: Number(f.minutes), count: Number(f.count), venue: f.venue || null } }); setMsg(`${r.slots} slots`); }); }}>
+          <Field label={tr('adm.tests')}><Select name="testId" required placeholder="—" options={d.tests.map(t2 => ({ value: String(t2.id), label: String(t2.name) }))} /></Field>
+          <div className="grid grid-cols-2 gap-3"><Field label={tr('common.date')}><Input name="date" type="date" required /></Field><Field label="Start"><Input name="time" type="time" defaultValue="09:00" required /></Field></div>
+          <div className="grid grid-cols-2 gap-3"><Field label="Minutes each"><Input name="minutes" type="number" defaultValue={15} min={5} max={120} className="num" /></Field><Field label="How many"><Input name="count" type="number" defaultValue={20} min={1} max={400} className="num" /></Field></div>
+          <Field label="Venue"><Input name="venue" placeholder="Principal's office" /></Field>
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>One applicant to a slot. Each guardian is sent their own time when the applicant is put in one.</p>
+          <Button disabled={busy}>{tr('common.save')}</Button>
+        </form>
+      </Drawer>
+      <Drawer open={drawer === 'papers'} onClose={() => { setDrawer(null); setPapers(null); }} title={tr('adm.docs')}>
+        {papers && <div className="grid gap-3">
+          {papers.missing.length > 0 && <Banner kind="warn">{tr('adm.missing')}: {papers.missing.join(', ')}</Banner>}
+          <table className="table"><thead><tr><th>{tr('common.type')}</th><th>{tr('common.status')}</th><th /></tr></thead><tbody>
+            {papers.uploaded.map(u => <tr key={u.id}>
+              <td>{String(u.doc_type)}</td>
+              <td><Chip status={u.verified_at ? 'active' : 'pending'}>{u.verified_at ? tr('adm.verified') : tr('adm.unverified')}</Chip></td>
+              <td className="flex gap-1">
+                <Button size="sm" variant="secondary" onClick={async () => { const url = await api<{ url: string }>(`/api/files/${u.file_id}/url`); window.open(url.url, '_blank'); }}>{tr('common.download')}</Button>
+                {!u.verified_at && <Button size="sm" onClick={async () => { await api(`/api/admissions/documents/${u.id}/verify`, { method: 'POST', json: {} }); await openPapers(papers.id); }}>{tr('adm.verify')}</Button>}
+              </td>
+            </tr>)}
+          </tbody></table>
+          <label className="btn btn-secondary" style={{ cursor: 'pointer' }}>{tr('adm.upload')}
+            <input type="file" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (!f) return; const docType = prompt(tr('adm.docTypeAsk'), papers.missing[0] ?? 'other'); e.currentTarget.value = ''; if (!docType) return; const b64 = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(f); }); try { await api(`/api/admissions/applications/${papers.id}/documents`, { method: 'POST', json: { docType, fileName: f.name, mimeType: f.type || undefined, base64: b64 } }); await openPapers(papers.id); } catch (ex) { setErr((ex as Error).message); } }} /></label>
+        </div>}
+      </Drawer>
       <Drawer open={drawer === 'campaign'} onClose={() => setDrawer(null)} title={tr('adm.newCampaign')}>
         <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/admissions/campaigns', { method: 'POST', json: { name: f.name, opensAt: `${f.opensAt} 00:00:00`, closesAt: `${f.closesAt} 23:59:59`, formFee: Number(f.formFee || 0), selectionMode: f.selectionMode, offerValidityDays: Number(f.offerValidityDays || 7), classes: f.classId ? [{ classId: f.classId, seats: Number(f.seats || 40) }] : [] } })); }}>
           <Field label={tr('common.name')}><Input name="name" required placeholder="Admission 2027" /></Field>

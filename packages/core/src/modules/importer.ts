@@ -5,12 +5,24 @@ import type { Adapters, JobContext } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { FileService } from '../files.js';
 import type { PeopleService, StudentInput } from './people.js';
+import type { AttendanceService } from './attendance.js';
+import type { HrService } from './hr.js';
 import { badRequest, notFound } from '../context.js';
 import { normalizeBdPhone } from '../util.js';
 
 /** Column keys accepted in the student import template (header row, case-insensitive, spaces/underscores ignored). */
 export const STUDENT_COLUMNS = ['admission_no', 'first_name', 'last_name', 'name_bn', 'gender', 'date_of_birth', 'class', 'section', 'roll_no', 'admission_date', 'blood_group', 'religion', 'guardian_name', 'guardian_phone', 'guardian_relation', 'guardian2_name', 'guardian2_phone', 'guardian2_relation', 'present_address', 'previous_school'] as const;
 const REQUIRED = ['first_name', 'gender', 'date_of_birth', 'class'];
+
+/** Staff import: the same shape a school already keeps in its own spreadsheet. */
+export const STAFF_COLUMNS = ['employee_no', 'first_name', 'last_name', 'name_bn', 'gender', 'date_of_birth', 'phone', 'email', 'nid_no', 'designation', 'department', 'category', 'employment_type', 'join_date', 'subjects', 'basic_salary'] as const;
+const STAFF_REQUIRED = ['first_name', 'join_date'];
+
+/** A day of attendance from a register or a device export: one row per student per day. */
+export const ATTENDANCE_COLUMNS = ['admission_no', 'date', 'status', 'check_in', 'remarks'] as const;
+const ATTENDANCE_REQUIRED = ['admission_no', 'date', 'status'];
+
+export type ImportEntity = 'student' | 'staff' | 'attendance';
 
 export interface ImportRowError { row: number; field: string; message: string }
 
@@ -21,12 +33,18 @@ export interface ImportRowError { row: number; field: string; message: string }
  * `import.finished` event (rule N12 mails the summary). 1,500 rows take well under two minutes on SQLite.
  */
 export class ImportService {
-  constructor(private db: Db, private adapters: Adapters, private outbox: OutboxService, private files: FileService, private people: PeopleService) {}
+  constructor(private db: Db, private adapters: Adapters, private outbox: OutboxService, private files: FileService, private people: PeopleService, private attendance: AttendanceService, private hr?: HrService) {}
 
-  /** Blank template with the accepted headers and one example row. */
-  template(): Buffer {
-    const ws = XLSX.utils.aoa_to_sheet([[...STUDENT_COLUMNS], ['', 'Ayesha', 'Rahman', 'আয়েশা রহমান', 'female', '2014-03-02', 'Class 6', 'A', '1', '2026-01-10', 'O+', 'Islam', 'Abdur Rahman', '01712345678', 'father', 'Salma Begum', '01812345678', 'mother', 'House 12, Road 3, Mirpur, Dhaka', 'ABC Kindergarten']]);
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Students');
+  /** Blank template with the accepted headers and one example row, for whichever list is being loaded. */
+  template(entity: ImportEntity = 'student'): Buffer {
+    const sheets: Record<ImportEntity, { name: string; aoa: string[][] }> = {
+      student: { name: 'Students', aoa: [[...STUDENT_COLUMNS], ['', 'Ayesha', 'Rahman', 'আয়েশা রহমান', 'female', '2014-03-02', 'Class 6', 'A', '1', '2026-01-10', 'O+', 'Islam', 'Abdur Rahman', '01712345678', 'father', 'Salma Begum', '01812345678', 'mother', 'House 12, Road 3, Mirpur, Dhaka', 'ABC Kindergarten']] },
+      staff: { name: 'Staff', aoa: [[...STAFF_COLUMNS], ['', 'Nusrat', 'Jahan', 'নুসরাত জাহান', 'female', '1990-05-12', '01712345678', 'nusrat@school.edu.bd', '1234567890', 'Assistant Teacher', 'Science', 'teaching', 'permanent', '2024-01-01', 'Mathematics; Physics', '18000']] },
+      attendance: { name: 'Attendance', aoa: [[...ATTENDANCE_COLUMNS], ['STU-000001', '2026-02-03', 'present', '07:52', '']] },
+    };
+    const sheet = sheets[entity];
+    const ws = XLSX.utils.aoa_to_sheet(sheet.aoa);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, sheet.name);
     return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
   }
 
@@ -81,15 +99,80 @@ export class ImportService {
   }
 
   /** Stores the workbook, validates, creates the import job and queues the chunked insert. */
-  async start(schoolId: string, buffer: Buffer, fileName: string, opts: { academicYearId?: string | null; mapping?: Record<string, string>; createdBy?: string | null } = {}) {
+  /** Validates staff rows against the designations, departments and subjects the school already has. */
+  async prepareStaff(schoolId: string, rows: Record<string, string>[]) {
+    const [designations, departments, subjects] = await Promise.all([
+      this.db.findMany<Row>('designations', { school_id: schoolId }),
+      this.db.findMany<Row>('departments', { school_id: schoolId }),
+      this.db.findMany<Row>('subjects', { school_id: schoolId, status: 'active' }),
+    ]);
+    const byName = (list: Row[]) => new Map(list.map(x => [normKey(String(x.name)), String(x.id)]));
+    const desig = byName(designations), dept = byName(departments), subj = byName(subjects);
+    const errors: ImportRowError[] = [];
+    const cleaned: { row: number; input: Record<string, unknown> }[] = [];
+    const seenPhones = new Set<string>();
+    rows.forEach((r, i) => {
+      const rowNo = i + 2;
+      const miss = STAFF_REQUIRED.filter(f => !String(r[f] ?? '').trim());
+      if (miss.length) { for (const f of miss) errors.push({ row: rowNo, field: f, message: 'required' }); return; }
+      const phone = r.phone ? normalizeBdPhone(r.phone) : null;
+      if (r.phone && !phone) { errors.push({ row: rowNo, field: 'phone', message: `${r.phone} is not a Bangladesh mobile number` }); return; }
+      if (phone && seenPhones.has(phone)) { errors.push({ row: rowNo, field: 'phone', message: 'the same number appears twice in this file' }); return; }
+      if (phone) seenPhones.add(phone);
+      if (r.designation && !desig.has(normKey(r.designation))) errors.push({ row: rowNo, field: 'designation', message: `no designation called ${r.designation}` });
+      if (r.department && !dept.has(normKey(r.department))) errors.push({ row: rowNo, field: 'department', message: `no department called ${r.department}` });
+      const subjectIds: string[] = [];
+      for (const name of String(r.subjects ?? '').split(/[;,]/).map(x => x.trim()).filter(Boolean)) {
+        const id = subj.get(normKey(name));
+        if (id) subjectIds.push(id); else errors.push({ row: rowNo, field: 'subjects', message: `no subject called ${name}` });
+      }
+      if (errors.some(e => e.row === rowNo)) return;
+      cleaned.push({ row: rowNo, input: {
+        employeeNo: r.employee_no || null, firstName: r.first_name, lastName: r.last_name || null, nameBn: r.name_bn || null,
+        gender: (r.gender || '').toLowerCase() || null, dateOfBirth: r.date_of_birth || null, phone, email: r.email || null,
+        designationId: r.designation ? desig.get(normKey(r.designation)) ?? null : null,
+        departmentId: r.department ? dept.get(normKey(r.department)) ?? null : null,
+        staffCategory: (r.category || 'teaching').toLowerCase(), employmentType: (r.employment_type || 'permanent').toLowerCase(),
+        joinDate: r.join_date, subjectIds, basicSalary: r.basic_salary ? Number(r.basic_salary) : null,
+      } });
+    });
+    return { total: rows.length, cleaned, errors };
+  }
+
+  /** Validates a day book: the admission number must exist, the date must be a date, the status a status. */
+  async prepareAttendance(schoolId: string, rows: Record<string, string>[]) {
+    const students = await this.db.query<{ id: string; admission_no: string }>(`SELECT id, admission_no FROM students WHERE school_id = ? AND status = 'active'`, [schoolId]);
+    const byNo = new Map(students.map(s => [normKey(String(s.admission_no)), String(s.id)]));
+    const allowed = new Set(['present', 'absent', 'late', 'excused', 'half_day', 'holiday']);
+    const errors: ImportRowError[] = [];
+    const cleaned: { row: number; input: Record<string, unknown> }[] = [];
+    rows.forEach((r, i) => {
+      const rowNo = i + 2;
+      const miss = ATTENDANCE_REQUIRED.filter(f => !String(r[f] ?? '').trim());
+      if (miss.length) { for (const f of miss) errors.push({ row: rowNo, field: f, message: 'required' }); return; }
+      const studentId = byNo.get(normKey(r.admission_no));
+      if (!studentId) { errors.push({ row: rowNo, field: 'admission_no', message: `no active student with admission number ${r.admission_no}` }); return; }
+      const date = String(r.date).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { errors.push({ row: rowNo, field: 'date', message: `${r.date} is not a YYYY-MM-DD date` }); return; }
+      const status = String(r.status).trim().toLowerCase();
+      if (!allowed.has(status)) { errors.push({ row: rowNo, field: 'status', message: `${r.status} is not one of ${[...allowed].join(', ')}` }); return; }
+      cleaned.push({ row: rowNo, input: { studentId, onDate: date, status, checkIn: r.check_in ? `${date} ${String(r.check_in).slice(0, 5)}:00` : null, remarks: r.remarks || null } });
+    });
+    return { total: rows.length, cleaned, errors };
+  }
+
+  async start(schoolId: string, buffer: Buffer, fileName: string, opts: { entity?: ImportEntity; academicYearId?: string | null; mapping?: Record<string, string>; createdBy?: string | null } = {}) {
+    const entity = opts.entity ?? 'student';
     const { rows } = this.parse(buffer);
-    const prep = await this.prepare(schoolId, rows, opts);
+    const prep = entity === 'staff' ? await this.prepareStaff(schoolId, rows)
+      : entity === 'attendance' ? await this.prepareAttendance(schoolId, rows)
+        : await this.prepare(schoolId, rows, opts);
     const file = await this.files.store({ schoolId, data: buffer, fileName, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', purpose: 'import', entityType: 'platform.import_job' });
     const id = ulid();
-    await this.db.insert('import_jobs', { id, school_id: schoolId, entity_type: 'student', file_id: file.id, mapping: { ...(opts.mapping ?? {}), academicYearId: prep.yearId } as never, total_rows: prep.total, success_rows: 0, error_rows: prep.errors.length, status: 'pending', created_by: opts.createdBy ?? null });
+    await this.db.insert('import_jobs', { id, school_id: schoolId, entity_type: entity, file_id: file.id, mapping: { ...(opts.mapping ?? {}), academicYearId: (prep as { yearId?: string }).yearId ?? null } as never, total_rows: prep.total, success_rows: 0, error_rows: prep.errors.length, status: 'pending', created_by: opts.createdBy ?? null });
     await this.adapters.storage.put(`${schoolId}/imports/${id}.json`, Buffer.from(JSON.stringify({ rows: prep.cleaned, errors: prep.errors, sourceRows: rows })));
     await this.adapters.queue.push({ name: 'people.import_students', queue: 'batch', schoolId, payload: { importJobId: id }, totalItems: prep.cleaned.length, triggeredBy: 'import' });
-    return { id, total: prep.total, valid: prep.cleaned.length, invalid: prep.errors.length, errors: prep.errors.slice(0, 50) };
+    return { id, entity, total: prep.total, valid: prep.cleaned.length, invalid: prep.errors.length, errors: prep.errors.slice(0, 50) };
   }
 
   /** Queue handler: inserts in chunks of 100, writes progress, resumes from cursor, produces the error workbook at the end. */
@@ -101,18 +184,22 @@ export class ImportService {
     const stream = await this.adapters.storage.get(`${schoolId}/imports/${jobId}.json`);
     const chunks: Buffer[] = []; for await (const c of stream) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
     const data = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { rows: { row: number; input: StudentInput }[]; errors: ImportRowError[]; sourceRows: Record<string, string>[] };
+    const entity = (String(job.entity_type) as ImportEntity) || 'student';
     const cursor = (ctx.job.cursor as { done?: number; failed?: ImportRowError[] } | null) ?? {};
     let done = cursor.done ?? 0; const failed: ImportRowError[] = cursor.failed ?? [];
     if (job.status === 'pending') await this.db.update('import_jobs', { status: 'running', updated_at: nowSql() }, { id: jobId });
     const CHUNK = 100;
     while (done < data.rows.length) {
       const slice = data.rows.slice(done, done + CHUNK);
-      await this.db.transaction(async tx => {
+      const apply = async (t: Db) => {
         for (const r of slice) {
-          try { await this.people.createStudent(schoolId, r.input, tx); }
+          try { await this.insertRow(schoolId, entity, r.input as never, t); }
           catch (e) { failed.push({ row: r.row, field: '*', message: (e as Error).message.slice(0, 200) }); }
         }
-      });
+      };
+      // attendance goes through AttendanceService, which owns its own connection, so wrapping the
+      // chunk in a transaction here would only hide those writes from the rollback it promises
+      if (entity === 'attendance') await apply(this.db); else await this.db.transaction(apply);
       done += slice.length;
       await ctx.progress(done, data.rows.length, { done, failed });
       if (Date.now() > ctx.deadline && done < data.rows.length) return { continue: true, cursor: { done, failed } };
@@ -129,8 +216,19 @@ export class ImportService {
     }
     const success = data.rows.length - failed.length;
     await this.db.update('import_jobs', { status: 'success', success_rows: success, error_rows: allErrors.length, errors_file_id: errorsFileId, finished_at: nowSql(), updated_at: nowSql() }, { id: jobId });
-    await this.outbox.emitNow({ type: 'import.finished', schoolId, aggregateType: 'platform.import_job', aggregateId: jobId, payload: { importJobId: jobId, entityType: 'student', successRows: success, errorRows: allErrors.length } });
+    await this.outbox.emitNow({ type: 'import.finished', schoolId, aggregateType: 'platform.import_job', aggregateId: jobId, payload: { importJobId: jobId, entityType: entity, successRows: success, errorRows: allErrors.length } });
     return { result: { success, errors: allErrors.length, errorsFileId } };
+  }
+
+  /** One row of whichever list this is. Staff also get their salary structure when the file carries one. */
+  private async insertRow(schoolId: string, entity: ImportEntity, input: Record<string, unknown>, tx: Db) {
+    if (entity === 'student') { await this.people.createStudent(schoolId, input as never, tx); return; }
+    if (entity === 'staff') {
+      const made = await this.people.createStaff(schoolId, { ...input, subjectIds: (input.subjectIds as string[]) ?? [] } as never, tx);
+      if (input.basicSalary && this.hr) await this.hr.setStructure(schoolId, { staffId: made.id, effectiveFrom: String(input.joinDate ?? nowSql().slice(0, 10)), basic: Number(input.basicSalary) }, null, tx);
+      return;
+    }
+    await this.attendance.mark(schoolId, String(input.studentId), String(input.onDate), input.status as never, { source: 'import', checkIn: (input.checkIn as string) ?? null, notify: false });
   }
 
   async status(schoolId: string, id: string) {

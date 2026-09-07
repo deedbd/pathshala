@@ -492,6 +492,16 @@ export default [
     entered_by     ulid >users:null
     entered_at     dt ! =now
   `, unique:[['test_id','application_id']] },
+  admission_interviews:{ desc:'Interview slots per applicant: when, where, who sits on the panel, and how it went.', cols:`
+    test_id        ulid ! >admission_tests
+    application_id ulid >admission_applications:null
+    starts_at      dt !
+    ends_at        dt !
+    venue          str(120)
+    panel          json
+    status         enum(open|booked|attended|no_show|cancelled) ! =open
+    notes          str(255)
+  `, index:[['test_id','starts_at']], unique:[['application_id']] },
   admission_offers:{ desc:'Offer with expiry; auto-revoked and waitlist promoted when unpaid.', cols:`
     application_id ulid ! u >admission_applications
     offered_at     dt ! =now

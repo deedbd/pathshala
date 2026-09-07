@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 350 tables · 4046 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 352 tables · 4068 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -1816,6 +1816,24 @@ Score per applicant.
 | entered_by | ulid | → users |
 | entered_at | dt | required · default now |
 
+### `admission_interviews`
+Interview slots per applicant: when, where, who sits on the panel, and how it went.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| school_id | ulid | required · → schools · Tenant |
+| test_id | ulid | required · → admission_tests |
+| application_id | ulid | → admission_applications |
+| starts_at | dt | required |
+| ends_at | dt | required |
+| venue | str(120) |  |
+| panel | json |  |
+| status | enum(open|booked|attended|no_show|cancelled) | required · default open |
+| notes | str(255) |  |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
+
 ### `admission_offers`
 Offer with expiry; auto-revoked and waitlist promoted when unpaid.
 
@@ -2529,6 +2547,22 @@ Per student per lesson.
 | seconds_watched | int | required · default 0 |
 | last_position | int | required · default 0 |
 | completed_at | dt |  |
+
+### `lesson_quiz_attempts`
+A go at the quiz inside a lesson: answers, score, and whether it passed.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| school_id | ulid | required · → schools · Tenant |
+| lesson_id | ulid | required · → lessons |
+| student_id | ulid | required · → students |
+| attempt_no | small | required · default 1 |
+| answers | json |  |
+| score | dec(6,2) | required · default 0 |
+| max_score | dec(6,2) | required · default 0 |
+| passed | bool | required · default false |
+| submitted_at | dt | required · default now |
 
 ### `assignments`
 Homework/assignment with due date, penalty and submission type.

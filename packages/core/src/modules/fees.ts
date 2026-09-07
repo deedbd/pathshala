@@ -7,13 +7,14 @@ import type { NotificationService } from '../notifications.js';
 import type { NumberingService } from './numbering.js';
 import type { AcademicService } from './academic.js';
 import type { AccountingService } from './accounting.js';
+import type { DocumentService } from './documents.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 import { decryptSecret, encryptSecret } from '../util.js';
 
 export type Frequency = 'one_time' | 'monthly' | 'quarterly' | 'half_yearly' | 'yearly' | 'per_term';
 export interface StructureItemInput { feeHeadId: string; amount: number; frequency?: Frequency; dueDay?: number; applicableMonths?: number[] | null; lateFineRuleId?: string | null }
-export interface PaymentInput { studentId?: string | null; amount: number; method: 'cash' | 'bank_transfer' | 'cheque' | 'card' | 'bkash' | 'nagad' | 'rocket' | 'upay' | 'sslcommerz' | 'wallet' | 'adjustment' | 'other'; invoiceIds?: string[]; reference?: string | null; paidAt?: string; receivedBy?: string | null; bankAccountId?: string | null; gatewayId?: string | null; gatewayTxnId?: string | null; gatewayPayload?: unknown; cashSessionId?: string | null; notes?: string | null }
+export interface PaymentInput { studentId?: string | null; amount: number; method: 'cash' | 'bank_transfer' | 'cheque' | 'card' | 'bkash' | 'nagad' | 'rocket' | 'upay' | 'sslcommerz' | 'wallet' | 'adjustment' | 'other'; invoiceIds?: string[]; reference?: string | null; paidAt?: string; receivedBy?: string | null; bankAccountId?: string | null; gatewayId?: string | null; gatewayTxnId?: string | null; gatewayPayload?: unknown; cashSessionId?: string | null; notes?: string | null; clearedNow?: boolean; existingId?: string }
 
 const REMINDER_LADDER: { stage: string; offsetDays: number }[] = [
   { stage: 'due_in_3', offsetDays: -3 }, { stage: 'due_today', offsetDays: 0 }, { stage: 'overdue_3', offsetDays: 3 }, { stage: 'overdue_7', offsetDays: 7 }, { stage: 'overdue_15', offsetDays: 15 },
@@ -27,7 +28,7 @@ const REMINDER_LADDER: { stage: string; offsetDays: number }[] = [
  * so the trial balance is produced from the same rows — "zero manual fee journals".
  */
 export class FeesService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private numbering: NumberingService, private academic: AcademicService, private accounting: AccountingService, private adapters: Adapters, private appKey: string) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private numbering: NumberingService, private academic: AcademicService, private accounting: AccountingService, private documents: DocumentService, private adapters: Adapters, private appKey: string) {}
 
   // ---------- structures ----------
   async heads(schoolId: string) { return this.db.findMany<Row>('fee_heads', { school_id: schoolId, status: 'active' }, { orderBy: 'name ASC' }); }
@@ -251,14 +252,23 @@ export class FeesService {
   }
 
   // ---------- payments ----------
-  /** Records a payment, allocates it to invoices oldest-first, posts the journal, notifies the guardian. */
+  /**
+   * Records a payment, allocates it to invoices oldest-first, posts the journal, notifies the guardian.
+   * A cheque is the exception: it is held pending and allocates nothing until it clears, because a
+   * school that credits a cheque the day it is handed over ends up chasing a fee it marked paid.
+   */
   async recordPayment(schoolId: string, p: PaymentInput, tx?: Db) {
+    if (p.method === 'cheque' && !p.clearedNow && !p.existingId) return this.recordCheque(schoolId, p);
     const run = async (t: Db) => {
       if (p.amount <= 0) throw badRequest('amount must be positive');
-      const id = ulid();
-      const paymentNo = await this.numbering.next(schoolId, 'payment_no', { prefix: 'RCPT-', padding: 6, resetYearly: true }, t);
+      const id = p.existingId ?? ulid();
+      const paymentNo = p.existingId
+        ? String((await t.findOne<Row>('payments', { id }))?.payment_no ?? '')
+        : await this.numbering.next(schoolId, 'payment_no', { prefix: 'RCPT-', padding: 6, resetYearly: true }, t);
       const paidAt = p.paidAt ?? nowSql();
-      await t.insert('payments', { id, school_id: schoolId, payment_no: paymentNo, student_id: p.studentId ?? null, payer_user_id: null, amount: p.amount, method: p.method, gateway_id: p.gatewayId ?? null, gateway_txn_id: p.gatewayTxnId ?? null, gateway_payload: (p.gatewayPayload ?? null) as never, bank_account_id: p.bankAccountId ?? null, reference: p.reference ?? null, paid_at: paidAt, received_by: p.receivedBy ?? null, status: 'success', cash_session_id: p.cashSessionId ?? null, notes: p.notes ?? null });
+      const row: Row = { id, school_id: schoolId, payment_no: paymentNo, student_id: p.studentId ?? null, payer_user_id: null, amount: p.amount, method: p.method, gateway_id: p.gatewayId ?? null, gateway_txn_id: p.gatewayTxnId ?? null, gateway_payload: (p.gatewayPayload ?? null) as never, bank_account_id: p.bankAccountId ?? null, reference: p.reference ?? null, paid_at: paidAt, received_by: p.receivedBy ?? null, status: 'success', cash_session_id: p.cashSessionId ?? null, notes: p.notes ?? null };
+      if (p.existingId) { const { id: _i, school_id: _s, payment_no: _n, ...rest } = row; await t.update('payments', { ...rest, updated_at: nowSql() }, { id }); }
+      else await t.insert('payments', row);
 
       // allocate: named invoices first, then the oldest unpaid ones
       let left = p.amount; const allocations: { invoiceId: string; amount: number }[] = [];
@@ -286,6 +296,133 @@ export class FeesService {
     if (p.studentId) await this.notifyPayment(schoolId, p.studentId, r.paymentNo, p.amount);
     return r;
   }
+  /** A cheque sits pending: no allocation, no journal, nothing on the student's ledger yet. */
+  private async recordCheque(schoolId: string, p: PaymentInput) {
+    if (p.amount <= 0) throw badRequest('amount must be positive');
+    if (!p.reference) throw badRequest('a cheque needs its number in the reference');
+    const id = ulid();
+    const paymentNo = await this.numbering.next(schoolId, 'payment_no', { prefix: 'RCPT-', padding: 6, resetYearly: true });
+    await this.db.insert('payments', { id, school_id: schoolId, payment_no: paymentNo, student_id: p.studentId ?? null, payer_user_id: null, amount: p.amount, method: 'cheque', gateway_id: null, gateway_txn_id: null, gateway_payload: null, bank_account_id: p.bankAccountId ?? null, reference: p.reference, paid_at: p.paidAt ?? nowSql(), received_by: p.receivedBy ?? null, status: 'pending', cash_session_id: p.cashSessionId ?? null, notes: p.notes ?? null });
+    await this.outbox.emitNow({ type: 'cheque.received', schoolId, aggregateType: 'fees.payment', aggregateId: id, payload: { paymentId: id, studentId: p.studentId ?? '', amount: p.amount, reference: String(p.reference) } });
+    return { id, paymentNo, allocated: [] as { invoiceId: string; amount: number }[], unallocated: p.amount, journalEntryId: null as string | null, pending: true };
+  }
+  /** The bank honoured it, so the same row now allocates, journals and reaches the guardian. */
+  async clearCheque(schoolId: string, paymentId: string, opts: { clearedAt?: string; bankAccountId?: string | null } = {}) {
+    const p = await this.db.findOne<Row>('payments', { id: paymentId, school_id: schoolId });
+    if (!p) throw notFound('payment');
+    if (p.method !== 'cheque') throw badRequest('that payment is not a cheque');
+    if (p.status !== 'pending') throw new HttpError(409, `this cheque is already ${p.status}`, 'conflict');
+    const r = await this.recordPayment(schoolId, {
+      existingId: paymentId, clearedNow: true, studentId: (p.student_id as string) ?? null, amount: Number(p.amount), method: 'cheque',
+      reference: (p.reference as string) ?? null, paidAt: opts.clearedAt ?? nowSql(), receivedBy: (p.received_by as string) ?? null,
+      bankAccountId: opts.bankAccountId ?? ((p.bank_account_id as string) ?? null), cashSessionId: (p.cash_session_id as string) ?? null, notes: (p.notes as string) ?? null,
+    });
+    await this.outbox.emitNow({ type: 'cheque.cleared', schoolId, aggregateType: 'fees.payment', aggregateId: paymentId, payload: { paymentId, amount: Number(p.amount), reference: String(p.reference ?? '') } });
+    return r;
+  }
+  /** It bounced: the payment fails, the fee stays outstanding and the guardian is told plainly. */
+  async bounceCheque(schoolId: string, paymentId: string, reason: string) {
+    const p = await this.db.findOne<Row>('payments', { id: paymentId, school_id: schoolId });
+    if (!p) throw notFound('payment');
+    if (p.status !== 'pending') throw new HttpError(409, `this cheque is already ${p.status}`, 'conflict');
+    await this.db.update('payments', { status: 'failed', notes: `bounced: ${reason.slice(0, 200)}`, updated_at: nowSql() }, { id: paymentId });
+    if (p.student_id) await this.notifyGuardians(schoolId, String(p.student_id), 'fees.cheque_bounced', 'Cheque returned', `The cheque ${p.reference} for Tk ${Number(p.amount)} was returned by the bank. The fee is still outstanding.`);
+    await this.outbox.emitNow({ type: 'cheque.bounced', schoolId, aggregateType: 'fees.payment', aggregateId: paymentId, payload: { paymentId, reason } });
+    return { id: paymentId, status: 'failed' as const, reason };
+  }
+  async pendingCheques(schoolId: string) {
+    return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no FROM payments p LEFT JOIN students s ON s.id = p.student_id WHERE p.school_id = ? AND p.method = 'cheque' AND p.status = 'pending' ORDER BY p.paid_at`, [schoolId]);
+  }
+
+  /** The receipt the counter hands over: the payment's own numbers, rendered once and kept. */
+  async issueReceipt(schoolId: string, paymentId: string) {
+    const p = await this.db.findOne<Row>('payments', { id: paymentId, school_id: schoolId });
+    if (!p) throw notFound('payment');
+    if (p.receipt_file_id) return { paymentId, fileId: String(p.receipt_file_id), documentNo: String(p.payment_no), alreadyIssued: true };
+    if (p.status !== 'success') throw new HttpError(409, `a ${p.status} payment has no receipt`, 'conflict');
+    const student = p.student_id ? await this.db.findOne<Row>('students', { id: String(p.student_id) }) : null;
+    const allocations = await this.db.query<Row>(`SELECT a.amount, i.invoice_no FROM payment_allocations a JOIN invoices i ON i.id = a.invoice_id WHERE a.payment_id = ?`, [paymentId]);
+    const due = student ? Number((await this.db.query<{ d: number }>(`SELECT COALESCE(SUM(balance), 0) AS d FROM invoices WHERE student_id = ? AND balance > 0`, [String(student.id)]))[0]?.d ?? 0) : 0;
+    const issued = await this.documents.issue(schoolId, {
+      docType: 'receipt', personType: student ? 'student' : 'other', studentId: student ? String(student.id) : null,
+      data: {
+        name: student ? `${student.first_name} ${student.last_name ?? ''}`.trim() : 'Counter payment',
+        admission_no: String(student?.admission_no ?? '-'), receipt_no: String(p.payment_no), amount: String(Number(p.amount)),
+        method: String(p.method), paid_at: String(p.paid_at).slice(0, 16), reference: String(p.reference ?? ''),
+        against: allocations.map(a => `${a.invoice_no} (${Number(a.amount)})`).join(', ') || 'advance',
+        outstanding: String(round(due)),
+      },
+      entityType: 'fees.payment', entityId: paymentId,
+    });
+    await this.db.update('payments', { receipt_file_id: issued.fileId, updated_at: nowSql() }, { id: paymentId });
+    return { paymentId, fileId: issued.fileId, documentNo: issued.documentNo };
+  }
+
+  // ---------- instalment plans ----------
+  /**
+   * Splits one large fee into dated instalments. Nothing is invoiced up front: a scheduled job raises
+   * each instalment's invoice on the day it falls due, so a guardian never sees the whole amount as
+   * outstanding before it is, and the reminder ladder chases the instalment, not the lump sum.
+   */
+  async createInstalmentPlan(schoolId: string, p: { studentId: string; feeHeadId: string; totalAmount: number; instalments?: { due: string; amount: number }[]; count?: number; firstDue?: string; approvedBy?: string | null }) {
+    if (!(await this.db.findOne('students', { id: p.studentId, school_id: schoolId }))) throw notFound('student');
+    if (!(await this.db.findOne('fee_heads', { id: p.feeHeadId, school_id: schoolId }))) throw notFound('fee head');
+    if (p.totalAmount <= 0) throw badRequest('the plan needs a positive total');
+    let instalments = p.instalments ?? [];
+    if (!instalments.length) {
+      const count = Math.max(2, Math.min(24, p.count ?? 3));
+      const each = round(p.totalAmount / count);
+      const first = (p.firstDue ?? nowSql()).slice(0, 10);
+      instalments = Array.from({ length: count }, (_, i) => {
+        const d = new Date(`${first}T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + i);
+        return { due: d.toISOString().slice(0, 10), amount: i === count - 1 ? round(p.totalAmount - each * (count - 1)) : each };
+      });
+    }
+    const total = round(instalments.reduce((a, i) => a + i.amount, 0));
+    if (total !== round(p.totalAmount)) throw badRequest(`the instalments add up to ${total}, not ${p.totalAmount}`);
+    const id = ulid();
+    await this.db.insert('instalment_plans', { id, school_id: schoolId, student_id: p.studentId, fee_head_id: p.feeHeadId, total_amount: round(p.totalAmount), instalments: instalments.map(i => ({ ...i, invoiceId: null })) as never, status: 'active', approved_by: p.approvedBy ?? null });
+    await this.outbox.emitNow({ type: 'instalment_plan.created', schoolId, aggregateType: 'fees.instalment_plan', aggregateId: id, payload: { planId: id, studentId: p.studentId, count: instalments.length, total } });
+    await this.notifyGuardians(schoolId, p.studentId, 'fees.instalment_plan', 'Payment plan agreed', `${instalments.length} instalments totalling Tk ${total}. The first, Tk ${instalments[0]!.amount}, is due ${instalments[0]!.due}.`);
+    return { id, instalments };
+  }
+  async instalmentPlans(schoolId: string, studentId?: string) {
+    const where: Row = { school_id: schoolId };
+    if (studentId) where.student_id = studentId;
+    return this.db.findMany<Row>('instalment_plans', where, { orderBy: 'created_at DESC', limit: 200 });
+  }
+  async cancelInstalmentPlan(schoolId: string, planId: string) {
+    if (!(await this.db.findOne('instalment_plans', { id: planId, school_id: schoolId }))) throw notFound('instalment plan');
+    await this.db.update('instalment_plans', { status: 'cancelled', updated_at: nowSql() }, { id: planId });
+    return { id: planId, status: 'cancelled' as const };
+  }
+  /** Raises the invoice for every instalment that has fallen due and has not been billed yet. */
+  async billDueInstalments(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    const plans = await this.db.findMany<Row>('instalment_plans', { school_id: schoolId, status: 'active' });
+    let billed = 0, completed = 0;
+    for (const plan of plans) {
+      const rows = json<{ due: string; amount: number; invoiceId: string | null }[]>(plan.instalments) ?? [];
+      const head = await this.db.findOne<Row>('fee_heads', { id: String(plan.fee_head_id) });
+      let changed = false;
+      for (const r of rows) {
+        if (r.invoiceId || r.due > onDate) continue;
+        const inv = await this.createInvoice(schoolId, { studentId: String(plan.student_id), issueDate: r.due, notes: `instalment:${plan.id}`, items: [{ feeHeadId: String(plan.fee_head_id), description: `${head?.name ?? 'Instalment'} - due ${r.due}`, amount: r.amount }] });
+        r.invoiceId = inv.id; changed = true; billed++;
+      }
+      if (changed) {
+        const done = rows.every(r => r.invoiceId);
+        await this.db.update('instalment_plans', { instalments: rows as never, status: done ? 'completed' : 'active', updated_at: nowSql() }, { id: String(plan.id) });
+        if (done) completed++;
+      }
+    }
+    return { billed, completed };
+  }
+
+  private async notifyGuardians(schoolId: string, studentId: string, eventKey: string, title: string, body: string) {
+    const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [studentId]);
+    for (const g of guardians) await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['sms', 'push', 'in_app'], eventKey, title, body, entityType: 'people.student', entityId: studentId });
+  }
+
   private async notifyPayment(schoolId: string, studentId: string, paymentNo: string, amount: number) {
     const student = await this.db.findOne<Row>('students', { id: studentId });
     const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [studentId]);
@@ -418,6 +555,8 @@ export class FeesService {
   jobs(): Record<string, ScheduledFn> {
     return {
       'fees.generate_invoices': async ({ schoolId }) => this.generateBatch(schoolId, {}),
+      // an instalment becomes an invoice on the day it falls due, never before
+      'fees.instalments_due': async ({ schoolId }) => this.billDueInstalments(schoolId),
       'fees.reminders': async ({ schoolId }) => this.runReminders(schoolId),
       'fees.overdue_and_fines': async ({ schoolId }) => this.applyOverdueAndFines(schoolId),
       'fees.day_end_summary': async ({ schoolId }) => this.dayEndSummary(schoolId),

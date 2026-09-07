@@ -8,6 +8,8 @@ import type { AcademicService } from './academic.js';
 import type { PeopleService } from './people.js';
 import type { FeesService } from './fees.js';
 import type { DocumentService } from './documents.js';
+import type { FileService } from '../files.js';
+import type { SettingsService } from '../settings.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface CampaignInput {
@@ -31,7 +33,7 @@ export interface ApplicationInput {
 export class AdmissionsService {
   constructor(
     private db: Db, private outbox: OutboxService, private notifications: NotificationService, private numbering: NumberingService,
-    private academic: AcademicService, private people: PeopleService, private fees: FeesService, private documents: DocumentService, private adapters: Adapters,
+    private academic: AcademicService, private people: PeopleService, private fees: FeesService, private documents: DocumentService, private files: FileService, private settings: SettingsService, private adapters: Adapters,
   ) {}
 
   // ---------- campaigns ----------
@@ -206,6 +208,101 @@ export class AdmissionsService {
     return { saved };
   }
 
+  // ---------- applicant documents ----------
+  /**
+   * What the guardian uploads with the form. Nothing here decides admission; it exists so the office
+   * is not chasing a birth certificate on the day the child is meant to start.
+   */
+  async uploadDocument(schoolId: string, applicationId: string, d: { docType: string; data: Buffer; fileName: string; mimeType?: string }) {
+    const app = await this.db.findOne<Row>('admission_applications', { id: applicationId, school_id: schoolId });
+    if (!app) throw notFound('application');
+    if (d.data.length > 8 * 1024 * 1024) throw badRequest('a document may not be larger than 8 MB');
+    const f = await this.files.store({ schoolId, data: d.data, fileName: d.fileName, mimeType: d.mimeType ?? 'application/octet-stream', purpose: `admission_${d.docType}`, entityType: 'admissions.application', entityId: applicationId });
+    const ex = await this.db.findOne<Row>('application_documents', { application_id: applicationId, doc_type: d.docType });
+    const id = ex ? String(ex.id) : ulid();
+    // a re-upload replaces the old one and drops the verification with it: it is a different paper now
+    if (ex) await this.db.update('application_documents', { file_id: f.id, verified_at: null, verified_by: null }, { id });
+    else await this.db.insert('application_documents', { id, school_id: schoolId, application_id: applicationId, doc_type: d.docType, file_id: f.id, verified_at: null, verified_by: null });
+    if (d.docType === 'photo') await this.db.update('admission_applications', { photo_file_id: f.id, updated_at: nowSql() }, { id: applicationId });
+    return { id, fileId: f.id, docType: d.docType, replaced: !!ex };
+  }
+  async verifyDocument(schoolId: string, documentId: string, verifiedBy?: string | null) {
+    const n = await this.db.update('application_documents', { verified_at: nowSql(), verified_by: verifiedBy ?? null }, { id: documentId, school_id: schoolId });
+    if (!n) throw notFound('document');
+    return { id: documentId, verified: true };
+  }
+  /** The checklist, with what is still missing named rather than counted. */
+  async documentChecklist(schoolId: string, applicationId: string) {
+    const required = (await this.settings.get<string[]>(schoolId, 'admissions.required_documents')) ?? ['photo', 'birth_certificate', 'previous_result'];
+    const have = await this.db.findMany<Row>('application_documents', { school_id: schoolId, application_id: applicationId });
+    const byType = new Map(have.map(h => [String(h.doc_type), h]));
+    return {
+      required, uploaded: have,
+      missing: required.filter(r => !byType.has(r)),
+      unverified: have.filter(h => !h.verified_at).map(h => String(h.doc_type)),
+      complete: required.every(r => byType.get(r)?.verified_at),
+    };
+  }
+
+  // ---------- interviews ----------
+  /**
+   * Interview slots for a test: a strip of times someone actually has to sit through, so the slots are
+   * made once and applicants are put into them one at a time. A slot holds one applicant — an interview
+   * that overlaps another is an interview nobody attends.
+   */
+  async createInterviewSlots(schoolId: string, testId: string, p: { from: string; minutes?: number; count: number; venue?: string | null; panel?: string[] | null; breakAfter?: number; breakMinutes?: number }) {
+    const test = await this.db.findOne<Row>('admission_tests', { id: testId, school_id: schoolId });
+    if (!test) throw notFound('test');
+    if (p.count < 1 || p.count > 400) throw badRequest('between 1 and 400 slots at a time');
+    const minutes = Math.max(5, Math.min(120, p.minutes ?? 15));
+    let at = new Date(`${p.from.replace(' ', 'T').slice(0, 19)}Z`);
+    if (Number.isNaN(at.getTime())) throw badRequest(`${p.from} is not a date and time`);
+    const made: string[] = [];
+    for (let i = 0; i < p.count; i++) {
+      const ends = new Date(at.getTime() + minutes * 60_000);
+      const id = ulid();
+      await this.db.insert('admission_interviews', { id, school_id: schoolId, test_id: testId, application_id: null, starts_at: sql(at), ends_at: sql(ends), venue: p.venue ?? (test.venue as string) ?? null, panel: (p.panel ?? null) as never, status: 'open', notes: null });
+      made.push(id);
+      at = ends;
+      if (p.breakAfter && (i + 1) % p.breakAfter === 0) at = new Date(at.getTime() + (p.breakMinutes ?? 15) * 60_000);
+    }
+    return { testId, slots: made.length, from: made.length ? p.from : null };
+  }
+  /** Puts an applicant in the next free slot (or a named one) and tells the guardian when to come. */
+  async scheduleInterview(schoolId: string, applicationId: string, opts: { testId?: string; slotId?: string } = {}) {
+    const app = await this.db.findOne<Row>('admission_applications', { id: applicationId, school_id: schoolId });
+    if (!app) throw notFound('application');
+    const held = await this.db.findOne<Row>('admission_interviews', { school_id: schoolId, application_id: applicationId });
+    if (held) return { slotId: String(held.id), startsAt: String(held.starts_at), alreadyScheduled: true };
+    const slot = opts.slotId
+      ? await this.db.findOne<Row>('admission_interviews', { id: opts.slotId, school_id: schoolId, status: 'open' })
+      : (await this.db.query<Row>(`SELECT i.* FROM admission_interviews i${opts.testId ? '' : ' JOIN admission_tests t ON t.id = i.test_id'} WHERE i.school_id = ? AND i.status = 'open' AND i.application_id IS NULL AND ${opts.testId ? 'i.test_id = ?' : 't.class_id = ?'} ORDER BY i.starts_at LIMIT 1`, [schoolId, opts.testId ?? String(app.class_id)]))[0];
+    if (!slot) throw new HttpError(409, 'there is no free interview slot left; make more first', 'no_slot');
+    const taken = await this.db.update('admission_interviews', { application_id: applicationId, status: 'booked', updated_at: nowSql() }, { id: String(slot.id), status: 'open' });
+    if (!taken) throw new HttpError(409, 'somebody took that slot first', 'no_slot');
+    await this.db.update('admission_applications', { status: 'test_scheduled', updated_at: nowSql() }, { id: applicationId });
+    await this.notifications.notify({ schoolId, address: String(app.guardian_phone), channels: ['sms'], eventKey: 'admissions.interview_scheduled', data: { no: String(app.application_no), at: String(slot.starts_at) }, title: 'Interview time', body: `${app.first_name}: interview on ${String(slot.starts_at).slice(0, 16)} at ${slot.venue ?? 'the school'}. Please arrive ten minutes early.`, entityType: 'admissions.application', entityId: applicationId });
+    return { slotId: String(slot.id), startsAt: String(slot.starts_at), venue: (slot.venue as string) ?? null };
+  }
+  /** How it went. A no-show is recorded as one, so a merit list built from interviews is honest. */
+  async recordInterview(schoolId: string, slotId: string, r: { status: 'attended' | 'no_show' | 'cancelled'; notes?: string | null; marks?: number | null; enteredBy?: string | null }) {
+    const slot = await this.db.findOne<Row>('admission_interviews', { id: slotId, school_id: schoolId });
+    if (!slot) throw notFound('interview slot');
+    await this.db.update('admission_interviews', { status: r.status, notes: r.notes ?? null, updated_at: nowSql() }, { id: slotId });
+    if (r.status === 'cancelled') await this.db.update('admission_interviews', { application_id: null, status: 'open', updated_at: nowSql() }, { id: slotId });
+    // the interview is one component of the test, not the whole of it: a written score already recorded
+    // against this applicant stays, and the total is the sum of what they were actually marked on
+    if (slot.application_id && (r.marks != null || r.status === 'no_show')) {
+      const ex = await this.db.findOne<Row>('admission_test_results', { test_id: String(slot.test_id), application_id: String(slot.application_id) });
+      const components = { ...(json<Record<string, number>>(ex?.component_marks) ?? {}), interview: r.marks ?? 0 };
+      await this.enterResults(schoolId, String(slot.test_id), [{ applicationId: String(slot.application_id), componentMarks: components, isAbsent: r.status === 'no_show', remarks: r.notes ?? (r.status === 'no_show' ? 'did not attend the interview' : null) }], r.enteredBy);
+    }
+    return { slotId, status: r.status };
+  }
+  async interviewSchedule(schoolId: string, testId: string) {
+    return this.db.query<Row>(`SELECT i.*, a.application_no, a.first_name, a.last_name, a.guardian_phone FROM admission_interviews i LEFT JOIN admission_applications a ON a.id = i.application_id WHERE i.school_id = ? AND i.test_id = ? ORDER BY i.starts_at LIMIT 500`, [schoolId, testId]);
+  }
+
   // ---------- merit list ----------
   /**
    * A5: ranks the applicants of one class and fills the seats. Test and interview modes sort by score,
@@ -263,6 +360,43 @@ export class AdmissionsService {
     const where = classId ? ' AND class_id = ?' : '';
     const params = classId ? [schoolId, campaignId, classId] : [schoolId, campaignId];
     return this.db.query<Row>(`SELECT * FROM admission_applications WHERE school_id = ? AND campaign_id = ?${where} AND merit_rank IS NOT NULL ORDER BY class_id, merit_rank LIMIT 2000`, params);
+  }
+
+  /**
+   * The merit list as one PDF, the way it goes on the notice board: rank, application number, name and
+   * score, seats marked where the line falls. Names of children who were not selected still appear —
+   * that is the point of publishing a merit list — but nothing else about them does.
+   */
+  async meritListPdf(schoolId: string, campaignId: string, classId: string) {
+    const campaign = await this.db.findOne<Row>('admission_campaigns', { id: campaignId, school_id: schoolId });
+    if (!campaign) throw notFound('campaign');
+    const cls = await this.db.findOne<Row>('classes', { id: classId, school_id: schoolId });
+    const school = await this.db.findOne<Row>('schools', { id: schoolId });
+    const rows = await this.db.query<Row>(`SELECT application_no, first_name, last_name, test_score, merit_rank, status, waitlist_position FROM admission_applications WHERE school_id = ? AND campaign_id = ? AND class_id = ? AND merit_rank IS NOT NULL ORDER BY merit_rank LIMIT 2000`, [schoolId, campaignId, classId]);
+    if (!rows.length) throw new HttpError(409, 'this class has no merit list yet', 'conflict');
+    const seat = await this.db.findOne<Row>('admission_campaign_classes', { campaign_id: campaignId, class_id: classId });
+    const seats = Number(seat?.seats ?? 0);
+    const body = rows.map(r => [
+      { text: String(r.merit_rank), alignment: 'right' },
+      String(r.application_no),
+      `${r.first_name} ${r.last_name ?? ''}`.trim(),
+      { text: r.test_score == null ? '-' : String(Number(r.test_score)), alignment: 'right' },
+      String(r.status) === 'waitlisted' ? `waiting ${r.waitlist_position ?? ''}`.trim() : String(r.status),
+    ]);
+    const doc = {
+      pageSize: 'A4', pageMargins: [40, 48, 40, 48],
+      content: [
+        { text: String(school?.name ?? 'School'), style: 'h1', alignment: 'center' },
+        { text: `Merit list — ${String(campaign.name)}`, style: 'title', alignment: 'center', margin: [0, 8, 0, 2] },
+        { text: `${String(cls?.name ?? '')} · ${seats} seats · ${rows.length} applicants ranked`, style: 'small', alignment: 'center', margin: [0, 0, 0, 14] },
+        { table: { headerRows: 1, widths: [34, 90, '*', 50, 70], body: [['Rank', 'Application', 'Name', 'Score', 'Result'].map(t => ({ text: t, bold: true })), ...body] }, layout: 'lightHorizontalLines' },
+        { text: `Published ${nowSql().slice(0, 16)}. A place is held only until the admission fee is paid by the date on the offer letter.`, style: 'small', margin: [0, 16, 0, 0] },
+      ],
+      styles: { h1: { fontSize: 16, bold: true }, title: { fontSize: 13, bold: true }, small: { fontSize: 8, color: '#555' } },
+    } as Record<string, unknown>;
+    const pdf = await this.adapters.pdf.render(doc);
+    const f = await this.files.store({ schoolId, data: pdf, fileName: `merit-${String(cls?.name ?? classId)}-${campaignId.slice(-6)}.pdf`, mimeType: 'application/pdf', purpose: 'merit_list', entityType: 'admissions.campaign', entityId: campaignId });
+    return { fileId: f.id, ranked: rows.length, seats };
   }
 
   // ---------- offers ----------
@@ -448,3 +582,5 @@ function hash(s: string) {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0) % 1_000_000;
 }
+
+const sql = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');

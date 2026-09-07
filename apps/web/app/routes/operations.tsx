@@ -103,7 +103,10 @@ export default function Operations() {
       </div>}
 
       {tab === 'hostel' && <div className="mt-4">
-        <div className="mb-3 flex justify-end"><Button size="sm" onClick={() => setDrawer('hostel')}>{tr('ops.newHostel')}</Button></div>
+        <div className="mb-3 flex justify-end gap-2">
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => { const month = prompt('Which month? (YYYY-MM)', new Date(Date.now() - 15 * 86_400_000).toISOString().slice(0, 7)); if (month) run(async () => { const r = await api<{ billed: number; skipped: number; total: number }>('/api/hostel/mess/bill', { method: 'POST', json: { month } }); setMsg(`${r.billed} invoiced, ${r.skipped} already billed · ${money(r.total)}`); }); }}>{tr('ops.messBill')}</Button>
+          <Button size="sm" onClick={() => setDrawer('hostel')}>{tr('ops.newHostel')}</Button>
+        </div>
         <DataTable locale={d.locale} rows={d.hostels} columns={[
           { key: 'name', label: tr('common.name') },
           { key: 'hostel_type', label: tr('common.type') },

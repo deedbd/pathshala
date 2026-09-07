@@ -44,7 +44,13 @@ export function mountPhase1(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.post('/people/designations', wrap(async req => { const u = requirePerm(req, 'people.create'); const b = z.object({ name: z.string().min(1).max(80), category: z.enum(['teaching', 'non_teaching', 'admin', 'support']).optional(), level: z.coerce.number().int().optional() }).parse(req.body); return { id: await app.people.createDesignation(u.school_id, b.name, b.category, b.level) }; }));
 
   // ---------- import (raw xlsx body or base64 JSON) ----------
-  api.get('/import/template', (req, res) => { try { requirePerm(req, 'people.create'); } catch (e) { return res.status((e as HttpError).status ?? 401).json({ error: (e as Error).message }); } res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="students-template.xlsx"'); res.send(app.importer.template()); });
+  api.get('/import/template', (req, res) => {
+    try { requirePerm(req, 'people.create'); } catch (e) { return res.status((e as HttpError).status ?? 401).json({ error: (e as Error).message }); }
+    const entity = (q(req, 'entity') ?? 'student') as 'student' | 'staff' | 'attendance';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${entity}-template.xlsx"`);
+    res.send(app.importer.template(entity));
+  });
   api.post('/import/students', wrap(async req => {
     const u = requirePerm(req, 'people.create');
     let buffer: Buffer; let fileName = 'students.xlsx';
@@ -53,6 +59,17 @@ export function mountPhase1(api: Router, app: App, wrap: Wrap, requirePerm: (req
     if (buffer.length > 15 * 1024 * 1024) throw new HttpError(413, 'file too large (15 MB max)');
     return app.importer.start(u.school_id, buffer, fileName, { academicYearId: q(req, 'yearId') ?? null, createdBy: u.id });
   }));
+  // staff and a term's attendance arrive as spreadsheets too: same body, same job, different sheet
+  for (const [path, entity, perm] of [['staff', 'staff', 'people.create'], ['attendance', 'attendance', 'attendance.edit']] as const) {
+    api.post(`/import/${path}`, wrap(async req => {
+      const u = requirePerm(req, perm);
+      let buffer: Buffer; let fileName = `${path}.xlsx`;
+      if (Buffer.isBuffer(req.body)) buffer = req.body;
+      else { const b = z.object({ fileName: z.string().max(200).optional(), base64: z.string().min(10) }).parse(req.body); buffer = Buffer.from(b.base64.replace(/^data:[^;]+;base64,/, ''), 'base64'); fileName = b.fileName ?? fileName; }
+      if (buffer.length > 15 * 1024 * 1024) throw new HttpError(413, 'file too large (15 MB max)');
+      return app.importer.start(u.school_id, buffer, fileName, { entity, academicYearId: q(req, 'yearId') ?? null, createdBy: u.id });
+    }));
+  }
   api.get('/files/:id/url', wrap(async req => { const u = requireUser(req); return { url: await app.files.url(req.params.id as string, u.school_id, 900) }; }));
   api.get('/import/jobs', wrap(async req => { const u = requirePerm(req, 'people.view'); return app.importer.list(u.school_id); }));
   api.get('/import/jobs/:id', wrap(async req => { const u = requirePerm(req, 'people.view'); return app.importer.status(u.school_id, req.params.id as string); }));

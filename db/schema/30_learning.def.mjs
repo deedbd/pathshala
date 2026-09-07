@@ -419,6 +419,16 @@ export default [
     last_position int ! =0
     completed_at dt
   `, unique:[['lesson_id','student_id']] },
+  lesson_quiz_attempts:{ ts:false, desc:'A go at the quiz inside a lesson: answers, score, and whether it passed.', cols:`
+    lesson_id    ulid ! >lessons
+    student_id   ulid ! >students
+    attempt_no   small ! =1
+    answers      json
+    score        dec(6,2) ! =0
+    max_score    dec(6,2) ! =0
+    passed       bool ! =false
+    submitted_at dt ! =now
+  `, index:[['lesson_id','student_id']] },
   assignments:{ desc:'Homework/assignment with due date, penalty and submission type.', cols:`
     section_id       ulid ! >sections
     class_subject_id ulid ! >class_subjects

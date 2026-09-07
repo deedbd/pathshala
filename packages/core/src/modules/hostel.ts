@@ -6,6 +6,8 @@ import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { TaskService } from '../tasks.js';
 import type { ApprovalService } from '../approvals.js';
+import type { FeesService } from './fees.js';
+import type { SettingsService } from '../settings.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -16,7 +18,7 @@ import { HttpError, badRequest, notFound } from '../context.js';
  * on the scheduler: a resident who is late back, and a resident missing from the night roll call.
  */
 export class HostelService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private tasks: TaskService, private approvals: ApprovalService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private tasks: TaskService, private approvals: ApprovalService, private fees: FeesService, private settings: SettingsService) {}
 
   // ---------- buildings ----------
   async hostels(schoolId: string) {
@@ -198,6 +200,48 @@ export class HostelService {
     return this.db.findMany<Row>('hostel_complaints', where, { orderBy: 'created_at DESC', limit: 200 });
   }
 
+  /**
+   * Per-meal mess billing. A hostel that charges a flat monthly rate bills through the fee structure
+   * like anything else; one that charges for what was actually eaten needs this. Each meal keeps the
+   * price it was charged at, so re-running the month after a rate change does not rewrite history, and
+   * a student already billed for the month is skipped rather than billed twice.
+   */
+  async billMeals(schoolId: string, p: { month?: string; hostelId?: string | null } = {}) {
+    const month = (p.month ?? nowSql().slice(0, 7)).slice(0, 7);
+    const from = `${month}-01`;
+    const to = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const rates = (await this.settings.get<Record<string, number>>(schoolId, 'hostel.meal_rates')) ?? { breakfast: 25, lunch: 60, snack: 15, dinner: 55 };
+    const head = await this.db.findOne<{ id: string }>('fee_heads', { school_id: schoolId, code: 'MESS' });
+    const rows = await this.db.query<Row>(`SELECT * FROM meal_records WHERE school_id = ? AND on_date BETWEEN ? AND ? AND taken = TRUE${p.hostelId ? ' AND hostel_id = ?' : ''} ORDER BY student_id`, p.hostelId ? [schoolId, from, to, p.hostelId] : [schoolId, from, to]);
+    const byStudent = new Map<string, Row[]>();
+    for (const r of rows) byStudent.set(String(r.student_id), [...(byStudent.get(String(r.student_id)) ?? []), r]);
+    let billed = 0, skipped = 0, total = 0;
+    for (const [studentId, meals] of byStudent) {
+      const note = `mess:${month}`;
+      if (await this.db.findOne('invoices', { school_id: schoolId, student_id: studentId, notes: note })) { skipped++; continue; }
+      const counts = new Map<string, { n: number; amount: number }>();
+      for (const m of meals) {
+        const meal = String(m.meal);
+        const cost = m.cost != null ? Number(m.cost) : Number(rates[meal] ?? 0);
+        if (m.cost == null && cost > 0) await this.db.update('meal_records', { cost }, { id: String(m.id) });
+        const c = counts.get(meal) ?? { n: 0, amount: 0 };
+        counts.set(meal, { n: c.n + 1, amount: Math.round((c.amount + cost) * 100) / 100 });
+      }
+      const items = [...counts.entries()].filter(([, c]) => c.amount > 0).map(([meal, c]) => ({ feeHeadId: head?.id ?? null, description: `Mess ${meal} × ${c.n} (${month})`, amount: c.amount }));
+      if (!items.length) { skipped++; continue; }
+      await this.fees.createInvoice(schoolId, { studentId, billingPeriod: from, issueDate: to, items, notes: note });
+      billed++; total = Math.round((total + items.reduce((a, i) => a + i.amount, 0)) * 100) / 100;
+    }
+    return { month, billed, skipped, total };
+  }
+  /** What a resident has eaten this month, before anyone argues about the bill. */
+  async mealSummary(schoolId: string, studentId: string, month = nowSql().slice(0, 7)) {
+    const from = `${month.slice(0, 7)}-01`;
+    const to = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const rows = await this.db.query<{ meal: string; n: number; cost: number }>(`SELECT meal, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM meal_records WHERE school_id = ? AND student_id = ? AND taken = TRUE AND on_date BETWEEN ? AND ? GROUP BY meal`, [schoolId, studentId, from, to]);
+    return { month: month.slice(0, 7), meals: rows, total: Math.round(rows.reduce((a, r) => a + Number(r.cost), 0) * 100) / 100 };
+  }
+
   private async notifyGuardians(schoolId: string, studentId: string, eventKey: string, title: string, body: string, entityId: string, channels: ('sms' | 'push' | 'in_app' | 'email')[]) {
     const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [studentId]);
     for (const g of guardians) await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels, eventKey, title, body, entityType: 'hostel.outpass', entityId });
@@ -206,6 +250,11 @@ export class HostelService {
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
+      // the mess bill for the month just gone, on the first of the next one
+      'hostel.mess_billing': async ({ schoolId }) => {
+        const d = new Date(); d.setUTCDate(0);
+        return this.billMeals(schoolId, { month: d.toISOString().slice(0, 7) });
+      },
       // K3: somebody who is not back when they said they would be
       'hostel.curfew_watch': async ({ schoolId }) => {
         const now = nowSql();

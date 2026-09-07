@@ -30,6 +30,11 @@
     "rows": "F3"
   },
   {
+    "job_key": "fees.instalments_due",
+    "cron_expr": "0 6 * * *",
+    "rows": "F13"
+  },
+  {
     "job_key": "fees.overdue_and_fines",
     "cron_expr": "30 0 * * *",
     "rows": "F4"
@@ -88,6 +93,11 @@
     "job_key": "hostel.curfew_watch",
     "cron_expr": "*/15 * * * *",
     "rows": "K3"
+  },
+  {
+    "job_key": "hostel.mess_billing",
+    "cron_expr": "0 3 1 * *",
+    "rows": "K6"
   },
   {
     "job_key": "inventory.maintenance_due",

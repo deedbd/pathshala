@@ -21,6 +21,9 @@ const SEATS = 200;
 let app, schoolId, yearId, http, baseUrl, cookie, classId, campaignId, slug, testId, applications = [], enrolledStudentId;
 const t0 = Date.now();
 
+// a valid 1×1 JPEG: small enough to keep the suite fast, real enough that the PDF must embed it
+const TINY_JPEG = Buffer.from('/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64');
+
 describe('phase 6', () => {
   before(async () => {
     app = core.createApp({ rootDir: root });
@@ -135,6 +138,28 @@ describe('phase 6', () => {
     assert.ok(tested === 0 || tested < scored.length, 'the merit list has already moved them on');
   });
 
+  test('what the guardian uploaded is checked off, and what is missing is named', async () => {
+    const apps = await api(`/admissions/applications?campaignId=${campaignId}&classId=${classId}`);
+    const one = String(apps[0].id);
+    const before = await api(`/admissions/applications/${one}/documents`);
+    assert.deepEqual(before.missing, ['photo', 'birth_certificate', 'previous_result']);
+    assert.equal(before.complete, false);
+    const photo = await api(`/admissions/applications/${one}/documents`, { docType: 'photo', fileName: 'ayesha.jpg', mimeType: 'image/jpeg', base64: TINY_JPEG.toString('base64') });
+    assert.equal(photo.replaced, false);
+    assert.equal(String((await app.db.findOne('admission_applications', { id: one })).photo_file_id), photo.fileId, 'the photo becomes the application photo too');
+    await api(`/admissions/applications/${one}/documents`, { docType: 'birth_certificate', fileName: 'birth.pdf', mimeType: 'application/pdf', base64: Buffer.from('%PDF-1.4 birth certificate').toString('base64') });
+    const mid = await api(`/admissions/applications/${one}/documents`);
+    assert.deepEqual(mid.missing, ['previous_result']);
+    assert.deepEqual(mid.unverified.sort(), ['birth_certificate', 'photo']);
+    // verify one, then replace it: replacing drops the verification, because it is a different paper
+    await api(`/admissions/documents/${photo.id}/verify`, {});
+    assert.equal((await api(`/admissions/applications/${one}/documents`)).unverified.length, 1);
+    const again = await api(`/admissions/applications/${one}/documents`, { docType: 'photo', fileName: 'ayesha2.jpg', mimeType: 'image/jpeg', base64: TINY_JPEG.toString('base64') });
+    assert.equal(again.replaced, true);
+    assert.equal(again.id, photo.id, 'one photo per application, not a pile of them');
+    assert.equal((await api(`/admissions/applications/${one}/documents`)).unverified.length, 2);
+  });
+
   test(`the merit list fills ${SEATS} seats and waitlists the rest, in merit order`, async () => {
     // the last batch of marks triggered it automatically; a partial cohort is never ranked
     const list = await api(`/admissions/campaigns/${campaignId}/merit?classId=${classId}`);
@@ -153,6 +178,18 @@ describe('phase 6', () => {
     }
     assert.ok(byRank.slice(0, SEATS).every(x => String(x.status) !== 'waitlisted'), 'the seats went to the top of the list');
     assert.ok(byRank.slice(SEATS).every(x => String(x.status) === 'waitlisted'));
+  });
+
+  test('the merit list prints as one sheet for the notice board', async () => {
+    const pdf = await api(`/admissions/campaigns/${campaignId}/merit/pdf?classId=${classId}`, {});
+    assert.equal(pdf.ranked, APPLICANTS);
+    assert.equal(pdf.seats, SEATS);
+    const file = await app.db.findOne('files', { id: pdf.fileId });
+    assert.equal(String(file.mime_type), 'application/pdf');
+    assert.ok(Number(file.size_bytes) > 1000);
+    // a class that was never ranked has nothing to print
+    const other = String((await app.academic.classes(schoolId))[6].id);
+    await assert.rejects(() => api(`/admissions/campaigns/${campaignId}/merit/pdf?classId=${other}`, {}), /no merit list/);
   });
 
   test('every shortlisted applicant has an offer, an invoice and an offer letter', async () => {
@@ -240,7 +277,9 @@ describe('phase 6', () => {
     assert.equal((await fetch(`${baseUrl}/api/public/verify/DEADBEEFDEADBEEF`)).status, 404);
   });
 
-  test('ID cards are batched into one print job', async () => {
+  test('ID cards are batched into one print job, with the photograph on the card', async () => {
+    const photo = await app.files.store({ schoolId, data: TINY_JPEG, fileName: 'student.jpg', mimeType: 'image/jpeg', purpose: 'photo' });
+    await app.db.update('students', { photo_file_id: photo.id }, { id: enrolledStudentId });
     const r = await api('/documents/id-cards', { personType: 'student', validFrom: '2027-01-01', validTo: '2027-12-31' });
     assert.ok(r.cards >= 1, `${r.cards} cards`);
     await drain();
@@ -249,6 +288,9 @@ describe('phase 6', () => {
     assert.ok(job.file_id, 'with a sheet to print');
     const cards = await app.db.query(`SELECT status, file_id FROM id_cards WHERE school_id = ?`, [schoolId]);
     assert.ok(cards.every(c => c.status === 'active' && c.file_id));
+    const { stream } = await app.files.stream(String(job.file_id), schoolId);
+    const parts = []; for await (const c of stream) parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+    assert.ok(Buffer.concat(parts).includes(Buffer.from('DCTDecode')), 'the photograph is in the sheet, not a printed box to paste one into');
     // running it again issues nothing: the cards are still valid
     const twice = await api('/documents/id-cards', { personType: 'student', validFrom: '2027-01-01', validTo: '2027-12-31' });
     assert.equal(twice.cards, 0);
@@ -266,6 +308,45 @@ describe('phase 6', () => {
     const html = await fetch(`${baseUrl}/admissions?campaignId=${campaignId}`, { headers: { cookie } });
     assert.equal(html.status, 200);
     assert.ok((await html.text()).includes('Admission 2027'));
+  });
+
+  test('interviews are slotted one applicant at a time, and a no-show is recorded as one', async () => {
+    const cls = String((await app.academic.classes(schoolId))[6].id);
+    const c = await api('/admissions/campaigns', { name: 'Interview intake', opensAt: '2026-01-01 00:00:00', closesAt: '2099-12-31 23:59:59', formFee: 0, selectionMode: 'test', requiresTest: true, autoOffer: false, classes: [{ classId: cls, seats: 2 }] });
+    await api(`/admissions/campaigns/${c.id}`, { status: 'open' }, 'PATCH');
+    const apps = [];
+    for (let i = 0; i < 4; i++) apps.push(String((await app.admissions.apply(schoolId, c.id, { classId: cls, firstName: `Viva${i + 1}`, gender: 'female', dateOfBirth: '2017-05-05', guardianName: `Guardian ${i}`, guardianPhone: `0196${String(3000000 + i).slice(-7)}` })).id));
+    const interviewTest = (await api('/admissions/tests', { campaignId: c.id, classId: cls, name: 'Interview', heldAt: '2026-03-05 09:00:00', venue: 'Principal office', totalMarks: 20 })).id;
+    const slots = await api(`/admissions/tests/${interviewTest}/interviews`, { from: '2026-03-05 09:00:00', minutes: 15, count: 3, panel: ['Head teacher', 'Class teacher'] });
+    assert.equal(slots.slots, 3);
+    const first = await api(`/admissions/applications/${apps[0]}/interview`, { testId: interviewTest });
+    assert.equal(String(first.startsAt).slice(0, 16), '2026-03-05 09:00');
+    const second = await api(`/admissions/applications/${apps[1]}/interview`, { testId: interviewTest });
+    assert.equal(String(second.startsAt).slice(0, 16), '2026-03-05 09:15', 'the next one goes in the next slot, not the same one');
+    assert.ok(Number((await app.db.query(`SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = 'admissions.interview_scheduled'`, [schoolId]))[0].n) >= 2, 'each guardian is told when to come');
+    // asking again for the same applicant does not book a second slot
+    const repeat = await api(`/admissions/applications/${apps[0]}/interview`, { testId: interviewTest });
+    assert.equal(repeat.alreadyScheduled, true);
+    assert.equal(repeat.slotId, first.slotId);
+    await api(`/admissions/applications/${apps[2]}/interview`, { testId: interviewTest });
+    // the strip is full: the office is told to make more slots rather than double-booking one
+    await assert.rejects(() => api(`/admissions/applications/${apps[3]}/interview`, { testId: interviewTest }), /no free interview slot/);
+
+    const marked = await api(`/admissions/interviews/${first.slotId}/record`, { status: 'attended', marks: 17, notes: 'confident reader' });
+    assert.equal(marked.status, 'attended');
+    assert.equal(Number((await app.db.findOne('admission_test_results', { test_id: interviewTest, application_id: apps[0] })).total_marks), 17);
+    const noShow = await api(`/admissions/interviews/${second.slotId}/record`, { status: 'no_show' });
+    assert.equal(noShow.status, 'no_show');
+    const absent = await app.db.findOne('admission_test_results', { test_id: interviewTest, application_id: apps[1] });
+    assert.ok(Number(absent.is_absent), 'a no-show is absent, not a zero somebody typed');
+    const schedule = await api(`/admissions/tests/${interviewTest}/interviews`);
+    assert.equal(schedule.length, 3);
+    assert.equal(schedule.filter(r => r.application_id).length, 3);
+    // cancelling frees the slot for somebody else
+    await api(`/admissions/interviews/${String(schedule[2].id)}/record`, { status: 'cancelled' });
+    const freed = await app.db.findOne('admission_interviews', { id: String(schedule[2].id) });
+    assert.equal(String(freed.status), 'open');
+    assert.equal(freed.application_id, null);
   });
 
   test('a lottery campaign draws a repeatable order without any test', async () => {

@@ -37,6 +37,15 @@ export default function Exams() {
     setEntries(init);
   }, [d.grid]);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(false); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
+  // the sheet a teacher filled in offline: nothing is saved unless every row is sound
+  const importMarks = async (file: File) => {
+    const b64 = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
+    await run(async () => {
+      const r = await api<{ saved: number; errors: { row: number; message: string }[] }>(`/api/exams/marks/${d.scheduleId}/import`, { method: 'POST', json: { base64: b64 } });
+      if (r.errors.length) throw new Error(r.errors.slice(0, 5).map(e => `row ${e.row}: ${e.message}`).join('; '));
+      setMsg(`${r.saved} ${tr('ex.marks').toLowerCase()}`);
+    });
+  };
   const setParam = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); if (k === 'examId') n.delete('scheduleId'); setSp(n); };
   const exam = d.exams.find(e => String(e.id) === d.examId);
   const saveMarks = () => run(async () => {
@@ -77,7 +86,10 @@ export default function Exams() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">{String(d.grid.schedule.class_name)} · {String(d.grid.schedule.subject_name)}</span>
             <span className="chip">{tr('ex.fullMarks')} {formatNumber(Number(d.grid.schedule.full_marks), d.locale)}</span>
-            <div className="ml-auto flex gap-2">
+            <div className="ml-auto flex flex-wrap gap-2">
+              <a className="btn btn-secondary btn-sm" href={`/api/exams/marks/sheet?scheduleId=${d.scheduleId}`}>{tr('ex.marksSheet')}</a>
+              <label className="btn btn-secondary btn-sm" style={{ cursor: Number(d.grid.schedule.marks_entry_locked) ? 'not-allowed' : 'pointer' }}>{tr('ex.importMarks')}
+                <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy || Number(d.grid.schedule.marks_entry_locked) === 1} onChange={e => { const f = e.target.files?.[0]; if (f) void importMarks(f); e.currentTarget.value = ''; }} /></label>
               <Button size="sm" onClick={saveMarks} disabled={busy || Number(d.grid.schedule.marks_entry_locked) === 1}>{tr('common.save')}</Button>
               <Button size="sm" variant="secondary" onClick={() => run(() => api(`/api/exams/marks/${d.scheduleId}/verify`, { method: 'POST', json: {} }))} disabled={busy}>{tr('ex.verify')}</Button>
               {Number(d.grid.schedule.marks_entry_locked) ? <Button size="sm" variant="secondary" onClick={() => run(() => api(`/api/exams/marks/${d.scheduleId}/unlock`, { method: 'POST', json: {} }))}>{tr('ex.unlock')}</Button> : <Button size="sm" variant="danger" onClick={() => run(() => api(`/api/exams/marks/${d.scheduleId}/lock`, { method: 'POST', json: {} }))}>{tr('ex.lock')}</Button>}

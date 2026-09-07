@@ -46,6 +46,22 @@ export function mountPhase6(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.post('/admissions/tests', wrap(async req => { const u = requirePerm(req, 'admissions.create'); const b = z.object({ campaignId: z.string(), classId: z.string(), name: z.string().min(1).max(120), heldAt: z.string(), durationMin: z.coerce.number().int().min(10).max(600).optional(), venue: z.string().max(120).optional().nullable(), totalMarks: money.optional(), passMarks: money.optional().nullable(), components: z.record(z.string(), z.coerce.number()).optional().nullable() }).parse(req.body); return { id: await app.admissions.createTest(u.school_id, b) }; }));
   api.post('/admissions/tests/:id/results', wrap(async req => { const u = requirePerm(req, 'admissions.edit'); const b = z.object({ results: z.array(z.object({ applicationId: z.string(), totalMarks: money.optional().nullable(), componentMarks: z.record(z.string(), z.coerce.number()).optional().nullable(), isAbsent: z.coerce.boolean().optional(), remarks: z.string().max(255).optional().nullable() })).max(500) }).parse(req.body); return app.admissions.enterResults(u.school_id, req.params.id as string, b.results, u.id); }));
 
+  // ---------- applicant documents ----------
+  api.get('/admissions/applications/:id/documents', wrap(async req => { const u = requirePerm(req, 'admissions.view'); return app.admissions.documentChecklist(u.school_id, req.params.id as string); }));
+  api.post('/admissions/applications/:id/documents', wrap(async req => {
+    const u = requirePerm(req, 'admissions.edit');
+    const b = z.object({ docType: z.string().min(2).max(60), fileName: z.string().max(200), mimeType: z.string().max(120).optional(), base64: z.string().min(10) }).parse(req.body);
+    const data = Buffer.from(b.base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+    return app.admissions.uploadDocument(u.school_id, req.params.id as string, { docType: b.docType, fileName: b.fileName, mimeType: b.mimeType, data });
+  }));
+  api.post('/admissions/documents/:id/verify', wrap(async req => { const u = requirePerm(req, 'admissions.edit'); return app.admissions.verifyDocument(u.school_id, req.params.id as string, u.id); }));
+
+  // ---------- interviews ----------
+  api.get('/admissions/tests/:id/interviews', wrap(async req => { const u = requirePerm(req, 'admissions.view'); return app.admissions.interviewSchedule(u.school_id, req.params.id as string); }));
+  api.post('/admissions/tests/:id/interviews', wrap(async req => { const u = requirePerm(req, 'admissions.create'); const b = z.object({ from: z.string(), minutes: z.coerce.number().int().min(5).max(120).optional(), count: z.coerce.number().int().min(1).max(400), venue: z.string().max(120).optional().nullable(), panel: z.array(z.string()).optional().nullable(), breakAfter: z.coerce.number().int().min(1).max(50).optional(), breakMinutes: z.coerce.number().int().min(5).max(120).optional() }).parse(req.body); return app.admissions.createInterviewSlots(u.school_id, req.params.id as string, b); }));
+  api.post('/admissions/applications/:id/interview', wrap(async req => { const u = requirePerm(req, 'admissions.edit'); const b = z.object({ testId: z.string().optional(), slotId: z.string().optional() }).parse(req.body ?? {}); return app.admissions.scheduleInterview(u.school_id, req.params.id as string, b); }));
+  api.post('/admissions/interviews/:id/record', wrap(async req => { const u = requirePerm(req, 'admissions.edit'); const b = z.object({ status: z.enum(['attended', 'no_show', 'cancelled']), notes: z.string().max(255).optional().nullable(), marks: money.optional().nullable() }).parse(req.body); return app.admissions.recordInterview(u.school_id, req.params.id as string, { ...b, enteredBy: u.id }); }));
+
   // ---------- merit and offers ----------
   api.post('/admissions/campaigns/:id/merit', wrap(async req => {
     const u = requirePerm(req, 'admissions.approve');
@@ -54,6 +70,7 @@ export function mountPhase6(api: Router, app: App, wrap: Wrap, requirePerm: (req
     await app.adapters.queue.push({ name: 'admissions.merit', queue: 'batch', schoolId: u.school_id, payload: { campaignId: req.params.id as string }, triggeredBy: 'admissions.merit' });
     return { queued: true };
   }));
+  api.post('/admissions/campaigns/:id/merit/pdf', wrap(async req => { const u = requirePerm(req, 'admissions.view'); const classId = q(req, 'classId'); if (!classId) throw new HttpError(400, 'classId required'); return app.admissions.meritListPdf(u.school_id, req.params.id as string, classId); }));
   api.get('/admissions/campaigns/:id/merit', wrap(async req => { const u = requirePerm(req, 'admissions.view'); return app.admissions.meritList(u.school_id, req.params.id as string, q(req, 'classId')); }));
   api.post('/admissions/campaigns/:id/offers', wrap(async req => { const u = requirePerm(req, 'admissions.approve'); return app.admissions.makeOffers(u.school_id, req.params.id as string, q(req, 'classId')); }));
   api.get('/admissions/campaigns/:id/offers', wrap(async req => { const u = requirePerm(req, 'admissions.view'); return app.admissions.offers(u.school_id, req.params.id as string); }));

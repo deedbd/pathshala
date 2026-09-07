@@ -70,6 +70,23 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
   }));
   api.get('/fees/payments', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.db.query(`SELECT p.*, s.first_name, s.last_name, s.admission_no FROM payments p LEFT JOIN students s ON s.id = p.student_id WHERE p.school_id = ? ORDER BY p.paid_at DESC LIMIT 200`, [u.school_id]); }));
   api.post('/fees/payments/:id/refund', wrap(async req => { const u = requirePerm(req, 'fees.approve'); const b = z.object({ amount: money, reason: z.string().min(3).max(255) }).parse(req.body); return app.fees.refund(u.school_id, req.params.id as string, b.amount, b.reason, u.id); }));
+  api.post('/fees/payments/:id/receipt', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.issueReceipt(u.school_id, req.params.id as string); }));
+
+  // ---------- cheques: pending until the bank says otherwise ----------
+  api.get('/fees/cheques', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.pendingCheques(u.school_id); }));
+  api.post('/fees/cheques/:id/clear', wrap(async req => { const u = requirePerm(req, 'fees.approve'); const b = z.object({ clearedAt: z.string().optional(), bankAccountId: z.string().optional().nullable() }).parse(req.body ?? {}); const r = await app.fees.clearCheque(u.school_id, req.params.id as string, b); await app.audit.log({ action: 'update', entityType: 'payment', entityId: req.params.id as string, after: { cleared: true } }); return r; }));
+  api.post('/fees/cheques/:id/bounce', wrap(async req => { const u = requirePerm(req, 'fees.approve'); const b = z.object({ reason: z.string().min(3).max(200) }).parse(req.body); const r = await app.fees.bounceCheque(u.school_id, req.params.id as string, b.reason); await app.audit.log({ action: 'update', entityType: 'payment', entityId: req.params.id as string, after: { bounced: b.reason } }); return r; }));
+
+  // ---------- instalment plans ----------
+  api.get('/fees/instalments', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.instalmentPlans(u.school_id, q(req, 'studentId')); }));
+  api.post('/fees/instalments', wrap(async req => {
+    const u = requirePerm(req, 'fees.approve');
+    const b = z.object({ studentId: z.string(), feeHeadId: z.string(), totalAmount: money, count: z.coerce.number().int().min(2).max(24).optional(), firstDue: z.string().optional(), instalments: z.array(z.object({ due: z.string(), amount: money })).max(24).optional() }).parse(req.body);
+    return app.fees.createInstalmentPlan(u.school_id, { ...b, approvedBy: u.id });
+  }));
+  api.post('/fees/instalments/:id/cancel', wrap(async req => { const u = requirePerm(req, 'fees.approve'); return app.fees.cancelInstalmentPlan(u.school_id, req.params.id as string); }));
+  api.post('/fees/instalments/run', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.billDueInstalments(u.school_id, q(req, 'date') ?? today()); }));
+
   api.get('/fees/students/:id/ledger', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.studentLedger(u.school_id, req.params.id as string); }));
 
   // ---------- counter cash ----------

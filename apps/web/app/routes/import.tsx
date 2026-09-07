@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLoaderData } from 'react-router';
 import type { Route } from './+types/import';
-import { Banner, Button, Chip, DataTable, api, formatDateTime, formatNumber, t, type Locale } from '@pathshala/ui';
+import { Banner, Button, Chip, DataTable, Tabs, api, formatDateTime, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
@@ -15,6 +15,7 @@ type Status = { id: string; status: string; total_rows: number; success_rows: nu
 export default function Import() {
   const d = useLoaderData<typeof loader>();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
+  const [entity, setEntity] = useState<'students' | 'staff' | 'attendance'>('students');
   const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ id: string; total: number; valid: number; invalid: number; errors: { row: number; field: string; message: string }[] } | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
@@ -27,7 +28,7 @@ export default function Import() {
     setBusy(true); setErr(null); setResult(null); setStatus(null);
     try {
       const b64 = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
-      setResult(await api('/api/import/students', { method: 'POST', json: { fileName: file.name, base64: b64 } }));
+      setResult(await api(`/api/import/${entity}`, { method: 'POST', json: { fileName: file.name, base64: b64 } }));
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
   const errorLink = async (fileId: string) => { const r = await api<{ url: string }>(`/api/files/${fileId}/url`).catch(() => null); if (r?.url) window.open(r.url, '_blank'); };
@@ -36,7 +37,8 @@ export default function Import() {
     <div>
       <h1 className="text-2xl">{tr('imp.title')}</h1><p className="text-sm" style={{ color: 'var(--muted)' }}>{tr('imp.purpose')}</p>
       <div className="card mt-4 flex flex-wrap items-center gap-3 p-4">
-        <a className="btn btn-secondary" href="/api/import/template">{tr('imp.template')}</a>
+        <Tabs value={entity} onChange={e => { setEntity(e); setResult(null); setStatus(null); setErr(null); }} tabs={[{ key: 'students', label: tr('imp.students') }, { key: 'staff', label: tr('imp.staff') }, { key: 'attendance', label: tr('imp.attendance') }]} />
+        <a className="btn btn-secondary" href={`/api/import/template?entity=${entity === 'students' ? 'student' : entity}`}>{tr('imp.template')}</a>
         <label className="btn btn-primary" style={{ cursor: 'pointer' }}>{busy ? tr('common.loading') : tr('imp.upload')}<input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy} onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ''; }} /></label>
       </div>
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
@@ -47,7 +49,7 @@ export default function Import() {
         {result.errors.length > 0 && <table className="table mt-3"><thead><tr><th>Row</th><th>Field</th><th>Problem</th></tr></thead><tbody>{result.errors.map((e, i) => <tr key={i}><td className="num">{e.row}</td><td>{e.field}</td><td>{e.message}</td></tr>)}</tbody></table>}
       </div>}
       <h2 className="mt-6 text-base">{tr('imp.history')}</h2>
-      <div className="mt-2"><DataTable locale={d.locale} searchable={false} rows={d.jobs} columns={[{ key: 'created_at', label: tr('common.date'), render: r => formatDateTime(String(r.created_at), d.locale) }, { key: 'total_rows', label: 'Rows', className: 'num' }, { key: 'success_rows', label: 'OK', className: 'num' }, { key: 'error_rows', label: 'Errors', className: 'num' }, { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status)} /> }, { key: 'errors_file_id', label: '', render: r => r.errors_file_id ? <Button size="sm" variant="secondary" onClick={() => errorLink(String(r.errors_file_id))}>{tr('imp.errorFile')}</Button> : null }]} /></div>
+      <div className="mt-2"><DataTable locale={d.locale} searchable={false} rows={d.jobs} columns={[{ key: 'created_at', label: tr('common.date'), render: r => formatDateTime(String(r.created_at), d.locale) }, { key: 'entity_type', label: tr('imp.what'), render: r => <Chip status="active">{String(r.entity_type)}</Chip> }, { key: 'total_rows', label: 'Rows', className: 'num' }, { key: 'success_rows', label: 'OK', className: 'num' }, { key: 'error_rows', label: 'Errors', className: 'num' }, { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status)} /> }, { key: 'errors_file_id', label: '', render: r => r.errors_file_id ? <Button size="sm" variant="secondary" onClick={() => errorLink(String(r.errors_file_id))}>{tr('imp.errorFile')}</Button> : null }]} /></div>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
+import type { DocumentService } from './documents.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -17,7 +18,7 @@ export interface AssignmentInput { sectionId: string; classSubjectId: string; te
  * and discussion threads. Reminders for unsubmitted work run hourly as one job.
  */
 export class LmsService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private documents: DocumentService) {}
 
   // ---------- courses ----------
   async courses(schoolId: string, f: { status?: string; teacherId?: string } = {}) {
@@ -96,8 +97,104 @@ export class LmsService {
     const done = Number((await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM lesson_progress p JOIN lessons l ON l.id = p.lesson_id JOIN course_modules m ON m.id = l.module_id WHERE m.course_id = ? AND p.student_id = ? AND p.status = 'completed'`, [courseId, p.studentId]))[0]?.n ?? 0);
     const pct = total ? round((done * 100) / total) : 0;
     await this.db.execute(`UPDATE course_enrollments SET progress_pct = ?, completed_at = ?, updated_at = ? WHERE course_id = ? AND student_id = ?`, [pct, pct >= 100 ? nowSql() : null, nowSql(), courseId, p.studentId]);
-    return { courseId, progressPct: pct, lessonsDone: done, lessons: total };
+    // the certificate is part of finishing, not a separate errand for the office
+    let certificateId: string | null = null;
+    if (pct >= 100) certificateId = (await this.issueCourseCertificate(schoolId, courseId, p.studentId).catch(() => null))?.certificateId ?? null;
+    return { courseId, progressPct: pct, lessonsDone: done, lessons: total, certificateId };
   }
+  // ---------- the quiz inside a lesson ----------
+  /**
+   * A lesson quiz is a handful of multiple-choice questions kept with the lesson itself, not a formal
+   * exam: it exists so a student finds out whether they followed the lesson. The answers live in the
+   * lesson body and never leave the server until the attempt is submitted.
+   */
+  async setLessonQuiz(schoolId: string, lessonId: string, quiz: { passMark?: number; maxAttempts?: number; questions: { text: string; options: string[]; answer: number; marks?: number }[] }) {
+    const lesson = await this.db.findOne<Row>('lessons', { id: lessonId, school_id: schoolId });
+    if (!lesson) throw notFound('lesson');
+    if (!quiz.questions.length) throw badRequest('a quiz needs at least one question');
+    if (quiz.questions.length > 100) throw badRequest('a lesson quiz holds at most 100 questions');
+    quiz.questions.forEach((q, i) => {
+      if (q.options.length < 2) throw badRequest(`question ${i + 1} needs at least two options`);
+      if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= q.options.length) throw badRequest(`question ${i + 1} points at an option that is not there`);
+    });
+    const body = JSON.stringify({ passMark: quiz.passMark ?? 50, maxAttempts: quiz.maxAttempts ?? 3, questions: quiz.questions.map(q => ({ ...q, marks: q.marks ?? 1 })) });
+    await this.db.update('lessons', { lesson_type: 'quiz', body, updated_at: nowSql() }, { id: lessonId });
+    return { lessonId, questions: quiz.questions.length, maxScore: quiz.questions.reduce((a, q) => a + (q.marks ?? 1), 0) };
+  }
+  /** What the student is shown: the questions, never which option is right. */
+  async lessonQuiz(schoolId: string, lessonId: string, studentId?: string) {
+    const lesson = await this.db.findOne<Row>('lessons', { id: lessonId, school_id: schoolId });
+    if (!lesson) throw notFound('lesson');
+    const quiz = this.quizOf(lesson);
+    const attempts = studentId ? await this.db.findMany<Row>('lesson_quiz_attempts', { lesson_id: lessonId, student_id: studentId }, { orderBy: 'attempt_no DESC' }) : [];
+    return {
+      lessonId, title: String(lesson.title), passMark: quiz.passMark, maxAttempts: quiz.maxAttempts,
+      questions: quiz.questions.map((q, i) => ({ no: i + 1, text: q.text, options: q.options, marks: q.marks })),
+      maxScore: quiz.questions.reduce((a, q) => a + q.marks, 0),
+      attempts: attempts.map(a => ({ attemptNo: Number(a.attempt_no), score: Number(a.score), passed: !!Number(a.passed), submittedAt: String(a.submitted_at) })),
+      attemptsLeft: Math.max(0, quiz.maxAttempts - attempts.length),
+    };
+  }
+  /**
+   * Grades the attempt. The correct answers come back with the result, because the point is to learn
+   * what was got wrong — and only after the attempt is in, so the page cannot be read for them first.
+   */
+  async submitQuiz(schoolId: string, lessonId: string, studentId: string, answers: (number | null)[]) {
+    const lesson = await this.db.findOne<Row>('lessons', { id: lessonId, school_id: schoolId });
+    if (!lesson) throw notFound('lesson');
+    const quiz = this.quizOf(lesson);
+    const module = await this.db.findOne<Row>('course_modules', { id: String(lesson.module_id) });
+    if (!(await this.db.findOne('course_enrollments', { course_id: String(module?.course_id), student_id: studentId }))) throw new HttpError(403, 'this student is not enrolled on the course', 'forbidden');
+    const before = await this.db.findMany<Row>('lesson_quiz_attempts', { lesson_id: lessonId, student_id: studentId });
+    if (before.length >= quiz.maxAttempts) throw new HttpError(409, `this quiz allows ${quiz.maxAttempts} attempts`, 'conflict');
+    const maxScore = quiz.questions.reduce((a, q) => a + q.marks, 0);
+    let score = 0;
+    const marked = quiz.questions.map((q, i) => {
+      const given = answers[i] ?? null;
+      const right = given === q.answer;
+      if (right) score = round(score + q.marks);
+      return { no: i + 1, given, correct: q.answer, right, marks: right ? q.marks : 0 };
+    });
+    const pct = maxScore ? round((score * 100) / maxScore) : 0;
+    const passed = pct >= quiz.passMark;
+    const attemptNo = before.length + 1;
+    await this.db.insert('lesson_quiz_attempts', { id: ulid(), school_id: schoolId, lesson_id: lessonId, student_id: studentId, attempt_no: attemptNo, answers: answers as never, score, max_score: maxScore, passed, submitted_at: nowSql() });
+    // passing is what completes the lesson; a failed attempt leaves it in progress
+    const progress = await this.markProgress(schoolId, { lessonId, studentId, status: passed ? 'completed' : 'in_progress' });
+    return { attemptNo, score, maxScore, percent: pct, passed, attemptsLeft: Math.max(0, quiz.maxAttempts - attemptNo), marked, progress };
+  }
+  private quizOf(lesson: Row) {
+    const quiz = json<{ passMark?: number; maxAttempts?: number; questions?: { text: string; options: string[]; answer: number; marks: number }[] }>(lesson.body);
+    if (!quiz?.questions?.length) throw badRequest('this lesson has no quiz on it');
+    return { passMark: quiz.passMark ?? 50, maxAttempts: quiz.maxAttempts ?? 3, questions: quiz.questions };
+  }
+
+  // ---------- the certificate at the end ----------
+  /**
+   * A certificate for finishing the course. It is issued once, when every lesson is done, and the
+   * enrolment keeps the document id so the student can find it again — and so the school can tell a
+   * genuine certificate from a screenshot by its verification code.
+   */
+  async issueCourseCertificate(schoolId: string, courseId: string, studentId: string) {
+    const enrolment = await this.db.findOne<Row>('course_enrollments', { school_id: schoolId, course_id: courseId, student_id: studentId });
+    if (!enrolment) throw notFound('enrolment');
+    if (enrolment.certificate_doc_id) return { certificateId: String(enrolment.certificate_doc_id), alreadyIssued: true };
+    if (Number(enrolment.progress_pct) < 100) throw new HttpError(409, `the course is ${Number(enrolment.progress_pct)}% done; a certificate comes at the end`, 'conflict');
+    const course = await this.db.findOne<Row>('courses', { id: courseId });
+    const student = await this.db.findOne<Row>('students', { id: studentId });
+    const issued = await this.documents.issue(schoolId, {
+      docType: 'certificate', personType: 'student', studentId,
+      data: {
+        name: `${student?.first_name ?? ''} ${student?.last_name ?? ''}`.trim(), admission_no: String(student?.admission_no ?? ''),
+        course: String(course?.title ?? ''), completed_on: String(enrolment.completed_at ?? nowSql()).slice(0, 10),
+      },
+      entityType: 'lms.course', entityId: courseId,
+    });
+    await this.db.update('course_enrollments', { certificate_doc_id: issued.id, updated_at: nowSql() }, { id: String(enrolment.id) });
+    await this.notifications.notify({ schoolId, address: null, channels: ['in_app', 'push'], eventKey: 'lms.certificate_issued', data: { course: String(course?.title ?? '') }, title: 'Course certificate', body: `${student?.first_name} finished ${course?.title}. The certificate is ready.`, entityType: 'lms.course', entityId: courseId });
+    return { certificateId: issued.id, fileId: issued.fileId, documentNo: issued.documentNo, verificationCode: issued.verificationCode };
+  }
+
   async progress(schoolId: string, courseId: string) {
     return this.db.query<Row>(`SELECT e.*, s.first_name, s.last_name, s.admission_no FROM course_enrollments e JOIN students s ON s.id = e.student_id WHERE e.school_id = ? AND e.course_id = ? ORDER BY e.progress_pct DESC, s.first_name`, [schoolId, courseId]);
   }

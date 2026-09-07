@@ -33,6 +33,8 @@ const DEFAULT_TEMPLATES: { docType: DocType; name: string; body: string; variabl
   { docType: 'bonafide', name: 'Bonafide certificate', variables: ['name', 'admission_no', 'class', 'year'], body: 'This is to certify that {{name}}, admission number {{admission_no}}, is a bonafide student of class {{class}} in the session {{year}} of this institution.' },
   { docType: 'admit_card', name: 'Admit card', variables: ['name', 'application_no', 'test', 'held_at', 'venue', 'guardian'], body: 'Admit card for {{name}}, application {{application_no}}.\nTest: {{test}}\nWhen: {{held_at}}\nWhere: {{venue}}\nGuardian: {{guardian}}\nBring this card and a photograph. Reach the venue thirty minutes early.' },
   { docType: 'offer_letter', name: 'Offer of admission', variables: ['name', 'application_no', 'campaign', 'expires_at', 'amount', 'guardian'], body: 'Dear {{guardian}},\nWe are pleased to offer {{name}} (application {{application_no}}) a place under {{campaign}}.\nTo confirm the place, pay the admission fee of {{amount}} by {{expires_at}}.\nThe offer lapses after that date and the seat goes to the next applicant on the waiting list.' },
+  { docType: 'receipt', name: 'Fee receipt', variables: ['name', 'admission_no', 'receipt_no', 'amount', 'method', 'paid_at', 'reference', 'against', 'outstanding'], body: 'Received with thanks from {{name}} (admission {{admission_no}}) the sum of Tk {{amount}}.\nReceipt: {{receipt_no}}    Date: {{paid_at}}\nMode: {{method}} {{reference}}\nAgainst: {{against}}\nOutstanding after this payment: Tk {{outstanding}}.\nThis receipt is computer generated and can be verified with the code below.' },
+  { docType: 'certificate', name: 'Course certificate', variables: ['name', 'admission_no', 'course', 'completed_on'], body: 'This is to certify that {{name}} (admission {{admission_no}}) has completed the course {{course}} on {{completed_on}}.\nThe work was carried out and assessed through this institution.' },
   { docType: 'experience_letter', name: 'Experience letter', variables: ['name', 'designation', 'join_date', 'leave_date', 'conduct'], body: 'This is to certify that {{name}} served this institution as {{designation}} from {{join_date}} to {{leave_date}}.\nDuring this period the conduct was {{conduct}}.\nWe wish every success in future endeavours.' },
 ];
 
@@ -226,16 +228,18 @@ export class DocumentService {
     const CHUNK = 200;
     while (done < ids.length) {
       const slice = ids.slice(done, done + CHUNK);
-      const cards = await this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, cl.name AS class_name, st.first_name AS t_first, st.last_name AS t_last, st.employee_no
+      const cards = await this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, s.photo_file_id AS s_photo, cl.name AS class_name, st.first_name AS t_first, st.last_name AS t_last, st.employee_no, st.photo_file_id AS t_photo
         FROM id_cards c LEFT JOIN students s ON s.id = c.student_id LEFT JOIN classes cl ON cl.id = s.current_class_id LEFT JOIN staff st ON st.id = c.staff_id
         WHERE c.id IN (${slice.map(() => '?').join(',')})`, slice);
-      for (const c of cards) pages.push({ name: `${c.s_first ?? c.t_first} ${c.s_last ?? c.t_last ?? ''}`.trim(), sub: String(c.admission_no ?? c.employee_no ?? ''), extra: String(c.class_name ?? 'Staff'), cardNo: String(c.card_no), validTo: String(c.valid_to).slice(0, 10) });
+      // only the photo's id travels in the cursor; the images themselves are read once, at render time
+      for (const c of cards) pages.push({ name: `${c.s_first ?? c.t_first} ${c.s_last ?? c.t_last ?? ''}`.trim(), sub: String(c.admission_no ?? c.employee_no ?? ''), extra: String(c.class_name ?? 'Staff'), cardNo: String(c.card_no), validTo: String(c.valid_to).slice(0, 10), photoFileId: (c.s_photo as string) ?? (c.t_photo as string) ?? null });
       done = Math.min(ids.length, done + CHUNK);
       await ctx.progress(done, ids.length, { done, pages });
       if (Date.now() > ctx.deadline && done < ids.length) return { continue: true as const, cursor: { done, pages } };
     }
     const school = await this.db.findOne<Row>('schools', { id: schoolId });
-    const pdf = await this.adapters.pdf.render(this.idCardSheet(school, pages as { name: string; sub: string; extra: string; cardNo: string; validTo: string }[]));
+    const withPhotos = await this.attachPhotos(schoolId, pages as unknown as CardFace[]);
+    const pdf = await this.adapters.pdf.render(this.idCardSheet(school, withPhotos));
     const f = await this.files.store({ schoolId, data: pdf, fileName: `id-cards-${printJobId.slice(-6)}.pdf`, mimeType: 'application/pdf', purpose: 'id_cards', entityType: 'documents.print_job', entityId: printJobId });
     await this.db.update('print_jobs', { file_id: f.id, status: 'ready', updated_at: nowSql() }, { id: printJobId });
     await this.db.execute(`UPDATE id_cards SET file_id = ?, status = 'active', printed_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`, [f.id, nowSql(), ...ids]);
@@ -265,7 +269,28 @@ export class DocumentService {
       styles: { h1: { fontSize: 18, bold: true }, h2: { fontSize: 12 }, title: { fontSize: 14, bold: true, decoration: 'underline' }, small: { fontSize: 8, color: '#555' }, code: { fontSize: 8, color: '#333' } },
     } as Record<string, unknown>;
   }
-  private idCardSheet(school: Row | null, cards: { name: string; sub: string; extra: string; cardNo: string; validTo: string }[]) {
+  /**
+   * Reads each card's photo into the page. A sheet of five thousand cards would not fit in memory as
+   * images, so there is a budget: 12 MB of photographs and nothing over 400 KB each. A card whose photo
+   * is skipped still prints — with the name, the number and the space for a photo to be stuck on.
+   */
+  private async attachPhotos(schoolId: string, cards: CardFace[]) {
+    let budget = 12 * 1024 * 1024;
+    for (const c of cards) {
+      if (!c.photoFileId || budget <= 0) continue;
+      try {
+        const { file, stream } = await this.files.stream(c.photoFileId, schoolId);
+        const mime = String(file.mime_type ?? '');
+        if (!mime.startsWith('image/') || Number(file.size_bytes) > 400 * 1024) continue;
+        const chunks: Buffer[] = []; for await (const part of stream) chunks.push(Buffer.isBuffer(part) ? part : Buffer.from(part));
+        const data = Buffer.concat(chunks);
+        budget -= data.length;
+        c.photo = `data:${mime};base64,${data.toString('base64')}`;
+      } catch { /* a missing or unreadable photo is not a reason to hold up the print run */ }
+    }
+    return cards;
+  }
+  private idCardSheet(school: Row | null, cards: CardFace[]) {
     const rows: unknown[] = [];
     for (let i = 0; i < cards.length; i += 2) {
       rows.push([cardCell(school, cards[i]!), cards[i + 1] ? cardCell(school, cards[i + 1]!) : { text: '' }]);
@@ -278,14 +303,21 @@ export class DocumentService {
   }
 }
 
-const cardCell = (school: Row | null, c: { name: string; sub: string; extra: string; cardNo: string; validTo: string }) => ({
+interface CardFace { name: string; sub: string; extra: string; cardNo: string; validTo: string; photoFileId?: string | null; photo?: string }
+
+const cardCell = (school: Row | null, c: CardFace) => ({
   margin: [6, 8, 6, 8],
-  stack: [
-    { text: String(school?.name ?? 'School'), style: 'cardSmall' },
-    { text: c.name, style: 'cardName', margin: [0, 4, 0, 2] },
-    { text: c.extra, style: 'cardSmall' },
-    { text: `ID ${c.sub}`, style: 'cardSmall' },
-    { text: `Card ${c.cardNo} · valid to ${c.validTo}`, style: 'cardSmall', margin: [0, 6, 0, 0] },
+  columns: [
+    c.photo
+      ? { width: 64, image: c.photo, fit: [60, 72] }
+      : { width: 64, table: { widths: [56], heights: [68], body: [[{ text: 'photo', style: 'cardSmall', alignment: 'center', margin: [0, 30, 0, 0] }]] }, layout: 'lightHorizontalLines' },
+    { width: '*', margin: [8, 0, 0, 0], stack: [
+      { text: String(school?.name ?? 'School'), style: 'cardSmall' },
+      { text: c.name, style: 'cardName', margin: [0, 4, 0, 2] },
+      { text: c.extra, style: 'cardSmall' },
+      { text: `ID ${c.sub}`, style: 'cardSmall' },
+      { text: `Card ${c.cardNo} · valid to ${c.validTo}`, style: 'cardSmall', margin: [0, 6, 0, 0] },
+    ] },
   ],
 });
 /** `{{placeholder}}` substitution; an unknown placeholder is left blank rather than printed raw. */

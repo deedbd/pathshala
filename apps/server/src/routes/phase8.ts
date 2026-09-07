@@ -57,6 +57,9 @@ export function mountPhase8(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.post('/lms/lessons', wrap(async req => { const u = requirePerm(req, 'lms.create'); const b = z.object({ moduleId: z.string(), title: z.string().min(1).max(200), lessonType: z.enum(['video', 'note', 'link', 'file', 'quiz', 'assignment', 'live']), body: z.string().max(200_000).optional().nullable(), videoUrl: z.string().max(500).optional().nullable(), fileId: z.string().optional().nullable(), durationMin: z.coerce.number().int().min(1).max(600).optional().nullable(), isFreePreview: z.coerce.boolean().optional() }).parse(req.body); return { id: await app.lms.addLesson(u.school_id, b) }; }));
   api.post('/lms/courses/:id/publish', wrap(async req => { const u = requirePerm(req, 'lms.approve'); return app.lms.publishCourse(u.school_id, req.params.id as string); }));
   api.get('/lms/courses/:id/progress', wrap(async req => { const u = requirePerm(req, 'lms.view'); return app.lms.progress(u.school_id, req.params.id as string); }));
+  api.post('/lms/lessons/:id/quiz', wrap(async req => { const u = requirePerm(req, 'lms.create'); const b = z.object({ passMark: z.coerce.number().min(0).max(100).optional(), maxAttempts: z.coerce.number().int().min(1).max(10).optional(), questions: z.array(z.object({ text: z.string().min(1).max(1000), options: z.array(z.string().min(1).max(300)).min(2).max(8), answer: z.coerce.number().int().min(0), marks: z.coerce.number().min(0.5).max(20).optional() })).min(1).max(100) }).parse(req.body); return app.lms.setLessonQuiz(u.school_id, req.params.id as string, b); }));
+  api.get('/lms/lessons/:id/quiz', wrap(async req => { const u = requirePerm(req, 'lms.view'); return app.lms.lessonQuiz(u.school_id, req.params.id as string, q(req, 'studentId')); }));
+  api.post('/lms/courses/:id/certificate', wrap(async req => { const u = requirePerm(req, 'lms.edit'); const b = z.object({ studentId: z.string() }).parse(req.body); return app.lms.issueCourseCertificate(u.school_id, req.params.id as string, b.studentId); }));
   api.get('/lms/assignments', wrap(async req => { const u = requirePerm(req, 'lms.view'); return app.lms.assignments(u.school_id, { sectionId: q(req, 'sectionId'), openOnly: q(req, 'open') === '1' }); }));
   api.post('/lms/assignments', wrap(async req => { const u = requirePerm(req, 'lms.create'); const b = z.object({ sectionId: z.string(), classSubjectId: z.string(), teacherId: z.string().optional(), title: z.string().min(2).max(200), description: z.string().max(50_000).optional().nullable(), dueAt: z.string(), maxMarks: money.optional().nullable(), allowLate: z.coerce.boolean().optional(), latePenaltyPct: z.coerce.number().min(0).max(100).optional(), submissionType: z.enum(['file', 'text', 'both', 'offline', 'photo']).optional() }).parse(req.body); return { id: await app.lms.createAssignment(u.school_id, { ...b, teacherId: b.teacherId ?? await staffOf(u) }) }; }));
   api.get('/lms/assignments/:id/submissions', wrap(async req => { const u = requirePerm(req, 'lms.view'); return app.lms.submissions(u.school_id, req.params.id as string); }));
@@ -104,6 +107,19 @@ export function mountPhase8(api: Router, app: App, wrap: Wrap, requirePerm: (req
       app.welfare.plan(u.school_id, student.id),
     ]);
     return { courses, assignments, classes, portfolio, plan };
+  }));
+  api.get('/portal/lessons/:id/quiz', wrap(async req => {
+    const u = requireUser(req);
+    const student = await app.db.findOne<{ id: string }>('students', { school_id: u.school_id, user_id: u.id });
+    if (!student) throw new HttpError(403, 'only a student can sit their own quiz');
+    return app.lms.lessonQuiz(u.school_id, req.params.id as string, student.id);
+  }));
+  api.post('/portal/lessons/:id/quiz', wrap(async req => {
+    const u = requireUser(req);
+    const student = await app.db.findOne<{ id: string }>('students', { school_id: u.school_id, user_id: u.id });
+    if (!student) throw new HttpError(403, 'only a student can sit their own quiz');
+    const b = z.object({ answers: z.array(z.coerce.number().int().min(0).nullable()).max(100) }).parse(req.body);
+    return app.lms.submitQuiz(u.school_id, req.params.id as string, student.id, b.answers);
   }));
   api.post('/portal/assignments/:id/submit', wrap(async req => {
     const u = requireUser(req);
