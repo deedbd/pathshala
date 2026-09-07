@@ -6298,7 +6298,7 @@ CREATE TABLE `document_templates` (
   `updated_at` TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
   PRIMARY KEY (`id`),
   UNIQUE (`school_id`, `doc_type`, `name`),
-  CHECK (`doc_type` IN ('tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom')),
+  CHECK (`doc_type` IN ('tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'donation_receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom')),
   CHECK (`orientation` IN ('portrait', 'landscape'))
 );
 CREATE INDEX `ix_document_templates_school_id` ON `document_templates` (`school_id`);

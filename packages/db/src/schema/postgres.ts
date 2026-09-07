@@ -5212,7 +5212,7 @@ export const specialNeedsPlans = pgTable('special_needs_plans', {
 export const documentTemplates = pgTable('document_templates', {
   id: char('id', { length: 26 }).primaryKey(),
   schoolId: char('school_id', { length: 26 }).notNull(),
-  docType: varchar('doc_type', { length: 40, enum: ['tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom'] }).notNull(),
+  docType: varchar('doc_type', { length: 40, enum: ['tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'donation_receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom'] }).notNull(),
   name: varchar('name', { length: 120 }).notNull(),
   htmlTemplate: text('html_template').notNull(),
   css: text('css'),

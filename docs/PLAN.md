@@ -95,6 +95,58 @@ Load test on a real Namecheap Stellar account (5 schools × 1,500 students in on
 >
 > Two things the load run found and fixed, both invisible at small scale: five schools whose names truncate to the same eight letters collided on the school code, and a request answered in **24.8 s** while the relay chewed through a backlog of 11,800 events, because `node:sqlite` is synchronous and the background loop never yielded. The relay now works in slices with a time budget and yields to the event loop between events; the same request answers in **0.36 s**. `scripts/update.mjs` updates a live install and puts the old one back if the new one does not answer `/_health`: it backs up the database first, keeps `app/`, `db/`, `index.php` and `VERSION` beside it, extracts over the top without touching `.env`, `uploads/` or `storage/`, boots the result on a spare port, and restores the kept copy on any failure (`--rollback` undoes it later). Not yet: Google Drive and S3 backup targets, and a run on a real Namecheap account.
 
+## Year 2 · Grow revenue & engagement (after GA)
+
+The forty weeks above end at general availability. What follows is `docs/ROADMAP-5Y.md` year 2, built
+in the same way: a module, its automation rows, its API, a console page, and a test that proves the
+exit criterion on all three engines.
+
+### Wallet, canteen and shop — shipped
+
+> **Status (7 Sep 2026): implemented.** `commerce`: a wallet per student with a derived card code the
+> canteen scans (derived, so a lost card is replaced by issuing the next serial rather than rewriting a
+> record), top-ups that land on the wallet liability account because the school is holding somebody
+> else's money, a movement ledger where every row carries the balance it left behind, a daily limit
+> the till refuses a sale against rather than reporting afterwards, outlets and products, sales paid by
+> wallet, cash, MFS or onto the fee bill, refunds that reverse the entry instead of editing it, the day
+> book the counter is counted against, and orders a guardian places from the app — invoiced through the
+> fee ledger, and moved to "ready to collect" by the payment itself. Console page: community.
+> Not yet: RFID reader hardware, per-outlet cashier shifts and a canteen menu the guardian pre-books.
+
+### Scholarships and fundraising — shipped
+
+> **Status (7 Sep 2026): implemented.** `giving`: funds of five kinds with a commitment balance that
+> refuses an award larger than the fund holds; awards that become the fee discount the invoice engine
+> already understands (so no second journal counts the same taka twice), approval that is where the
+> money is actually committed, and an ending that hands the unused part back; the rule a zakat fund
+> carries in the real world — need-based awards only; donors, appeals with a public page that shows how
+> far they have come and names nobody who asked not to be named, pledges that post nothing until they
+> are honoured, and a donation receipt with a verification code. Console page: community; public pages
+> at `/api/public/site/appeals` and `/api/public/site/appeals/:slug`.
+> Not yet: online giving through the payment gateway, and recurring donations.
+
+### Alumni, mentorship and the job board — shipped
+
+> **Status (7 Sep 2026): implemented.** `alumni`: the directory is written the day a class graduates,
+> from the records the school already holds, and running it again changes nothing; batches with a
+> representative; a profile the former student owns — public or not, mentor or not — where the public
+> view never carries a phone number, because the school passes messages on rather than handing out
+> contact details; mentorship pairs capped at three per mentor, with both sides told; and a job board
+> whose expired posts close themselves. Console page: community; public directory at
+> `/api/public/site/alumni`.
+> Not yet: alumni self-registration for people the school has no student record for, and reunions.
+
+### Co-curricular and events — completed
+
+> **Status (7 Sep 2026): implemented.** Competitions from the intra-house quiz to a national olympiad,
+> where recording a result does the three things that otherwise never all happen: the child's
+> portfolio, the house ledger (written once per result, so a correction never doubles the points), and
+> a certificate for anyone placed. Events gained their programme — kept in time order whatever order it
+> was typed in — and a volunteer crew where offering to help and being told to turn up are different
+> things. `tests/year2a.test.mjs` covers all four modules on SQLite, MariaDB 11.4 and Postgres 16.
+> Not yet: sports fixtures and league tables.
+
+
 ---
 
 ## Milestones

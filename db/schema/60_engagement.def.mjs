@@ -272,7 +272,7 @@ export default [
   desc:'HTML templates rendered to PDF, document requests with automatic eligibility (dues, library, hostel, discipline), issued documents with QR verification and e-signature, ID cards (student/staff/guardian) with RFID, bulk print jobs.',
   tables:{
   document_templates:{ desc:'Versioned templates per document type.', cols:`
-    doc_type      enum(tc|testimonial|character|bonafide|id_card|admit_card|report_card|payslip|receipt|invoice|offer_letter|appointment_letter|experience_letter|certificate|marksheet|custom) !
+    doc_type      enum(tc|testimonial|character|bonafide|id_card|admit_card|report_card|payslip|receipt|donation_receipt|invoice|offer_letter|appointment_letter|experience_letter|certificate|marksheet|custom) !
     name          str(120) !
     html_template long !
     css           text

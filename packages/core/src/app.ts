@@ -42,6 +42,9 @@ import { FrontOfficeService } from './modules/frontoffice.js';
 import { WelfareService } from './modules/welfare.js';
 import { LmsService } from './modules/lms.js';
 import { EngagementService } from './modules/engagement.js';
+import { CommerceService } from './modules/commerce.js';
+import { GivingService } from './modules/giving.js';
+import { AlumniService } from './modules/alumni.js';
 import { PlatformService } from './modules/platform.js';
 
 export interface App {
@@ -50,7 +53,7 @@ export interface App {
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
-  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; platform: PlatformService;
+  attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; platform: PlatformService;
   /** Boots background loops (relay, queue, scheduler) according to the adapter mode. */
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -112,7 +115,10 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const frontOffice = new FrontOfficeService(db, outbox, notifications, numbering, tasks);
   const welfare = new WelfareService(db, outbox, notifications, tasks, approvals, inventory, config.appKey);
   const lms = new LmsService(db, outbox, notifications, academic, documents);
-  const engagement = new EngagementService(db, outbox, notifications);
+  const engagement = new EngagementService(db, outbox, notifications, documents);
+  const commerce = new CommerceService(db, outbox, notifications, numbering, accounting, fees, settings);
+  const giving = new GivingService(db, outbox, notifications, accounting, fees, academic, documents);
+  const alumni = new AlumniService(db, outbox, notifications, academic);
   const platform = new PlatformService(db, outbox, notifications, settings, adapters, config.rootDir, log);
 
   const installer = new InstallerService(db, config, adapters, {
@@ -166,12 +172,12 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(lms.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(engagement.jobs())) adapters.scheduler.register(key, fn);
   for (const [key, fn] of Object.entries(platform.jobs())) adapters.scheduler.register(key, fn);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare });
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, hr, auth, admissions, inventory, welfare, commerce });
 
   let lastBeat = 0; let beating = false;
   const app: App = {
     config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
-    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, platform,
+    numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, platform,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => { relay.start(500); if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); } log.info('background loops running'); };
@@ -199,7 +205,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService }) {
   // B3: an approved staff leave proposes substitutes for every class that teacher has on those days
   h.on('leave.approved', 'suggest-substitutes', async e => {
     if (e.payload.applicantType !== 'staff' || !e.payload.staffId) return;
@@ -263,6 +269,10 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
   // A4 and A8: paying the form fee submits the application; paying the admission fee enrols the child
   h.on('payment.received', 'admissions-money', async e => {
     for (const invoiceId of e.payload.invoiceIds ?? []) await d.admissions.onPaymentReceived(e.schoolId, invoiceId).catch(err => d.log.error(`admissions payment: ${(err as Error).message}`));
+  });
+  // a paid shop invoice is an order the counter can hand over
+  h.on('payment.received', 'shop-orders', async e => {
+    for (const invoiceId of e.payload.invoiceIds ?? []) await d.commerce.onInvoicePaid(e.schoolId, invoiceId).catch(err => d.log.error(`shop order: ${(err as Error).message}`));
   });
   // A5: once a class's results are in, the merit list follows if the campaign asks for it
   h.on('test.results_entered', 'compute-merit', async e => {

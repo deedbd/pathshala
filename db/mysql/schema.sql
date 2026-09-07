@@ -6300,7 +6300,7 @@ CREATE TABLE `document_templates` (
   PRIMARY KEY (`id`),
   KEY `ix_document_templates_school_id` (`school_id`),
   UNIQUE KEY `uq_document_templates_school_id_doc_type_name` (`school_id`, `doc_type`, `name`),
-  CHECK (`doc_type` IN ('tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom')),
+  CHECK (`doc_type` IN ('tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'donation_receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom')),
   CHECK (`orientation` IN ('portrait', 'landscape'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Versioned templates per document type.';
 

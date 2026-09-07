@@ -5542,7 +5542,7 @@ Versioned templates per document type.
 |---|---|---|
 | id | ulid | required · ULID primary key |
 | school_id | ulid | required · → schools · Tenant |
-| doc_type | enum(tc|testimonial|character|bonafide|id_card|admit_card|report_card|payslip|receipt|invoice|offer_letter|appointment_letter|experience_letter|certificate|marksheet|custom) | required |
+| doc_type | enum(tc|testimonial|character|bonafide|id_card|admit_card|report_card|payslip|receipt|donation_receipt|invoice|offer_letter|appointment_letter|experience_letter|certificate|marksheet|custom) | required |
 | name | str(120) | required |
 | html_template | long | required |
 | css | text |  |

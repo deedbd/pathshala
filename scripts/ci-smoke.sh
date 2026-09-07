@@ -26,6 +26,14 @@ awk -v label="$label" '
   }
 ' "$log"
 
+# A file that fails in its `before` hook, or a process that dies outright, produces no per-test error
+# at all — just `not ok N - tests/<file>`. Those are the failures that used to be invisible from the
+# API, so every distinct thrown message in the log becomes an annotation of its own.
+grep -hoE "(Error|error|ERR_[A-Z_]+|failureType)[^|]{0,240}" "$log" \
+  | grep -vE "^error: '?test failed|LOG_LEVEL|--test-|^errors?$" \
+  | sed 's/%/%%/g' | sort -u | head -12 \
+  | while IFS= read -r line; do echo "::error title=smoke ${label} detail::${line}"; done
+
 {
   echo "### ❌ smoke (${label}) failed"
   echo '```'

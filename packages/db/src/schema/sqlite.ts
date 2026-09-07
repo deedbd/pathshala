@@ -5212,7 +5212,7 @@ export const specialNeedsPlans = sqliteTable('special_needs_plans', {
 export const documentTemplates = sqliteTable('document_templates', {
   id: text('id').primaryKey(),
   schoolId: text('school_id').notNull(),
-  docType: text('doc_type', { enum: ['tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom'] }).notNull(),
+  docType: text('doc_type', { enum: ['tc', 'testimonial', 'character', 'bonafide', 'id_card', 'admit_card', 'report_card', 'payslip', 'receipt', 'donation_receipt', 'invoice', 'offer_letter', 'appointment_letter', 'experience_letter', 'certificate', 'marksheet', 'custom'] }).notNull(),
   name: text('name').notNull(),
   htmlTemplate: text('html_template').notNull(),
   css: text('css'),

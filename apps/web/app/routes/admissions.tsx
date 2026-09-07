@@ -28,7 +28,7 @@ export default function Admissions() {
   const [tab, setTab] = useState<'applications' | 'enquiries' | 'offers' | 'documents'>('applications');
   const [drawer, setDrawer] = useState<null | 'campaign' | 'test' | 'document' | 'cards' | 'slots' | 'papers'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const [papers, setPapers] = useState<{ id: string; missing: string[]; unverified: string[]; uploaded: { id: string; doc_type: string; file_id: string; verified_at: string | null }[] } | null>(null);
+  const [papers, setPapers] = useState<{ id: string; missing?: string[]; unverified?: string[]; uploaded?: { id: string; doc_type: string; file_id: string; verified_at: string | null }[] } | null>(null);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   const setParam = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n); };
   // run() closes whatever drawer is open when it finishes, so the papers drawer opens on its own
@@ -141,7 +141,7 @@ export default function Admissions() {
 
       <Drawer open={drawer === 'slots'} onClose={() => setDrawer(null)} title={tr('adm.makeSlots')}>
         <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(async () => { const r = await api<{ slots: number }>(`/api/admissions/tests/${f.testId}/interviews`, { method: 'POST', json: { from: `${f.date} ${f.time}:00`, minutes: Number(f.minutes), count: Number(f.count), venue: f.venue || null } }); setMsg(`${r.slots} slots`); }); }}>
-          <Field label={tr('adm.tests')}><Select name="testId" required placeholder="—" options={d.tests.map(t2 => ({ value: String(t2.id), label: String(t2.name) }))} /></Field>
+          <Field label={tr('adm.newTest')}><Select name="testId" required placeholder="—" options={d.tests.map(t2 => ({ value: String(t2.id), label: String(t2.name) }))} /></Field>
           <div className="grid grid-cols-2 gap-3"><Field label={tr('common.date')}><Input name="date" type="date" required /></Field><Field label="Start"><Input name="time" type="time" defaultValue="09:00" required /></Field></div>
           <div className="grid grid-cols-2 gap-3"><Field label="Minutes each"><Input name="minutes" type="number" defaultValue={15} min={5} max={120} className="num" /></Field><Field label="How many"><Input name="count" type="number" defaultValue={20} min={1} max={400} className="num" /></Field></div>
           <Field label="Venue"><Input name="venue" placeholder="Principal's office" /></Field>
@@ -151,9 +151,9 @@ export default function Admissions() {
       </Drawer>
       <Drawer open={drawer === 'papers'} onClose={() => { setDrawer(null); setPapers(null); }} title={tr('adm.docs')}>
         {papers && <div className="grid gap-3">
-          {papers.missing.length > 0 && <Banner kind="warn">{tr('adm.missing')}: {papers.missing.join(', ')}</Banner>}
+          {(papers.missing?.length ?? 0) > 0 && <Banner kind="warn">{tr('adm.missing')}: {papers.missing!.join(', ')}</Banner>}
           <table className="table"><thead><tr><th>{tr('common.type')}</th><th>{tr('common.status')}</th><th /></tr></thead><tbody>
-            {papers.uploaded.map(u => <tr key={u.id}>
+            {(papers.uploaded ?? []).map(u => <tr key={u.id}>
               <td>{String(u.doc_type)}</td>
               <td><Chip status={u.verified_at ? 'active' : 'pending'}>{u.verified_at ? tr('adm.verified') : tr('adm.unverified')}</Chip></td>
               <td className="flex gap-1">
@@ -163,7 +163,7 @@ export default function Admissions() {
             </tr>)}
           </tbody></table>
           <label className="btn btn-secondary" style={{ cursor: 'pointer' }}>{tr('adm.upload')}
-            <input type="file" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (!f) return; const docType = prompt(tr('adm.docTypeAsk'), papers.missing[0] ?? 'other'); e.currentTarget.value = ''; if (!docType) return; const b64 = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(f); }); try { await api(`/api/admissions/applications/${papers.id}/documents`, { method: 'POST', json: { docType, fileName: f.name, mimeType: f.type || undefined, base64: b64 } }); await openPapers(papers.id); } catch (ex) { setErr((ex as Error).message); } }} /></label>
+            <input type="file" className="hidden" onChange={async e => { const f = e.target.files?.[0]; if (!f) return; const docType = prompt(tr('adm.docTypeAsk'), papers.missing?.[0] ?? 'other'); e.currentTarget.value = ''; if (!docType) return; const b64 = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(f); }); try { await api(`/api/admissions/applications/${papers.id}/documents`, { method: 'POST', json: { docType, fileName: f.name, mimeType: f.type || undefined, base64: b64 } }); await openPapers(papers.id); } catch (ex) { setErr((ex as Error).message); } }} /></label>
         </div>}
       </Drawer>
       <Drawer open={drawer === 'campaign'} onClose={() => setDrawer(null)} title={tr('adm.newCampaign')}>

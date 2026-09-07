@@ -4,6 +4,7 @@ import { json, nowSql, ulid } from '@pathshala/db';
 import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
+import type { DocumentService } from './documents.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface SurveyInput { title: string; questions: { key: string; label: string; type?: 'text' | 'choice' | 'rating' | 'yes_no'; options?: string[] }[]; audience?: { roles?: string[]; classIds?: string[]; guardians?: boolean }; isAnonymous?: boolean; opensAt?: string | null; closesAt?: string | null }
@@ -15,7 +16,7 @@ export interface SurveyInput { title: string; questions: { key: string; label: s
  * message a week per guardian, with attendance, homework and dues — runs here.
  */
 export class EngagementService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private documents: DocumentService) {}
 
   // ---------- surveys ----------
   async createSurvey(schoolId: string, s: SurveyInput, createdBy?: string | null) {
@@ -155,6 +156,98 @@ export class EngagementService {
     return this.db.query<Row>(`SELECT e.*, (SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id = e.id AND r.response = 'yes') AS coming,
       (SELECT COALESCE(SUM(quantity), 0) FROM event_tickets t WHERE t.event_id = e.id AND t.status <> 'cancelled') AS tickets
       FROM events e WHERE e.school_id = ?${where} ORDER BY e.starts_at DESC LIMIT 200`, from ? [schoolId, from] : [schoolId]);
+  }
+
+  // ---------- what happens inside an event ----------
+  /** The programme: what happens when, so the printed sheet and the app say the same thing. */
+  async setSchedule(schoolId: string, eventId: string, items: { startsAt: string; title: string; presenter?: string | null }[]) {
+    if (!(await this.db.findOne('events', { id: eventId, school_id: schoolId }))) throw notFound('event');
+    await this.db.delete('event_schedule_items', { event_id: eventId });
+    const sorted = [...items].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    if (sorted.length) await this.db.insertMany('event_schedule_items', sorted.map((i, n) => ({ id: ulid(), school_id: schoolId, event_id: eventId, starts_at: i.startsAt, title: i.title.slice(0, 200), presenter: i.presenter ?? null, sequence: n + 1 })));
+    return { eventId, items: sorted.length };
+  }
+  async schedule(schoolId: string, eventId: string) {
+    return this.db.findMany<Row>('event_schedule_items', { school_id: schoolId, event_id: eventId }, { orderBy: 'sequence ASC' });
+  }
+  /**
+   * Volunteering. Anyone may offer; the organiser confirms. A confirmation is what tells somebody to
+   * turn up, so it is the only thing that notifies — an application does not.
+   */
+  async volunteer(schoolId: string, eventId: string, userId: string, role?: string | null) {
+    const event = await this.db.findOne<Row>('events', { id: eventId, school_id: schoolId });
+    if (!event) throw notFound('event');
+    const ex = await this.db.findOne<Row>('event_volunteers', { event_id: eventId, user_id: userId });
+    if (ex) { await this.db.update('event_volunteers', { role: role ?? ex.role, status: 'applied' }, { id: String(ex.id) }); return { id: String(ex.id), status: 'applied' as const }; }
+    const id = ulid();
+    await this.db.insert('event_volunteers', { id, school_id: schoolId, event_id: eventId, user_id: userId, role: role ?? null, status: 'applied' });
+    return { id, status: 'applied' as const };
+  }
+  async decideVolunteer(schoolId: string, volunteerId: string, status: 'confirmed' | 'declined') {
+    const v = await this.db.findOne<Row>('event_volunteers', { id: volunteerId, school_id: schoolId });
+    if (!v) throw notFound('volunteer');
+    await this.db.update('event_volunteers', { status }, { id: volunteerId });
+    if (status === 'confirmed') {
+      const event = await this.db.findOne<Row>('events', { id: String(v.event_id) });
+      await this.notifications.notify({ schoolId, userId: String(v.user_id), channels: ['in_app', 'push'], eventKey: 'engagement.volunteer_confirmed', title: 'You are on the team', body: `${event?.title} on ${String(event?.starts_at).slice(0, 16)}${v.role ? ` — ${v.role}` : ''}.`, entityType: 'engagement.event', entityId: String(v.event_id) });
+    }
+    return { id: volunteerId, status };
+  }
+  async volunteers(schoolId: string, eventId: string) {
+    return this.db.query<Row>(`SELECT v.*, u.display_name, u.phone FROM event_volunteers v JOIN users u ON u.id = v.user_id WHERE v.school_id = ? AND v.event_id = ? ORDER BY v.status, u.display_name`, [schoolId, eventId]);
+  }
+
+  // ---------- competitions ----------
+  /**
+   * Competitions, from the intra-house quiz to a national olympiad. Recording a result does three
+   * things at once, because otherwise two of them never happen: it goes on the child's portfolio, it
+   * adds to the house table, and — for a placed competitor — it prints a certificate they can keep.
+   */
+  async createCompetition(schoolId: string, c: { name: string; kind?: 'sports' | 'academic' | 'cultural' | 'science' | 'debate' | 'olympiad' | 'other'; level?: 'intra' | 'inter_school' | 'district' | 'national' | 'international'; heldOn?: string | null; venue?: string | null; organiser?: string | null; eventId?: string | null }) {
+    const id = ulid();
+    await this.db.insert('competitions', { id, school_id: schoolId, name: c.name, kind: c.kind ?? 'other', level: c.level ?? 'intra', held_on: c.heldOn ?? null, venue: c.venue ?? null, organiser: c.organiser ?? null, event_id: c.eventId ?? null });
+    return id;
+  }
+  async competitions(schoolId: string) {
+    return this.db.query<Row>(`SELECT c.*, (SELECT COUNT(*) FROM competition_results r WHERE r.competition_id = c.id) AS entries FROM competitions c WHERE c.school_id = ? ORDER BY c.held_on DESC, c.created_at DESC LIMIT 200`, [schoolId]);
+  }
+  async recordResults(schoolId: string, competitionId: string, rows: { studentId?: string | null; clubId?: string | null; houseId?: string | null; position?: number | null; award?: string | null; points?: number }[], opts: { certificates?: boolean } = {}) {
+    const competition = await this.db.findOne<Row>('competitions', { id: competitionId, school_id: schoolId });
+    if (!competition) throw notFound('competition');
+    let saved = 0, certificates = 0;
+    for (const r of rows) {
+      if (!r.studentId && !r.clubId && !r.houseId) throw badRequest('a result belongs to a student, a club or a house');
+      const points = r.points ?? (r.position === 1 ? 10 : r.position === 2 ? 6 : r.position === 3 ? 3 : 1);
+      const ex = r.studentId ? await this.db.findOne<Row>('competition_results', { competition_id: competitionId, student_id: r.studentId }) : null;
+      const id = ex ? String(ex.id) : ulid();
+      const row = { school_id: schoolId, competition_id: competitionId, student_id: r.studentId ?? null, club_id: r.clubId ?? null, house_id: r.houseId ?? null, position: r.position ?? null, award: r.award ?? null, points };
+      if (ex) await this.db.update('competition_results', row, { id });
+      else await this.db.insert('competition_results', { id, ...row });
+      saved++;
+      // the house table is a ledger, so the same competition never adds its points twice
+      const house = r.houseId ?? (r.studentId ? (await this.db.findOne<Row>('students', { id: r.studentId }))?.house_id as string | undefined : undefined);
+      if (house && !(await this.db.findOne('house_points', { source_type: 'engagement.competition', source_id: id }))) {
+        await this.awardHousePoints(schoolId, { houseId: String(house), studentId: r.studentId ?? null, points, reason: `${competition.name}${r.position ? ` — position ${r.position}` : ''}`, sourceType: 'engagement.competition', sourceId: id });
+      }
+      if (r.studentId && !ex) {
+        await this.addAchievement(schoolId, { studentId: r.studentId, title: `${competition.name}${r.award ? ` — ${r.award}` : r.position ? ` — position ${r.position}` : ''}`, category: String(competition.kind), achievedOn: (competition.held_on as string) ?? nowSql().slice(0, 10), isPublic: true });
+      }
+      if (opts.certificates && r.studentId && r.position && r.position <= 3) {
+        const student = await this.db.findOne<Row>('students', { id: r.studentId });
+        const issued = await this.documents.issue(schoolId, {
+          docType: 'certificate', personType: 'student', studentId: r.studentId,
+          data: { name: `${student?.first_name ?? ''} ${student?.last_name ?? ''}`.trim(), admission_no: String(student?.admission_no ?? ''), course: `${competition.name} (${competition.level})`, completed_on: String(competition.held_on ?? nowSql()).slice(0, 10) },
+          entityType: 'engagement.competition', entityId: competitionId,
+        });
+        await this.db.update('competition_results', { certificate_doc_id: issued.id }, { id });
+        certificates++;
+      }
+    }
+    await this.outbox.emitNow({ type: 'competition.results_recorded', schoolId, aggregateType: 'engagement.competition', aggregateId: competitionId, payload: { competitionId, name: String(competition.name), results: saved } });
+    return { saved, certificates };
+  }
+  async competitionResults(schoolId: string, competitionId: string) {
+    return this.db.query<Row>(`SELECT r.*, s.first_name, s.last_name, s.admission_no, h.name AS house_name, c.name AS club_name FROM competition_results r LEFT JOIN students s ON s.id = r.student_id LEFT JOIN houses h ON h.id = r.house_id LEFT JOIN clubs c ON c.id = r.club_id WHERE r.school_id = ? AND r.competition_id = ? ORDER BY r.position, r.points DESC`, [schoolId, competitionId]);
   }
 
   // ---------- clubs, houses, portfolio ----------

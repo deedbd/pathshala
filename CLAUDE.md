@@ -55,6 +55,13 @@ School management platform for Bangladesh (and beyond), automation-first, sold t
 - An automation that fans out from an event must be idempotent and must check its own preconditions: the relay delivers at least once, and several events of the same kind can arrive in a row (three batches of marks → three merit runs). Ranking waits for the last mark, and an applicant already holding an offer is never re-ranked.
 - Long fan-out work is a queued job that walks `background_jobs.cursor`: report cards render 25 students per pass, which keeps every request well inside the ~30 s shared-hosting ceiling. 1,500 report cards take about 40 s in total.
 
+## Year 2 (in progress)
+`docs/ROADMAP-5Y.md` year 2 is being built on top of the nine phases. Shipped so far: `commerce`
+(wallet, canteen and shop), `giving` (scholarship funds, donors, appeals), `alumni` (directory,
+mentorship, job board) and the co-curricular half of `engagement` (competitions, event programmes and
+volunteers). Their API is `apps/server/src/routes/phase10.ts`, the console page is
+`apps/web/app/routes/community.tsx`, and `tests/year2a.test.mjs` is their exit criterion.
+
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
 
