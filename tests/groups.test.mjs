@@ -195,6 +195,30 @@ describe('year 4: multi-school groups, transfers, multi-currency and the parent 
     assert.deepEqual(names, ['TRUSTDHA:Mizanur', 'TRUSTSYL:Farhana'].sort(), 'each person carries the school they belong to');
     assert.ok(pool.staff.every(s => 'periods' in s), 'and the teaching load the head office is looking for');
     assert.equal(await status(`/groups/${groupId}/staff?q=Farhana`, sylhet.cookie), 403);
+
+    // a trust of twenty schools has more staff than one request may carry, so the pool is a page
+    // that says what it is a page of
+    assert.equal(pool.total, 2);
+    const firstPage = await api(`/groups/${groupId}/staff?limit=1`);
+    assert.equal(firstPage.staff.length, 1);
+    assert.equal(firstPage.total, 2, 'the page says how many there are altogether');
+    const secondPage = await api(`/groups/${groupId}/staff?limit=1&offset=1`);
+    assert.equal(secondPage.staff.length, 1);
+    assert.notEqual(String(secondPage.staff[0].id), String(firstPage.staff[0].id), 'the second page is not the first again');
+    assert.equal((await api(`/groups/${groupId}/staff?limit=1&offset=99`)).staff.length, 0);
+  });
+
+  test('the schools a group may add are offered as a list, and only to the founder', async () => {
+    const addable = await api(`/groups/${groupId}/addable`);
+    const ids = addable.map(s => String(s.id));
+    assert.ok(ids.includes(String(outsider.schoolId)), 'a school on this installation that is not in the group can be added');
+    for (const member of [dhaka, sylhet, ctg]) {
+      assert.equal(ids.includes(String(member.schoolId)), false, 'a member is not offered again');
+    }
+    assert.ok(addable.every(s => s.name && s.code), 'each one is named, so nobody has to type an id');
+    // the list is every tenant on the host, which is exactly what an unauthorised caller would like
+    assert.equal(await status(`/groups/${groupId}/addable`, sylhet.cookie), 403);
+    assert.equal(await status(`/groups/${groupId}/addable`, outsider.cookie), 403);
   });
 
   // ---------------- transfers ----------------

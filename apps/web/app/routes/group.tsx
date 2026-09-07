@@ -9,16 +9,21 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const groups = await context.app.groups.groups(sid);
   const groupId = url.searchParams.get('groupId') ?? (groups.find(g => Number(g.is_head)) ?? groups[0])?.id;
   const gid = groupId ? String(groupId) : null;
-  const [consolidated, pool, members, transfers, rates, students] = await Promise.all([
+  // one page of a trust's staff and of its transfers at a time: twenty schools have thousands of both
+  const page = Math.max(0, Number(url.searchParams.get('page') ?? 0) || 0);
+  const perPage = 100;
+  const [consolidated, pool, members, transfers, rates, students, addable] = await Promise.all([
     // only the head school of a group may read the others; every other member gets its own page and a plain reason
     gid ? context.app.groups.consolidated(gid, sid).catch(() => null) : null,
-    gid ? context.app.groups.staffPool(gid, sid).catch(() => null) : null,
+    gid ? context.app.groups.staffPool(gid, sid, { limit: perPage, offset: page * perPage }).catch(() => null) : null,
     gid ? context.app.groups.memberSchools(gid).catch(() => []) : [],
-    context.app.groups.transfers(sid),
+    context.app.groups.transfers(sid, { limit: perPage, offset: page * perPage }),
     context.app.groups.rates({}),
     context.app.people.students(sid, { limit: 200 }),
+    // only the founder school may be told which other schools exist on this installation
+    gid ? context.app.groups.addableSchools(gid, sid).catch(() => []) : [],
   ]);
-  return { locale: (user.locale as Locale) || context.locale, schoolId: sid, groups, groupId: gid, consolidated, pool, members, transfers, rates, students: students.rows };
+  return { locale: (user.locale as Locale) || context.locale, schoolId: sid, groups, groupId: gid, page, perPage, consolidated, pool, members, transfers, rates, students: students.rows, addable };
 }
 export function meta() { return [{ title: 'Pathshala — Group' }]; }
 
@@ -40,6 +45,9 @@ export default function Group() {
   const members = d.members as Record<string, unknown>[];
   const poolStaff = (d.pool?.staff ?? []) as Record<string, unknown>[];
   const others = members.filter(m => String(m.school_id) !== d.schoolId);
+  const addable = d.addable as Record<string, unknown>[];
+  const pageOf = (rows: unknown[], total?: number) => ({ from: d.page * d.perPage + (rows.length ? 1 : 0), to: d.page * d.perPage + rows.length, total: total ?? null });
+  const goPage = (n: number) => setParam('page', n <= 0 ? '' : String(n));
   const total = d.consolidated?.money ?? null;
 
   return (
@@ -101,7 +109,7 @@ export default function Group() {
       </div>}
 
       {group && tab === 'schools' && <div className="mt-4">
-        <div className="mb-3 flex justify-end"><Button size="sm" onClick={() => setDrawer('school')} disabled={!isHead}>{tr('grp.addSchool')}</Button></div>
+        <div className="mb-3 flex justify-end"><Button size="sm" onClick={() => setDrawer('school')} disabled={!isHead || addable.length === 0}>{tr('grp.addSchool')}</Button></div>
         <DataTable locale={d.locale} searchable={false} rows={members.map(m => ({ ...m, id: m.school_id })) as Record<string, unknown>[]} columns={[
           { key: 'name', label: tr('grp.school'), render: r => <>{String(r.name)} {Number(r.is_head) ? <Chip status="active">{tr('grp.head')}</Chip> : null}</> },
           { key: 'code', label: tr('col.code'), className: 'num' },
@@ -124,6 +132,11 @@ export default function Group() {
             { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status)}>{String(r.status)}</Chip> },
           ]} />
           <p className="mt-2 text-xs" style={{ color: 'var(--muted)' }}>{tr('grp.staffNote')}</p>
+        <div className="mt-2 flex items-center gap-2 text-xs" style={{ color: 'var(--muted)' }}>
+          <Button size="sm" variant="secondary" disabled={d.page === 0} onClick={() => goPage(d.page - 1)}>{tr('grp.prev')}</Button>
+          <span>{num(pageOf(poolStaff, d.pool.total).from)}–{num(pageOf(poolStaff, d.pool.total).to)} / {num(d.pool.total)}</span>
+          <Button size="sm" variant="secondary" disabled={(d.page + 1) * d.perPage >= Number(d.pool.total)} onClick={() => goPage(d.page + 1)}>{tr('grp.next')}</Button>
+        </div>
         </>}
       </div>}
 
@@ -139,6 +152,11 @@ export default function Group() {
           { key: 'transferred_at', label: tr('common.date'), render: r => formatDate(String(r.transferred_at), d.locale) },
         ]} />
         <p className="mt-2 text-xs" style={{ color: 'var(--muted)' }}>{tr('grp.transferNote')}</p>
+        {(d.page > 0 || d.transfers.length === d.perPage) && <div className="mt-2 flex items-center gap-2 text-xs" style={{ color: 'var(--muted)' }}>
+          <Button size="sm" variant="secondary" disabled={d.page === 0} onClick={() => goPage(d.page - 1)}>{tr('grp.prev')}</Button>
+          <span>{num(pageOf(d.transfers).from)}–{num(pageOf(d.transfers).to)}</span>
+          <Button size="sm" variant="secondary" disabled={d.transfers.length < d.perPage} onClick={() => goPage(d.page + 1)}>{tr('grp.next')}</Button>
+        </div>}
       </div>}
 
       {group && tab === 'rates' && <div className="mt-4">
@@ -165,8 +183,11 @@ export default function Group() {
 
       <Drawer open={drawer === 'school'} onClose={() => setDrawer(null)} title={tr('grp.addSchool')}>
         <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = form(e); run(() => api(`/api/groups/${d.groupId}/schools`, { method: 'POST', json: { schoolId: f.schoolId } })); }}>
-          <Field label={tr('grp.schoolId')} hint={tr('grp.schoolIdHint')}><Input name="schoolId" required /></Field>
-          <Button disabled={busy}>{tr('common.save')}</Button>
+          <Field label={tr('grp.school')} hint={tr('grp.addSchoolHint')}>
+            <Select name="schoolId" required placeholder="—" options={addable.map(x => ({ value: String(x.id), label: `${x.name} · ${x.code}${x.currency && String(x.currency) !== 'BDT' ? ` · ${x.currency}` : ''}` }))} />
+          </Field>
+          {addable.length === 0 && <Banner kind="info">{tr('grp.nothingToAdd')}</Banner>}
+          <Button disabled={busy || addable.length === 0}>{tr('common.save')}</Button>
         </form>
       </Drawer>
 

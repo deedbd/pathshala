@@ -497,5 +497,8 @@ collected nothing, exchange rates writable by any tenant, and a guardian family 
 a phone number across the whole installation. All are fixed, each with the test that would have
 caught it.
 
-**Not yet:** the IVR result question still costs a full exam scan per call; `staffPool` and the
-transfer list have no paging; the group page adds a school by id rather than by picking one.
+Those three loose ends are closed: the IVR result question is one query against `exam_results`
+instead of a scan of every exam the school has held, the staff pool and the transfer list are paged
+(and the pool says what its page is a page of), and a group adds a school by picking it from the
+list of schools on the installation — which only the founder school may ask for, because that list
+is the tenants on the host.

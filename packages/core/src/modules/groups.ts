@@ -116,6 +116,20 @@ export class GroupsService {
   async memberSchools(groupId: string) {
     return this.db.query<Row>(`SELECT m.school_id, m.is_head, s.name, s.code, s.currency, s.status FROM school_group_members m JOIN schools s ON s.id = m.school_id WHERE m.group_id = ? ORDER BY m.is_head DESC, s.name, s.id`, [groupId]);
   }
+  /**
+   * The schools this group could add: every other school on the installation that is not already a
+   * member. Only the founder may ask, because the answer is the list of tenants on the host — which
+   * is exactly what an unauthorised caller would like. Typing an id into a box was the alternative,
+   * and an id typed wrong puts somebody else's school into a trust's consolidated figures.
+   */
+  async addableSchools(groupId: string, callerSchoolId: string) {
+    await this.requireFounder(callerSchoolId);
+    await this.requireGroup(groupId);
+    return this.db.query<Row>(`SELECT s.id, s.name, s.code, s.currency, s.status FROM schools s
+      WHERE s.status <> 'closed' AND NOT EXISTS (SELECT 1 FROM school_group_members m WHERE m.group_id = ? AND m.school_id = s.id)
+      ORDER BY s.name, s.id LIMIT 200`, [groupId]);
+  }
+
   private async requireGroup(groupId: string) {
     const g = await this.db.findOne<Row>('school_groups', { id: groupId });
     if (!g) throw notFound('group');
@@ -237,25 +251,29 @@ export class GroupsService {
    * is that the head office can see the maths teacher in the other branch has four free periods
    * before it advertises a post.
    */
-  async staffPool(groupId: string, callerSchoolId: string, f: { q?: string; category?: string; limit?: number } = {}) {
+  async staffPool(groupId: string, callerSchoolId: string, f: { q?: string; category?: string; limit?: number; offset?: number } = {}) {
     await this.requireHead(groupId, callerSchoolId);
     const members = await this.memberSchools(groupId);
     const ids = members.map(m => String(m.school_id));
-    if (!ids.length) return { staff: [], schools: 0 };
+    if (!ids.length) return { staff: [], schools: 0, total: 0, limit: 0, offset: 0 };
     const marks = ids.map(() => '?').join(', ');
     const where = [`st.school_id IN (${marks})`, `st.status IN ('active','probation','on_leave')`, 'st.deleted_at IS NULL'];
     const params: unknown[] = [...ids];
     if (f.category) { where.push('st.staff_category = ?'); params.push(f.category); }
     if (f.q) { where.push('(st.first_name LIKE ? OR st.last_name LIKE ? OR st.employee_no LIKE ?)'); const like = `%${f.q}%`; params.push(like, like, like); }
+    // a trust of twenty schools has thousands of staff, and one page is what a request may carry:
+    // the total comes back with the page so the console can say what it is showing out of what
     const limit = Math.min(500, Math.max(1, Math.round(Number(f.limit) || 200)));
+    const offset = Math.max(0, Math.round(Number(f.offset) || 0));
+    const counted = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM staff st WHERE ${where.join(' AND ')}`, params);
     const staff = await this.db.query<Row>(`SELECT st.id, st.school_id, st.employee_no, st.first_name, st.last_name, st.phone, st.staff_category, st.employment_type, st.status, st.join_date,
       sc.name AS school_name, sc.code AS school_code, d.name AS designation, dep.name AS department
       FROM staff st JOIN schools sc ON sc.id = st.school_id LEFT JOIN designations d ON d.id = st.designation_id LEFT JOIN departments dep ON dep.id = st.department_id
-      WHERE ${where.join(' AND ')} ORDER BY sc.name, st.first_name, st.id LIMIT ${limit}`, params);
+      WHERE ${where.join(' AND ')} ORDER BY sc.name, st.first_name, st.id LIMIT ${limit} OFFSET ${offset}`, params);
     // teaching load from the published timetable only: a draft's periods are nobody's workload yet
     const load = await this.db.query<{ teacher_id: string; n: number }>(`SELECT ts.teacher_id, COUNT(*) AS n FROM timetable_slots ts JOIN timetable_versions v ON v.id = ts.version_id AND v.status = 'published' WHERE ts.school_id IN (${marks}) AND ts.teacher_id IS NOT NULL GROUP BY ts.teacher_id`, ids);
     const periods = new Map(load.map(r => [String(r.teacher_id), Number(r.n)]));
-    return { schools: ids.length, staff: staff.map(s => ({ ...s, periods: periods.get(String(s.id)) ?? 0 })) };
+    return { schools: ids.length, total: Number(counted[0]?.n ?? 0), limit, offset, staff: staff.map(s => ({ ...s, periods: periods.get(String(s.id)) ?? 0 })) };
   }
 
   // ---------- moving a child between two schools of the group ----------
@@ -333,12 +351,13 @@ export class GroupsService {
     return { id, studentId: input.studentId, toStudentId: created.id, admissionNo: created.admissionNo, dues, alreadyTransferred: false };
   }
   /** Transfers this school sent or received, each row saying plainly which school it came from. */
-  async transfers(schoolId: string, f: { limit?: number } = {}) {
+  async transfers(schoolId: string, f: { limit?: number; offset?: number } = {}) {
     const limit = Math.min(500, Math.max(1, Math.round(Number(f.limit) || 100)));
+    const offset = Math.max(0, Math.round(Number(f.offset) || 0));
     return this.db.query<Row>(`SELECT t.id, t.school_id AS from_school_id, t.to_school_id, t.student_id, t.to_student_id, t.reason, t.dues_at_transfer, t.status, t.transferred_at,
       s.first_name, s.last_name, s.admission_no, fs.name AS from_school, ts.name AS to_school
       FROM student_transfers t JOIN students s ON s.id = t.student_id JOIN schools fs ON fs.id = t.school_id JOIN schools ts ON ts.id = t.to_school_id
-      WHERE t.school_id = ? OR t.to_school_id = ? ORDER BY t.transferred_at DESC, t.id DESC LIMIT ${limit}`, [schoolId, schoolId]);
+      WHERE t.school_id = ? OR t.to_school_id = ? ORDER BY t.transferred_at DESC, t.id DESC LIMIT ${limit} OFFSET ${offset}`, [schoolId, schoolId]);
   }
   /** Two schools may only exchange a child if one group holds both of them. */
   private async sharedGroup(a: string, b: string) {

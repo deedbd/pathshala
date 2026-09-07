@@ -41,7 +41,12 @@ export function mountPhase16(api: Router, app: App, wrap: Wrap, requirePerm: (re
     await app.audit.log({ action: r.updated ? 'update' : 'create', entityType: 'core.currency_rate', entityId: r.id, after: b });
     return r;
   }));
-  api.get('/groups/transfers', wrap(async req => { const u = requirePerm(req, 'people.view'); return app.groups.transfers(u.school_id); }));
+  api.get('/groups/transfers', wrap(async req => {
+    const u = requirePerm(req, 'people.view');
+    const b = z.object({ limit: z.coerce.number().int().min(1).max(500).optional(), offset: z.coerce.number().int().min(0).optional() })
+      .parse({ limit: q(req, 'limit'), offset: q(req, 'offset') });
+    return app.groups.transfers(u.school_id, b);
+  }));
   api.post('/groups/transfers', wrap(async req => {
     // the transfer is always *out of* the caller's own school: a school cannot pull a child out of another
     const u = requirePerm(req, 'people.edit');
@@ -71,7 +76,14 @@ export function mountPhase16(api: Router, app: App, wrap: Wrap, requirePerm: (re
   }));
   api.get('/groups/:id/staff', wrap(async req => {
     const u = requirePerm(req, 'hr.view');
-    return app.groups.staffPool(req.params.id as string, u.school_id, { q: q(req, 'q'), category: q(req, 'category') });
+    const b = z.object({ limit: z.coerce.number().int().min(1).max(500).optional(), offset: z.coerce.number().int().min(0).optional() })
+      .parse({ limit: q(req, 'limit'), offset: q(req, 'offset') });
+    return app.groups.staffPool(req.params.id as string, u.school_id, { q: q(req, 'q'), category: q(req, 'category'), ...b });
+  }));
+  // the schools this group could add, so the console offers a list instead of asking for an id
+  api.get('/groups/:id/addable', wrap(async req => {
+    const u = requirePerm(req, 'platform.settings');
+    return app.groups.addableSchools(req.params.id as string, u.school_id);
   }));
 
   // ---------- the parent super-app ----------

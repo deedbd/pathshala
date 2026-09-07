@@ -316,17 +316,19 @@ export class IvrService {
   }
 
   /**
-   * The most recent published exam this child has a result in. Exams come back newest first, and a
-   * child who joined in the middle of the year has no row in the older ones — so it walks down until
-   * it finds one rather than assuming the newest exam is theirs.
+   * The most recent published exam this child has a result in — asked of the results table directly,
+   * because a caller is holding a telephone. Walking the exam list and computing each result in turn
+   * scanned every exam the school had ever held and did up to five full result computations per key
+   * press, and `node:sqlite` is synchronous, so the whole site waited behind it. A child who joined
+   * in the middle of the year simply has no row in the older exams, which the join already answers.
    */
   private async lastResult(schoolId: string, studentId: string) {
-    const exams = (await this.assessment.exams(schoolId)).filter(e => String(e.status) === 'published').slice(0, 5);
-    for (const exam of exams) {
-      const { result } = await this.assessment.studentResult(schoolId, String(exam.id), studentId);
-      if (result) return { exam: String(exam.name), gpa: Number(result.gpa ?? 0), grade: String(result.grade ?? '') };
-    }
-    return null;
+    const rows = await this.db.query<Row>(
+      `SELECT e.name, r.gpa, r.grade FROM exam_results r JOIN exams e ON e.id = r.exam_id
+       WHERE r.school_id = ? AND r.student_id = ? AND e.status = 'published'
+       ORDER BY e.start_date DESC, e.id DESC LIMIT 1`, [schoolId, studentId]);
+    const r = rows[0];
+    return r ? { exam: String(r.name), gpa: Number(r.gpa ?? 0), grade: String(r.grade ?? '') } : null;
   }
 
   // ---------- the register ----------
