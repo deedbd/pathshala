@@ -36,6 +36,19 @@ export class AssessmentService {
     return types.length;
   }
   async examTypes(schoolId: string) { return this.db.findMany<Row>('exam_types', { school_id: schoolId }, { orderBy: 'weight_pct ASC' }); }
+  /**
+   * The school's own scale applied to one percentage. Anything outside this module that has to turn a
+   * mark into a grade point — a college posting a semester result, say — comes through here, so one
+   * school never ends up with two ideas of what 62% is worth.
+   */
+  async gradeFor(schoolId: string, percent: number, scaleId?: string | null) {
+    const scale = scaleId ? await this.db.findOne<Row>('grading_scales', { id: scaleId, school_id: schoolId }) : await this.db.findOne<Row>('grading_scales', { school_id: schoolId, is_default: true });
+    if (!scale) throw new HttpError(409, 'no grading scale — re-run the seeds', 'no_scale');
+    const bands = await this.db.findMany<Row>('grading_bands', { scale_id: String(scale.id) }, { orderBy: 'min_percent DESC' });
+    if (!bands.length) throw new HttpError(409, 'the grading scale has no bands', 'no_bands');
+    const band = this.bandFor(bands, Math.max(0, Math.min(100, percent)));
+    return { scaleId: String(scale.id), gpaMax: Number(scale.gpa_max), grade: String(band?.grade ?? ''), gradePoint: Number(band?.grade_point ?? 0), isFail: Number(band?.is_fail) === 1 };
+  }
 
   /** Creates an exam and one schedule row per class-subject of the chosen classes. */
   async createExam(schoolId: string, e: ExamInput) {

@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 356 tables · 4106 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 357 tables · 4123 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -1199,6 +1199,29 @@ Optional/4th subject choice per student.
 | student_id | ulid | required |
 | class_subject_id | ulid | required · → class_subjects |
 | is_fourth | bool | required · default false |
+
+### `course_registrations`
+Semester/credit mode: what a student registered for in one term, with the credit it carries and the grade it earned. A school never touches this; a college cannot work without it.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | ulid | required · ULID primary key |
+| school_id | ulid | required · → schools · Tenant |
+| academic_year_id | ulid | required · → academic_years |
+| term_id | ulid | required · → terms |
+| student_id | ulid | required |
+| class_subject_id | ulid | required · → class_subjects |
+| program_id | ulid | → programs |
+| credit | dec(4,2) | required · default 0 · snapshot: changing a subject's credit must not rewrite last semester's GPA |
+| status | enum(registered|dropped|completed|failed) | required · default registered |
+| percent | pct |  |
+| grade | str(5) |  |
+| grade_point | dec(4,2) |  |
+| registered_on | date | required |
+| dropped_on | date |  |
+| completed_on | date |  |
+| created_at | dt | required · default now |
+| updated_at | dt | required · default now |
 
 ### `periods`
 Period grid per shift.

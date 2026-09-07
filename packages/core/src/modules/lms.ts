@@ -74,6 +74,11 @@ export class LmsService {
     await this.outbox.emitNow({ type: 'course.published', schoolId, aggregateType: 'lms.course', aggregateId: id, payload: { courseId: id, title: String(c.title), enrolled } });
     return { id, enrolled };
   }
+  /** Ties a paid course to the fee head its money lands in, so one batch's income is one line of the ledger. */
+  async setCourseFeeHead(schoolId: string, courseId: string, feeHeadId: string) {
+    if (!(await this.db.update('courses', { fee_head_id: feeHeadId, updated_at: nowSql() }, { id: courseId, school_id: schoolId }))) throw notFound('course');
+    return { courseId, feeHeadId };
+  }
   async enrol(schoolId: string, courseId: string, studentId: string) {
     if (await this.db.findOne('course_enrollments', { course_id: courseId, student_id: studentId })) return false;
     await this.db.insert('course_enrollments', { id: ulid(), school_id: schoolId, course_id: courseId, student_id: studentId, enrolled_at: nowSql(), progress_pct: 0, completed_at: null, certificate_doc_id: null });
@@ -193,6 +198,18 @@ export class LmsService {
     await this.db.update('course_enrollments', { certificate_doc_id: issued.id, updated_at: nowSql() }, { id: String(enrolment.id) });
     await this.notifications.notify({ schoolId, address: null, channels: ['in_app', 'push'], eventKey: 'lms.certificate_issued', data: { course: String(course?.title ?? '') }, title: 'Course certificate', body: `${student?.first_name} finished ${course?.title}. The certificate is ready.`, entityType: 'lms.course', entityId: courseId });
     return { certificateId: issued.id, fileId: issued.fileId, documentNo: issued.documentNo, verificationCode: issued.verificationCode };
+  }
+
+  /**
+   * Finishing a course that was never taught on a screen: a coaching batch meets in a room, so no
+   * lesson is ever ticked off and `progress_pct` would sit at 0 forever. The teacher says it is
+   * finished and the same certificate path runs, so a certificate means the same thing either way.
+   */
+  async completeEnrolment(schoolId: string, courseId: string, studentId: string, onDate?: string) {
+    const e = await this.db.findOne<Row>('course_enrollments', { school_id: schoolId, course_id: courseId, student_id: studentId });
+    if (!e) throw notFound('enrolment');
+    if (!e.completed_at) await this.db.update('course_enrollments', { progress_pct: 100, completed_at: onDate ? `${onDate.slice(0, 10)} 00:00:00` : nowSql(), updated_at: nowSql() }, { id: String(e.id) });
+    return this.issueCourseCertificate(schoolId, courseId, studentId);
   }
 
   async progress(schoolId: string, courseId: string) {

@@ -8,7 +8,9 @@ export interface YearInput { name: string; startDate: string; endDate: string; s
 export interface ClassInput { name: string; nameBn?: string | null; numericLevel: number; stream?: string | null; programId?: string | null }
 export interface SubjectInput { name: string; nameBn?: string | null; code: string; subjectType?: 'theory' | 'practical' | 'both' | 'activity'; isOptional?: boolean }
 export interface SectionInput { academicYearId: string; classId: string; name: string; capacity?: number; shiftId?: string | null; roomId?: string | null; campusId?: string | null; classTeacherId?: string | null; genderPolicy?: 'mixed' | 'boys' | 'girls'; medium?: 'bangla' | 'english' | 'arabic' }
-export interface ClassSubjectInput { academicYearId: string; classId: string; subjectId: string; isCompulsory?: boolean; fullMarks?: number; passMarks?: number; weeklyPeriods?: number; sortOrder?: number }
+export interface ClassSubjectInput { academicYearId: string; classId: string; subjectId: string; isCompulsory?: boolean; fullMarks?: number; passMarks?: number; weeklyPeriods?: number; sortOrder?: number; credit?: number }
+export type ProgramLevel = 'secondary' | 'higher_secondary' | 'bachelor' | 'master' | 'diploma' | 'coaching';
+export interface ProgramInput { name: string; code: string; level: ProgramLevel; durationTerms?: number | null; totalCredits?: number | null; departmentId?: string | null }
 export interface PeriodInput { shiftId?: string | null; name: string; sequence: number; startTime: string; endTime: string; isBreak?: boolean }
 export interface CalendarEventInput { academicYearId?: string | null; title: string; eventType: 'holiday' | 'vacation' | 'exam' | 'event' | 'ptm' | 'deadline' | 'meeting'; startDate: string; endDate: string; isHoliday?: boolean; appliesTo?: unknown; description?: string | null }
 
@@ -64,6 +66,39 @@ export class AcademicService {
     return id;
   }
 
+  // ---------- programmes ----------
+  /**
+   * A programme is what a college or a coaching centre admits into: HSC Science, BBA, a six-month
+   * spoken-English batch. Classes hang off it as its years or levels. The tables are the school's
+   * tables — `programs` only adds the two numbers that a credit system needs, how many terms it runs
+   * for and how many credits it takes to finish.
+   */
+  async createProgram(schoolId: string, p: ProgramInput) {
+    const code = p.code.trim().toUpperCase();
+    const ex = await this.db.findOne<{ id: string }>('programs', { school_id: schoolId, code });
+    if (ex) { await this.updateProgram(schoolId, ex.id, p); return ex.id; }
+    const id = ulid();
+    await this.db.insert('programs', { id, school_id: schoolId, name: p.name, code, level: p.level, duration_terms: p.durationTerms ?? null, total_credits: p.totalCredits ?? null, department_id: p.departmentId ?? null, status: 'active' });
+    return id;
+  }
+  async updateProgram(schoolId: string, id: string, patch: Partial<ProgramInput> & { status?: 'active' | 'inactive' }) {
+    const set: Row = {};
+    if (patch.name) set.name = patch.name;
+    if (patch.level) set.level = patch.level;
+    if ('durationTerms' in patch) set.duration_terms = patch.durationTerms ?? null;
+    if ('totalCredits' in patch) set.total_credits = patch.totalCredits ?? null;
+    if ('departmentId' in patch) set.department_id = patch.departmentId ?? null;
+    if (patch.status) set.status = patch.status;
+    if (!Object.keys(set).length) return 0;
+    return this.db.update('programs', { ...set, updated_at: nowSql() }, { id, school_id: schoolId });
+  }
+  async programs(schoolId: string) { return this.db.findMany<Row>('programs', { school_id: schoolId }, { orderBy: 'name ASC' }); }
+  async setClassProgram(schoolId: string, classId: string, programId: string | null) {
+    if (programId && !(await this.db.findOne('programs', { id: programId, school_id: schoolId }))) throw notFound('programme');
+    if (!(await this.db.update('classes', { program_id: programId, updated_at: nowSql() }, { id: classId, school_id: schoolId }))) throw notFound('class');
+    return { classId, programId };
+  }
+
   // ---------- classes / subjects / matrix ----------
   async createClass(schoolId: string, c: ClassInput) {
     const id = ulid();
@@ -80,9 +115,10 @@ export class AcademicService {
   async setClassSubject(schoolId: string, cs: ClassSubjectInput) {
     const ex = await this.db.findOne<{ id: string }>('class_subjects', { school_id: schoolId, academic_year_id: cs.academicYearId, class_id: cs.classId, subject_id: cs.subjectId });
     const row = { is_compulsory: cs.isCompulsory ?? true, full_marks: cs.fullMarks ?? 100, pass_marks: cs.passMarks ?? 33, weekly_periods: cs.weeklyPeriods ?? 5, sort_order: cs.sortOrder ?? 0 };
-    if (ex) { await this.db.update('class_subjects', { ...row, updated_at: nowSql() }, { id: ex.id }); return ex.id; }
+    // credit is only touched when the caller says so: a school that never thinks about credits keeps the 1 it was given
+    if (ex) { await this.db.update('class_subjects', { ...row, ...(cs.credit != null ? { credit: cs.credit } : {}), updated_at: nowSql() }, { id: ex.id }); return ex.id; }
     const id = ulid();
-    await this.db.insert('class_subjects', { id, school_id: schoolId, academic_year_id: cs.academicYearId, class_id: cs.classId, subject_id: cs.subjectId, ...row, credit: 1, assessment_mode: 'marks' });
+    await this.db.insert('class_subjects', { id, school_id: schoolId, academic_year_id: cs.academicYearId, class_id: cs.classId, subject_id: cs.subjectId, ...row, credit: cs.credit ?? 1, assessment_mode: 'marks' });
     return id;
   }
   async classSubjects(schoolId: string, yearId: string, classId?: string) {

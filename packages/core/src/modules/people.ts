@@ -222,4 +222,16 @@ export class PeopleService {
     const ex = await this.db.findOne<{ id: string }>('departments', { school_id: schoolId, name }); if (ex) return ex.id;
     const id = ulid(); await this.db.insert('departments', { id, school_id: schoolId, name, head_staff_id: null, kind }); return id;
   }
+  async departments(schoolId: string) { return this.db.findMany<Row>('departments', { school_id: schoolId }, { orderBy: 'name ASC' }); }
+  /** The head of department, who is the person a departmental view is scoped to. Only a member of the department can head it. */
+  async setDepartmentHead(schoolId: string, departmentId: string, staffId: string | null) {
+    if (!(await this.db.findOne('departments', { id: departmentId, school_id: schoolId }))) throw notFound('department');
+    if (staffId) {
+      const st = await this.db.findOne<Row>('staff', { id: staffId, school_id: schoolId });
+      if (!st) throw notFound('staff');
+      if (String(st.department_id ?? '') !== departmentId) throw badRequest('the head of a department has to belong to it');
+    }
+    await this.db.update('departments', { head_staff_id: staffId, updated_at: nowSql() }, { id: departmentId });
+    return { departmentId, headStaffId: staffId };
+  }
 }
