@@ -232,7 +232,7 @@ export class GovernanceService {
           const status = await this.policyStatus(schoolId, String(p.id));
           if (!status.pending.length) continue;
           for (const u of status.pending) {
-            await this.notifications.notifyOnce(24 * 14, { schoolId, userId: u.id, channels: ['in_app', 'push'], eventKey: 'governance.policy_unacknowledged', title: `Please read "${p.title}" (v${p.version})`, body: 'It was published a fortnight ago and you have not confirmed you have read it.', entityType: 'governance.policy', entityId: `${p.id}:${u.id}` });
+            await this.notifications.notifyOnce(24 * 14, { schoolId, userId: u.id, channels: ['in_app', 'push'], eventKey: 'governance.policy_unacknowledged', title: `Please read "${p.title}" (v${p.version})`, body: 'It was published a fortnight ago and you have not confirmed you have read it.', entityType: 'governance.policy', entityId: String(p.id) });
           }
           await this.tasks.ensure({ schoolId, title: `${status.pending.length} of ${status.expected} have not acknowledged "${String(p.title).slice(0, 60)}"`, description: status.pending.map(u => u.name).join(', ').slice(0, 2000), taskType: 'governance.policy', assignedRole: 'admin', entityType: 'governance.policy', entityId: String(p.id) });
           await this.outbox.emitNow({ type: 'policy.unacknowledged', schoolId, aggregateType: 'governance.policy', aggregateId: String(p.id), payload: { policyId: String(p.id), title: String(p.title), version: Number(p.version), pending: status.pending.length } });

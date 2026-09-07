@@ -24,6 +24,10 @@ export function fromSql(v: unknown): Date | null {
 export function json<T = unknown>(v: unknown, fallback: T | null = null): T | null {
   if (v == null) return fallback;
   if (typeof v === 'object') return v as T;
+  // MySQL and Postgres hand a JSON column back already parsed, so a stored `100` or `true` arrives as
+  // a number or a boolean. SQLite stores the same column as text and it arrives as "100". Dropping the
+  // parsed ones silently turned every numeric setting into its default on two engines out of three.
+  if (typeof v === 'number' || typeof v === 'boolean') return v as unknown as T;
   if (typeof v !== 'string') return fallback;
   // mysql2 already parses JSON columns, so a scalar JSON value arrives as a bare string; keep it as-is
   try { return JSON.parse(v) as T; } catch { return v as unknown as T; }

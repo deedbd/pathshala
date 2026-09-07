@@ -212,7 +212,7 @@ export class TransportService {
             const gone = on < today;
             if (gone) expired++;
             // one task per vehicle *per paper*, so the entity is the paper and not the bus
-            const made = await this.tasks.ensure({ schoolId, title: gone ? `${v.registration_no}: the ${label} expired on ${on}` : `Renew the ${label} of ${v.registration_no} by ${on}`, description: gone ? 'A vehicle without valid papers should not be carrying children. Renew it or take the vehicle off the road.' : null, taskType: 'transport.compliance', assignedRole: 'admin', entityType: 'transport.vehicle_paper', entityId: `${v.id}:${col}`, dueAt: on, priority: gone ? 'urgent' : 'high' });
+            const made = await this.tasks.ensure({ schoolId, title: gone ? `${v.registration_no}: the ${label} expired on ${on}` : `Renew the ${label} of ${v.registration_no} by ${on}`, description: gone ? 'A vehicle without valid papers should not be carrying children. Renew it or take the vehicle off the road.' : null, taskType: 'transport.compliance', assignedRole: 'admin', entityType: `transport.paper.${col}`, entityId: String(v.id), dueAt: on, priority: gone ? 'urgent' : 'high' });
             if (made) raised++;
           }
         }
