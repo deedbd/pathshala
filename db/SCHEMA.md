@@ -6099,7 +6099,7 @@ Predicted risks per student with explanation, refreshed weekly.
 | id | ulid | required · ULID primary key |
 | school_id | ulid | required · → schools · Tenant |
 | student_id | ulid | required · → students |
-| risk_type | enum(dropout|fee_default|result_decline|attendance) | required |
+| risk_type | enum(dropout|fee_default|result_decline|attendance|wellbeing) | required |
 | score | pct | required |
 | factors | json |  |
 | computed_at | dt | required · default now |

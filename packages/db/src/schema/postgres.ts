@@ -5717,7 +5717,7 @@ export const riskScores = pgTable('risk_scores', {
   id: char('id', { length: 26 }).primaryKey(),
   schoolId: char('school_id', { length: 26 }).notNull(),
   studentId: char('student_id', { length: 26 }).notNull(),
-  riskType: varchar('risk_type', { length: 40, enum: ['dropout', 'fee_default', 'result_decline', 'attendance'] }).notNull(),
+  riskType: varchar('risk_type', { length: 40, enum: ['dropout', 'fee_default', 'result_decline', 'attendance', 'wellbeing'] }).notNull(),
   score: numeric('score', { precision: 5, scale: 2 }).notNull(),
   factors: jsonb('factors'),
   computedAt: timestamp('computed_at', { mode: 'string', precision: 3 }).notNull(),

@@ -228,6 +228,8 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `compliance.review` | `0 4 1 * *` | O2 |
 | `analytics.daily` | `30 0 * * *` | P1 |
 | `analytics.risk_scores` | `0 5 * * 1` | P2 |
+| `forecast.monthly` | `0 3 2 * *` | P24, P25 |
+| `forecast.wellbeing` | `0 6 * * 1` | P26 |
 | `saas.billing` | `0 2 * * *` | Q1 |
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |
 | `comms.provider_balance` | `0 * * * *` | M3 |
@@ -269,3 +271,6 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | P21 | Welfare+ | 🔒 safeguarding case opened | Restricted access, case owner notified, review reminder every 14 days |
 | P22 | Assessment+ | 🔒 competency term closed | Competency report cards (NCTB format) rendered; guardians notified |
 | P23 | Assessment+ | 🔒 board result imported | Student records updated; school summary; website result lookup enabled |
+| P24 | Forecast | ⏰ monthly, after the billing run | Cash-flow projection for the next 3–6 months from this school's own collection rate; a projected shortfall raises a message with its assumptions, never an invoice |
+| P25 | Forecast | ⏰ monthly | Staffing forecast from the published timetable and the leavers on record; subjects with periods nobody is timetabled to teach are listed with the count |
+| P26 | Forecast | ⏰ weekly | Wellbeing early-warning scores refreshed into `risk_scores`; welfare involvement adds weight but never scores alone, and the alert never says what is in the record |

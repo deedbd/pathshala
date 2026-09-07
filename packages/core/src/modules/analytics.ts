@@ -7,7 +7,13 @@ import { round } from './accounting.js';
 import { badRequest, notFound } from '../context.js';
 
 export type MetricKey = 'attendance_pct' | 'fees_collected' | 'fees_outstanding' | 'students_active' | 'new_admissions' | 'new_enquiries' | 'sms_sent' | 'staff_attendance_pct' | 'pass_pct';
-export type RiskType = 'dropout' | 'fee_default' | 'result_decline' | 'attendance';
+export type RiskType = 'dropout' | 'fee_default' | 'result_decline' | 'attendance' | 'wellbeing';
+export interface SaveRiskInput {
+  studentId: string; riskType: RiskType; score: number; factors: Record<string, unknown>;
+  notifyAbove?: number;
+  /** Who is told, and in what words, when a score crosses the line for the first time. */
+  announce?: { role: string; eventKey: string; title: string; body: string; channels?: ('in_app' | 'push' | 'email' | 'sms')[] } | null;
+}
 
 /**
  * Analytics: the numbers a head teacher would otherwise ask three people for, worked out from the
@@ -195,7 +201,9 @@ export class AnalyticsService {
       const daysOverdue = dues[0]?.oldest ? Math.max(0, Math.round((Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${String(dues[0].oldest).slice(0, 10)}T00:00:00Z`)) / 86_400_000)) : 0;
       const drop = results.length === 2 ? round(Number(results[1].percentage) - Number(results[0].percentage)) : 0;
 
-      const factors: Record<RiskType, { score: number; why: string[] }> = {
+      // the four risks this pass scores; `wellbeing` is a RiskType too but is computed elsewhere
+      // (ForecastService), from signals — behaviour, counselling — this pass deliberately never reads
+      const factors: Record<Exclude<RiskType, 'wellbeing'>, { score: number; why: string[] }> = {
         attendance: { score: 0, why: [] }, fee_default: { score: 0, why: [] }, result_decline: { score: 0, why: [] }, dropout: { score: 0, why: [] },
       };
       if (attendancePct != null && attendancePct < 85) {
@@ -218,21 +226,41 @@ export class AnalyticsService {
       }
 
       for (const [riskType, f] of Object.entries(factors) as [RiskType, { score: number; why: string[] }][]) {
-        const ex = await this.db.findOne<Row>('risk_scores', { school_id: schoolId, student_id: studentId, risk_type: riskType });
-        if (f.score <= 0) { if (ex) await this.db.delete('risk_scores', { id: String(ex.id) }); continue; }
-        const row = { school_id: schoolId, student_id: studentId, risk_type: riskType, score: f.score, factors: { why: f.why, asOf } as never, computed_at: nowSql() };
-        const wasBelow = !ex || Number(ex.score) < notifyAbove;
-        if (ex) await this.db.update('risk_scores', { ...row, updated_at: nowSql() }, { id: String(ex.id) });
-        else await this.db.insert('risk_scores', { id: ulid(), ...row, acknowledged_by: null });
-        scored++;
-        if (f.score >= notifyAbove && wasBelow) {
-          flagged++;
-          await this.notifications.notifyRole(schoolId, 'teacher', { channels: ['in_app'], eventKey: 'analytics.risk', title: `${s.first_name} ${s.last_name ?? ''} needs a word`, body: `${riskType.replace('_', ' ')}: ${f.why.join('; ')}.`, entityType: 'people.student', entityId: studentId });
-          await this.outbox.emitNow({ type: 'risk.flagged', schoolId, aggregateType: 'analytics.risk', aggregateId: studentId, payload: { studentId, riskType, score: f.score, why: f.why.join('; ') } });
-        }
+        const r = await this.saveRisk(schoolId, {
+          studentId, riskType, score: f.score, factors: { why: f.why, asOf }, notifyAbove,
+          announce: { role: 'teacher', eventKey: 'analytics.risk', title: `${s.first_name} ${s.last_name ?? ''} needs a word`, body: `${riskType.replace('_', ' ')}: ${f.why.join('; ')}.` },
+        });
+        if (r.saved) scored++;
+        if (r.flagged) flagged++;
       }
     }
     return { asOf, students: students.length, scored, flagged };
+  }
+  /**
+   * The one place a risk score is written, so the "tell somebody once" rule cannot be
+   * re-implemented slightly differently by the next producer and turn a warning into wallpaper.
+   * `ForecastService` writes the year-4 wellbeing score through here rather than touching
+   * `risk_scores` itself: the table belongs to this module and only this module writes it.
+   *
+   * The announcement is the caller's to word, because who may be told what differs by risk. A
+   * fee-default score can name the reason to the class teacher; a wellbeing score cannot — its
+   * reasons stay in the watchlist a welfare lead opens deliberately.
+   */
+  async saveRisk(schoolId: string, r: SaveRiskInput) {
+    const notifyAbove = r.notifyAbove ?? 70;
+    const score = round(r.score);
+    const ex = await this.db.findOne<Row>('risk_scores', { school_id: schoolId, student_id: r.studentId, risk_type: r.riskType });
+    // a risk that has gone leaves no row behind: a stale score is read as a current one, and a
+    // child who has been back in class for a month should not still be on somebody's list
+    if (score <= 0) { if (ex) await this.db.delete('risk_scores', { id: String(ex.id) }); return { saved: false, flagged: false, cleared: !!ex }; }
+    const row = { school_id: schoolId, student_id: r.studentId, risk_type: r.riskType, score, factors: r.factors as never, computed_at: nowSql() };
+    const wasBelow = !ex || Number(ex.score) < notifyAbove;
+    if (ex) await this.db.update('risk_scores', { ...row, updated_at: nowSql() }, { id: String(ex.id) });
+    else await this.db.insert('risk_scores', { id: ulid(), ...row, acknowledged_by: null });
+    if (!(score >= notifyAbove && wasBelow)) return { saved: true, flagged: false, cleared: false };
+    if (r.announce) await this.notifications.notifyRole(schoolId, r.announce.role, { channels: r.announce.channels ?? ['in_app'], eventKey: r.announce.eventKey, title: r.announce.title, body: r.announce.body, entityType: 'people.student', entityId: r.studentId });
+    await this.outbox.emitNow({ type: 'risk.flagged', schoolId, aggregateType: 'analytics.risk', aggregateId: r.studentId, payload: { studentId: r.studentId, riskType: r.riskType, score, why: (Array.isArray(r.factors.why) ? r.factors.why as string[] : []).join('; ') } });
+    return { saved: true, flagged: true, cleared: false };
   }
   async risks(schoolId: string, f: { riskType?: string; minScore?: number; studentId?: string } = {}) {
     const where: string[] = ['r.school_id = ?']; const params: unknown[] = [schoolId];

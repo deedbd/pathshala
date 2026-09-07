@@ -80,6 +80,19 @@ the school's own rows; drafting needs a provider and is always stored as a draft
 API: `apps/server/src/routes/phase13.ts`, plus the scoped public API at `/api/v1`. Exit criterion:
 `tests/year3a.test.mjs`.
 
+## Years 4–5 (in progress)
+`forecast` (`packages/core/src/modules/forecast.ts`) is the first of the prediction work: a
+month-by-month cash-flow projection built on **this school's own** collection rate (counted only on
+invoices that have already fallen due), a staffing forecast that reports uncovered periods per
+subject from the published timetable and the leavers on record, and the year-4 wellbeing
+early-warning score. Every projection returns `assumptions`, `blindSpots` and a `disclaimer` beside
+the figures, and nothing in the module acts — the monthly job messages the office and emits an
+event, never an invoice or a vacancy. The wellbeing score is written to `risk_scores` through
+`AnalyticsService.saveRisk` (analytics owns that table), and welfare involvement never scores on its
+own: it only adds a flat weight to something measurable that is already wrong, and counselling and a
+safeguarding case weigh the same, so the score cannot be read backwards to tell them apart. API:
+`apps/server/src/routes/phase17.ts`. Exit criterion: `tests/forecast.test.mjs`.
+
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
 
@@ -88,7 +101,7 @@ All nine phases of `docs/PLAN.md` are implemented and each has a test suite that
 3. Google Drive and S3 backup targets (Dropbox works today).
 4. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
 
-`pnpm smoke` runs every phase suite plus `tests/gaps1` and `tests/gaps2` (the Year-1 gaps: staff and attendance imports, marks sheets, receipts, instalments, cheques, MPO, gratuity), on SQLite by default; `TEST_DB_URL` selects MySQL or Postgres. `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
+`pnpm smoke` runs every phase suite plus `tests/gaps1` and `tests/gaps2` (the Year-1 gaps: staff and attendance imports, marks sheets, receipts, instalments, cheques, MPO, gratuity) and `tests/forecast` (the year-4/5 projections), on SQLite by default; `TEST_DB_URL` selects MySQL or Postgres. `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

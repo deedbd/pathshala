@@ -135,6 +135,16 @@
     "rows": "P2"
   },
   {
+    "job_key": "forecast.monthly",
+    "cron_expr": "0 3 2 * *",
+    "rows": "P24, P25"
+  },
+  {
+    "job_key": "forecast.wellbeing",
+    "cron_expr": "0 6 * * 1",
+    "rows": "P26"
+  },
+  {
     "job_key": "saas.billing",
     "cron_expr": "0 2 * * *",
     "rows": "Q1"

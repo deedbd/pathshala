@@ -21,6 +21,24 @@ const REMINDER_LADDER: { stage: string; offsetDays: number }[] = [
 ];
 
 /**
+ * Does a structure item fall due in this calendar month (1–12)?
+ *
+ * Exported because the forecast bills the same structures forward months before the invoice run
+ * touches them. Two copies of this rule would drift apart on the first school that puts its exam
+ * fee in an odd month, and a projection that disagrees with the invoices the school actually
+ * raises is worse than no projection at all.
+ */
+export function fallsDueInMonth(frequency: Frequency, applicableMonths: number[] | null | undefined, month: number): boolean {
+  const listed = applicableMonths?.length ? applicableMonths : null;
+  if (frequency === 'monthly') return !listed || listed.includes(month);
+  if (frequency === 'quarterly') return [1, 4, 7, 10].includes(month);
+  if (frequency === 'half_yearly') return listed ? listed.includes(month) : [1, 7].includes(month);
+  if (frequency === 'yearly' || frequency === 'one_time') return listed ? listed.includes(month) : month === 1;
+  if (frequency === 'per_term') return [1, 5, 9].includes(month);
+  return false;
+}
+
+/**
  * Fees: heads and structures per class, per-student overrides and discounts, the monthly invoice
  * batch (chunked, pro-rata for mid-month admissions), payments with allocation oldest-first, the
  * student ledger, the reminder ladder, late fines, refunds, counter cash sessions, and gateway IPN
@@ -108,14 +126,7 @@ export class FeesService {
     const out: { item: Row; amount: number; description: string }[] = [];
     for (const it of items) {
       const freq = String(it.frequency) as Frequency;
-      const months = json<number[]>(it.applicable_months);
-      let due = false;
-      if (freq === 'monthly') due = !months?.length || months.includes(month);
-      else if (freq === 'quarterly') due = [1, 4, 7, 10].includes(month);
-      else if (freq === 'half_yearly') due = months?.length ? months.includes(month) : [1, 7].includes(month);
-      else if (freq === 'yearly' || freq === 'one_time') due = months?.length ? months.includes(month) : month === 1;
-      else if (freq === 'per_term') due = [1, 5, 9].includes(month);
-      if (!due) continue;
+      if (!fallsDueInMonth(freq, json<number[]>(it.applicable_months), month)) continue;
       let amount = Number(it.amount);
       // pro-rata: a student admitted mid-month pays for the days they were enrolled
       if (freq === 'monthly' && admissionDate.slice(0, 7) === billingPeriod.slice(0, 7)) {

@@ -592,7 +592,7 @@ export default [
   `, unique:[['metric_id','period','dimension']] },
   risk_scores:{ desc:'Predicted risks per student with explanation, refreshed weekly.', cols:`
     student_id  ulid ! >students
-    risk_type   enum(dropout|fee_default|result_decline|attendance) !
+    risk_type   enum(dropout|fee_default|result_decline|attendance|wellbeing) !
     score       pct !
     factors     json
     computed_at dt ! =now
