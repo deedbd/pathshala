@@ -33,6 +33,14 @@ export default [
     route('group', 'routes/group.tsx'),
     route('platform', 'routes/platform.tsx'),
   ]),
+  // Pathshala's own console: its own layout, outside the school console, gated by the owner service
+  route('owner', 'routes/owner.tsx', [
+    index('routes/owner.overview.tsx'),
+    route('schools', 'routes/owner.schools.tsx'),
+    route('billing', 'routes/owner.billing.tsx'),
+    route('health', 'routes/owner.health.tsx'),
+    route('support', 'routes/owner.support.tsx'),
+  ]),
   route('teach', 'routes/teach.tsx'),
   ...prefix('site', [
     index('routes/site.tsx', { id: 'site-home' }),
