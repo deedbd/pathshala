@@ -1,7 +1,9 @@
 import type { Db, Row } from '@pathshala/db';
 import { json, nowSql, ulid } from '@pathshala/db';
+import type { ScheduledFn } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
+import type { TaskService } from '../tasks.js';
 import type { AccountingService } from './accounting.js';
 import { round } from './accounting.js';
 import type { FeesService } from './fees.js';
@@ -26,8 +28,8 @@ export type FundKind = 'internal' | 'government_stipend' | 'donor' | 'zakat' | '
 export class GivingService {
   constructor(
     private db: Db, private outbox: OutboxService, private notifications: NotificationService,
-    private accounting: AccountingService, private fees: FeesService, private academic: AcademicService,
-    private documents: DocumentService,
+    private tasks: TaskService, private accounting: AccountingService, private fees: FeesService,
+    private academic: AcademicService, private documents: DocumentService,
   ) {}
 
   // ---------- funds ----------
@@ -232,6 +234,89 @@ export class GivingService {
     if (f.donorId) { where.push('d.donor_id = ?'); params.push(f.donorId); }
     if (f.kind) { where.push('d.kind = ?'); params.push(f.kind); }
     return this.db.query<Row>(`SELECT d.*, o.name AS donor_name, c.title AS campaign_title FROM donations d JOIN donors o ON o.id = d.donor_id LEFT JOIN fundraising_campaigns c ON c.id = d.campaign_id WHERE ${where.join(' AND ')} ORDER BY d.created_at DESC LIMIT 300`, params);
+  }
+
+  // ---------- scheduled jobs ----------
+  jobs(): Record<string, ScheduledFn> {
+    return {
+      // P7: appeals that have run their course, receipts nobody issued, pledges and awards gone quiet
+      'giving.daily': async ({ schoolId, payload, deadline }) => this.dailyWatch(schoolId, { today: (payload.onDate as string) || undefined, deadline, pledgeDays: payload.pledgeDays as number | undefined }),
+    };
+  }
+
+  private async openTaskFor(schoolId: string, entityType: string, entityId: string) {
+    return this.db.findOne<Row>('tasks', { school_id: schoolId, entity_type: entityType, entity_id: entityId, status: 'open' });
+  }
+  private async messagedSince(schoolId: string, eventKey: string, entityId: string, since: string) {
+    const r = await this.db.query<{ id: string }>(`SELECT id FROM notifications WHERE school_id = ? AND event_key = ? AND entity_id = ? AND created_at >= ? LIMIT 1`, [schoolId, eventKey, entityId, since]);
+    return !!r[0];
+  }
+
+  /**
+   * The daily pass over giving. What the school already decided is carried out; what takes a decision
+   * is prepared and named:
+   *
+   * - an appeal past the closing date the school itself set → closed (and said so once)
+   * - an appeal that has reached its goal → the office is told, once
+   * - money received with no receipt → the receipt is issued (a donor who cannot prove they gave
+   *   stops giving, and `issueReceipt` hands back the same document if it already exists)
+   * - a pledge that has sat unpaid → **a person decides**: chasing a donor is not something a
+   *   machine should do in the school's name, so the task carries the name, the amount and the age
+   * - an award still active after its academic year ended → **a person decides**: ending it takes a
+   *   discount off a child's fees and returns money to the fund, which is nobody's automatic decision
+   */
+  async dailyWatch(schoolId: string, opts: { today?: string; deadline?: number; pledgeDays?: number } = {}) {
+    const today = opts.today ?? nowSql().slice(0, 10);
+    const deadline = opts.deadline ?? Date.now() + 20_000;
+    const out = { campaignsClosed: 0, goalsReached: 0, receipts: 0, pledgeTasks: 0, awardsToReview: 0 };
+
+    const ending = await this.db.query<Row>(`SELECT id, title, raised_amount, goal_amount FROM fundraising_campaigns WHERE school_id = ? AND status = 'live' AND ends_at IS NOT NULL AND ends_at < ? LIMIT 50`, [schoolId, today]);
+    for (const c of ending) {
+      await this.setCampaignStatus(schoolId, String(c.id), 'closed');
+      await this.outbox.emitNow({ type: 'campaign.closed', schoolId, aggregateType: 'giving.campaign', aggregateId: String(c.id), payload: { campaignId: String(c.id), title: String(c.title), raised: round(Number(c.raised_amount)), goal: round(Number(c.goal_amount)) } });
+      await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'giving.campaign_closed', title: `${c.title} has closed`, body: `Tk ${round(Number(c.raised_amount))} raised of the Tk ${round(Number(c.goal_amount))} asked for.`, entityType: 'giving.campaign', entityId: String(c.id) });
+      out.campaignsClosed++;
+    }
+
+    const reached = await this.db.query<Row>(`SELECT id, title, raised_amount, goal_amount FROM fundraising_campaigns WHERE school_id = ? AND status = 'live' AND goal_amount > 0 AND raised_amount >= goal_amount LIMIT 50`, [schoolId]);
+    for (const c of reached) {
+      if (await this.messagedSince(schoolId, 'giving.goal_reached', String(c.id), '1970-01-01 00:00:00')) continue;
+      await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'giving.goal_reached', title: `${c.title} has reached its goal`, body: `Tk ${round(Number(c.raised_amount))} raised. Close the appeal, or leave it open and say what the extra will do.`, entityType: 'giving.campaign', entityId: String(c.id) });
+      out.goalsReached++;
+    }
+
+    const unreceipted = await this.db.query<Row>(`SELECT id FROM donations WHERE school_id = ? AND kind = 'received' AND receipt_doc_id IS NULL ORDER BY received_at LIMIT 100`, [schoolId]);
+    for (const d of unreceipted) {
+      if (Date.now() > deadline) break;
+      try { const r = await this.issueReceipt(schoolId, String(d.id)); if (!(r as { alreadyIssued?: boolean }).alreadyIssued) out.receipts++; } catch { /* next pass */ }
+    }
+
+    const pledgeCutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (opts.pledgeDays ?? 30) * 86400_000).toISOString().slice(0, 10);
+    const pledges = await this.db.query<Row>(`SELECT d.id, d.amount, d.created_at, o.name AS donor_name FROM donations d JOIN donors o ON o.id = d.donor_id
+      WHERE d.school_id = ? AND d.kind = 'pledge' AND d.created_at <= ? ORDER BY d.created_at LIMIT 100`, [schoolId, `${pledgeCutoff} 23:59:59`]);
+    for (const p of pledges) {
+      if (await this.openTaskFor(schoolId, 'giving.donation', String(p.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `${p.donor_name} pledged Tk ${round(Number(p.amount))} and has not paid yet`, taskType: 'giving.pledge', assignedRole: 'admin', priority: 'normal',
+        description: `The pledge was made on ${String(p.created_at).slice(0, 10)} and nothing has come in against it. Record it as received when it does — a pledge posts nothing to the books until the money is real.`,
+        entityType: 'giving.donation', entityId: String(p.id),
+      });
+      out.pledgeTasks++;
+    }
+
+    const over = await this.db.query<Row>(`SELECT a.id, a.amount, a.frequency, s.first_name, s.last_name, f.name AS fund_name, y.name AS year_name, y.end_date
+      FROM scholarship_awards a JOIN students s ON s.id = a.student_id JOIN scholarship_funds f ON f.id = a.fund_id JOIN academic_years y ON y.id = a.academic_year_id
+      WHERE a.school_id = ? AND a.status = 'active' AND y.end_date < ? LIMIT 100`, [schoolId, today]);
+    for (const a of over) {
+      if (await this.openTaskFor(schoolId, 'giving.award', String(a.id))) continue;
+      await this.tasks.create({
+        schoolId, title: `${a.first_name} ${a.last_name ?? ''}`.trim() + `: the ${a.fund_name} award ran to the end of ${a.year_name}`, taskType: 'giving.award', assignedRole: 'admin', priority: 'normal',
+        description: `Tk ${round(Number(a.amount))} ${a.frequency === 'monthly' ? 'a month' : 'a year'}. Renew it for the new year or end it — ending it takes the discount off the child's fees and puts the unused part back in the fund, so neither happens on its own.`,
+        entityType: 'giving.award', entityId: String(a.id),
+      });
+      out.awardsToReview++;
+    }
+    return out;
   }
 
   private async tellTheFamily(schoolId: string, studentId: string, fundName: string, amount: number, frequency: string) {
