@@ -55,9 +55,18 @@ xlsx) — no compiler, no npm on the server. Migrations run automatically when t
       28 scheduled jobs, document templates, roles & permissions
    8. Create the first school + admin from the one form the owner fills (school name, phone, OTP)
    9. Self-test: write file, send test SMS/email (if keys given later), run scheduler tick, queue a PDF
-  10. Mark installer_state = done; delete install.php; show the dashboard
+  10. Write OWNER_DOOR into .env (a random path) and show it once — the Pathshala team's own
+      console lives behind it and nowhere else; a school's /login never signs an owner in
+  11. Mark installer_state = done; delete install.php; show the dashboard
 ```
 Every step writes to `installer_state`; re-opening `/install` resumes from the failed step.
+
+The door is written once and only lives in `.env` on the server afterwards. It is not the security
+boundary — the `super_admin` role on the founder school, the password and the second factor are —
+but with it unset the vendor console is closed rather than open, and `/owner` and `/api/owner` answer
+404 to anyone who has not come through the door, so a school's site carries no trace of it.
+`OWNER_IPS` narrows who may reach the door at all. `scripts/update.mjs` never overwrites `.env`, so
+an update keeps the door the owner already has.
 
 ---
 
