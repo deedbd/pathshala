@@ -102,6 +102,16 @@ event, never an invoice or a vacancy. The wellbeing score is written to `risk_sc
 own: it only adds a flat weight to something measurable that is already wrong, and counselling and a
 safeguarding case weigh the same, so the score cannot be read backwards to tell them apart. API:
 `apps/server/src/routes/phase17.ts`. Exit criterion: `tests/forecast.test.mjs`.
+## Year 5 (in progress)
+`ivr` (voice-first guardian interactions): an inbound IVR gateway drives `/api/ivr/:school/step` with
+its own shared secret (`IVR_SECRET` or an encrypted per-school setting, constant-time compared) and
+gets back what to say, which digits to accept and whether to hang up. The caller is identified by
+caller ID against `guardians.phone` — enough for what is already texted to that number and nothing
+more; an unknown number is told to contact the office and is never asked for a secret. The service
+holds no state between steps (the gateway hands back every key pressed), the answers come from the
+owning services and `AiService`'s own queries, and each call is one line in `call_logs` through
+`FrontOfficeService.recordCall`. API: `apps/server/src/routes/phase18.ts`. Exit criterion:
+`tests/ivr.test.mjs`.
 
 ## Next step
 All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:

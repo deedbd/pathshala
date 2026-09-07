@@ -348,6 +348,30 @@ exit criterion on all three engines.
 > raises an invoice, opens a vacancy or reassigns a period.
 > Not yet: qualification and training records feeding the cover inference, a hiring pipeline that
 > turns a gap into a job posting for a person to approve, and substitution load over the term.
+## Year 5 · Intelligence (after year 3)
+### Voice-first guardian IVR — shipped
+> **Status (7 Sep 2026): implemented.** `ivr`: the line a guardian who cannot read actually uses. A
+> generic Bangladeshi IVR gateway answers the school's number and posts one step at a time to
+> `/api/ivr/:school/step`; the service answers with the words to read out, the digits to accept next
+> and whether to hang up. The caller is identified by their caller ID against `guardians.phone`, and
+> that is treated as exactly what it is: enough to say what is already texted to that same number —
+> today's attendance, what is outstanding, the next exam, the last result — and never enough for
+> anything else. A number the school does not know is told politely to contact the office; it is
+> never asked for a password, a date of birth or an admission number, because a caller who could be
+> anybody must not be taught to hand those over on the phone. A guardian with more than one child
+> picks by position in their own list, so there is no id to tamper with and no way to reach a child
+> they are not a guardian of. Everything spoken is generated from the school's own rows through the
+> owning services — the assistant's own queries answer the dues and the exam date, so there is only
+> one set of numbers to keep true — in Bangla for a bn school and English for an en one, with the
+> figures in the school's own numerals. Pressing 9 raises a callback task, once, however often the
+> gateway retries. The service keeps no state between steps (every key pressed comes back with the
+> next request), so a Passenger process recycled mid-call does not drop the caller. The webhook
+> authenticates with its own shared secret — `IVR_SECRET` or an encrypted per-school setting,
+> compared in constant time — is rate-limited per calling number, and an install with no secret
+> configured is closed rather than open. Each call is one line in the front office's call register
+> with what was asked and what was answered. Exit criterion: `tests/ivr.test.mjs`.
+> Not yet: a console page for the register and the menu (both live at `/api/ivr/*`), speech instead
+> of keypresses, and the outbound half — a call the school places when the guardian does not ring.
 
 ---
 

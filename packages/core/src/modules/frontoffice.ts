@@ -8,6 +8,15 @@ import type { NumberingService } from './numbering.js';
 import type { TaskService } from '../tasks.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
+/** Appends a line to a running note, unless it repeats the line already at the end (a retried step). */
+function appendLine(existing: string | null, line: string | null) {
+  if (!line) return existing;
+  const lines = (existing ?? '').split('\n').filter(Boolean);
+  if (lines.at(-1) === line) return existing;
+  lines.push(line);
+  return lines.join('\n').slice(-4000);
+}
+
 /** How long a ticket may sit before it breaches, by priority. */
 const SLA_HOURS: Record<string, number> = { urgent: 4, high: 24, normal: 48, low: 96 };
 /** Which role a complaint lands on, by what it is about. */
@@ -87,7 +96,46 @@ export class FrontOfficeService {
     if (c.followUpAt) await this.tasks.create({ schoolId, title: `Call back ${c.callerName ?? c.phone}`, taskType: 'frontoffice.callback', assignedRole: 'admin', entityType: 'frontoffice.call', entityId: id, dueAt: c.followUpAt });
     return id;
   }
-  async calls(schoolId: string, limit = 200) { return this.db.findMany<Row>('call_logs', { school_id: schoolId }, { orderBy: 'called_at DESC', limit }); }
+  /**
+   * Upserts one line of the call register and keeps it up to date while the call is still going on.
+   * The voice line uses it: a caller works through the menu over several HTTP requests, and the
+   * office should see one line saying what was asked and what was answered, not one line per key
+   * pressed. `id` therefore comes from the caller's own call id, not from `ulid()`.
+   *
+   * Two things make a replayed step harmless: a note that repeats the last line is not written
+   * again, and a follow-up is only ever set once — so the callback task is raised once however many
+   * times a gateway retries.
+   */
+  async recordCall(schoolId: string, id: string, c: { direction: 'inbound' | 'outbound'; phone: string; callerName?: string | null; purpose?: string | null; note?: string | null; followUpAt?: string | null; relatedType?: string | null; relatedId?: string | null }) {
+    let existing = await this.db.findOne<Row>('call_logs', { id, school_id: schoolId });
+    if (!existing) {
+      try {
+        await this.db.insert('call_logs', { id, school_id: schoolId, direction: c.direction, caller_name: c.callerName ?? null, phone: c.phone, purpose: c.purpose ?? null, notes: appendLine(null, c.note ?? null), related_type: c.relatedType ?? null, related_id: c.relatedId ?? null, follow_up_at: c.followUpAt ?? null, logged_by: null, called_at: nowSql() });
+      } catch (e) {
+        // a step the gateway timed out on and sent again can race this one to the same row; if the
+        // row is there now, carry on and update it, and if it is not, the insert failed for a real reason
+        existing = await this.db.findOne<Row>('call_logs', { id, school_id: schoolId });
+        if (!existing) throw e;
+      }
+    }
+    const notes = appendLine((existing?.notes as string) ?? null, c.note ?? null);
+    if (existing) {
+      const set: Row = { updated_at: nowSql(), notes };
+      if (c.purpose) set.purpose = c.purpose;
+      if (c.callerName) set.caller_name = c.callerName;
+      if (c.relatedId) set.related_id = c.relatedId;
+      if (c.followUpAt && !existing.follow_up_at) set.follow_up_at = c.followUpAt;
+      await this.db.update('call_logs', set, { id });
+    }
+    const followUpRaised = !!c.followUpAt && !existing?.follow_up_at;
+    if (followUpRaised) await this.tasks.create({ schoolId, title: `Call back ${c.callerName || c.phone}`, taskType: 'frontoffice.callback', assignedRole: 'admin', entityType: 'frontoffice.call', entityId: id, dueAt: c.followUpAt });
+    return { id, created: !existing, followUpRaised };
+  }
+  async calls(schoolId: string, limit = 200, relatedType?: string) {
+    const where: Row = { school_id: schoolId };
+    if (relatedType) where.related_type = relatedType;
+    return this.db.findMany<Row>('call_logs', where, { orderBy: 'called_at DESC', limit });
+  }
   async logPost(schoolId: string, p: { direction: 'dispatch' | 'receive'; referenceNo?: string | null; fromParty?: string | null; toParty?: string | null; subject?: string | null; recordDate?: string; fileId?: string | null; loggedBy?: string | null }) {
     const id = ulid();
     await this.db.insert('postal_records', { id, school_id: schoolId, direction: p.direction, reference_no: p.referenceNo ?? null, from_party: p.fromParty ?? null, to_party: p.toParty ?? null, subject: p.subject ?? null, record_date: p.recordDate ?? nowSql().slice(0, 10), file_id: p.fileId ?? null, logged_by: p.loggedBy ?? null });

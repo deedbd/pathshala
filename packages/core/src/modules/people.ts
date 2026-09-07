@@ -13,6 +13,8 @@ export interface StudentInput {
   bloodGroup?: string | null; religion?: string | null; birthCertificateNo?: string | null; presentAddress?: unknown; permanentAddress?: unknown; previousSchool?: unknown;
   guardians?: GuardianInput[]; createAccounts?: boolean; meta?: Record<string, unknown> | null;
 }
+/** One child as a guardian is told about them: enough to name them, never an internal handle. */
+export interface GuardianChild extends Row { id: string; first_name: string; last_name: string | null; name_bn: string | null; admission_no: string; class_name: string | null }
 export interface StaffInput {
   firstName: string; lastName?: string | null; nameBn?: string | null; gender?: 'male' | 'female' | 'other' | null; dateOfBirth?: string | null; phone?: string | null; email?: string | null;
   employeeNo?: string | null; joinDate?: string; designationId?: string | null; departmentId?: string | null; staffCategory?: 'teaching' | 'non_teaching' | 'admin' | 'support'; employmentType?: 'permanent' | 'contract' | 'part_time' | 'intern' | 'volunteer' | 'mpo';
@@ -106,6 +108,27 @@ export class PeopleService {
     const uid = existing?.id ?? await this.auth.createUser({ schoolId, userType: 'guardian', displayName: String(g.full_name), phone: String(g.phone), email: (g.email as string) ?? null, roles: ['guardian'] });
     await this.db.update('guardians', { user_id: uid, updated_at: nowSql() }, { id: guardianId });
     return uid;
+  }
+
+  /**
+   * The children a phone number is guardian of — for a caller we know only by their caller ID (the
+   * voice line). A guardian row is keyed by phone, so one number is one guardian, but this joins on
+   * the number rather than the row so a school that typed the same father in twice does not hide
+   * half his children.
+   *
+   * The order must not change between two steps of the same call: the caller who pressed 2 last
+   * minute has to hear about the same child now, so it sorts by the id, which never moves.
+   */
+  async childrenOfPhone(schoolId: string, phone: string): Promise<{ phone: string; guardianId: string | null; guardianName: string; children: GuardianChild[] }> {
+    const normalised = normalizeBdPhone(phone) ?? phone.trim();
+    if (!normalised) return { phone: normalised, guardianId: null, guardianName: '', children: [] };
+    const guardian = await this.db.findOne<Row>('guardians', { school_id: schoolId, phone: normalised });
+    if (!guardian) return { phone: normalised, guardianId: null, guardianName: '', children: [] };
+    const children = await this.db.query<GuardianChild>(`SELECT DISTINCT s.id, s.first_name, s.last_name, s.name_bn, s.admission_no, c.name AS class_name
+      FROM guardians g JOIN student_guardians sg ON sg.guardian_id = g.id JOIN students s ON s.id = sg.student_id
+      LEFT JOIN classes c ON c.id = s.current_class_id
+      WHERE g.school_id = ? AND g.phone = ? AND s.status = 'active' ORDER BY s.id`, [schoolId, normalised]);
+    return { phone: normalised, guardianId: String(guardian.id), guardianName: String(guardian.full_name ?? ''), children };
   }
 
   async students(schoolId: string, f: { yearId?: string; classId?: string; sectionId?: string; q?: string; status?: string; limit?: number; offset?: number } = {}) {

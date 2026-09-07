@@ -91,10 +91,8 @@ export class AiService {
       return `Today ${absent} of ${total} marked are absent${late ? ` and ${late} came late` : ''}.`;
     }
     if (has('outstanding') || has('due') || (has('fee') && !has('collect'))) {
-      const where = scope?.length ? ` AND student_id IN (${scope.map(() => '?').join(',')})` : '';
-      const rows = await this.db.query<{ due: number; n: number }>(`SELECT COALESCE(SUM(balance), 0) AS due, COUNT(*) AS n FROM invoices WHERE school_id = ? AND balance > 0${where}`, scope?.length ? [schoolId, ...scope] : [schoolId]);
-      const due = round(Number(rows[0]?.due ?? 0));
-      return due > 0 ? `${due} is outstanding across ${Number(rows[0]!.n)} unpaid bills.` : 'Nothing is outstanding.';
+      const { due, bills } = await this.outstandingFor(schoolId, scope);
+      return due > 0 ? `${due} is outstanding across ${bills} unpaid bills.` : 'Nothing is outstanding.';
     }
     if (has('collect')) {
       const rows = await this.db.query<{ v: number }>(`SELECT COALESCE(SUM(amount), 0) AS v FROM payments WHERE school_id = ? AND status = 'success' AND paid_at BETWEEN ? AND ?`, [schoolId, `${today} 00:00:00`, `${today} 23:59:59`]);
@@ -106,8 +104,8 @@ export class AiService {
       return `${n} students are on the roll.`;
     }
     if (has('exam')) {
-      const rows = await this.db.query<Row>(`SELECT name, start_date FROM exams WHERE school_id = ? AND start_date >= ? ORDER BY start_date LIMIT 1`, [schoolId, today]);
-      return rows[0] ? `The next exam is ${rows[0].name}, starting ${String(rows[0].start_date).slice(0, 10)}.` : 'No exam is scheduled after today.';
+      const next = await this.nextExam(schoolId);
+      return next ? `The next exam is ${next.name}, starting ${next.startDate}.` : 'No exam is scheduled after today.';
     }
     if (has('marks') && (has('owe') || has('pending') || has('missing'))) {
       const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM exam_schedules WHERE school_id = ? AND marks_entry_locked = FALSE`, [schoolId]);
@@ -115,6 +113,21 @@ export class AiService {
     }
     return null;
   }
+  /**
+   * The facts behind two of the answers above, as numbers rather than a sentence. The voice line
+   * says the same figures in Bangla down a telephone, and a second copy of these queries would be a
+   * second set of numbers to keep true.
+   */
+  async outstandingFor(schoolId: string, scope: string[] | null) {
+    const where = scope?.length ? ` AND student_id IN (${scope.map(() => '?').join(',')})` : '';
+    const rows = await this.db.query<{ due: number; n: number }>(`SELECT COALESCE(SUM(balance), 0) AS due, COUNT(*) AS n FROM invoices WHERE school_id = ? AND balance > 0${where}`, scope?.length ? [schoolId, ...scope] : [schoolId]);
+    return { due: round(Number(rows[0]?.due ?? 0)), bills: Number(rows[0]?.n ?? 0) };
+  }
+  async nextExam(schoolId: string) {
+    const rows = await this.db.query<Row>(`SELECT name, start_date FROM exams WHERE school_id = ? AND start_date >= ? ORDER BY start_date LIMIT 1`, [schoolId, nowSql().slice(0, 10)]);
+    return rows[0] ? { name: String(rows[0].name), startDate: String(rows[0].start_date).slice(0, 10) } : null;
+  }
+
   /** A compact, factual context for the model: the same numbers, so it cannot contradict the system. */
   private async context(schoolId: string, scope: string[] | null) {
     const today = nowSql().slice(0, 10);
