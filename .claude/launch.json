@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pathshala-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/demo.mjs", "--port", "3999"],
+      "port": 3999
+    }
+  ]
+}
