@@ -7,6 +7,10 @@ import { bind, crud, ident, splitStatements } from '../sql.js';
 export function openMysql(cfg: DbConfig): Db {
   const common = { dateStrings: true as const, decimalNumbers: true, supportBigNumbers: true, bigNumberStrings: false, charset: 'utf8mb4', timezone: 'Z', connectionLimit: cfg.poolSize ?? 4, waitForConnections: true, multipleStatements: false };
   const pool: Pool = cfg.url ? mysql.createPool({ uri: cfg.url, ...common }) : mysql.createPool({ host: cfg.host ?? '127.0.0.1', port: cfg.port ?? 3306, database: cfg.database, user: cfg.user, password: cfg.password, ...common });
+  // Every timestamp in this system is UTC, and a column default is written by the *server*, not by us:
+  // a MySQL running on Dhaka local time stamps rows six hours ahead of the dates the app then filters
+  // on, and a day book of an evening's sales comes back empty. One statement per connection settles it.
+  pool.on('connection', c => { c.query("SET time_zone = '+00:00'"); });
   return makeDb(pool, null);
 }
 

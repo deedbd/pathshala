@@ -14,6 +14,8 @@ export function openPostgres(cfg: DbConfig): Db {
   const pool = cfg.url
     ? new pg.Pool({ connectionString: cfg.url, max: cfg.poolSize ?? 8 })
     : new pg.Pool({ host: cfg.host ?? '127.0.0.1', port: cfg.port ?? 5432, database: cfg.database, user: cfg.user, password: cfg.password, max: cfg.poolSize ?? 8 });
+  // a column default is written by the server's clock; ours is UTC, so the server's has to be too
+  pool.on('connect', c => { void c.query("SET TIME ZONE 'UTC'"); });
   return makeDb(pool, null);
 }
 
