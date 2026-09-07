@@ -97,6 +97,7 @@ never recomputed, and money from schools with different `schools.currency` is re
 `currency_rates` row exists — the total then carries the rate and the day it came from. New tables:
 `school_groups`, `school_group_members`, `currency_rates`, `student_transfers`. API:
 `apps/server/src/routes/phase16.ts`. Exit criterion: `tests/groups.test.mjs`.
+
 ## Years 4–5 (in progress)
 `forecast` (`packages/core/src/modules/forecast.ts`) is the first of the prediction work: a
 month-by-month cash-flow projection built on **this school's own** collection rate (counted only on
@@ -109,6 +110,7 @@ event, never an invoice or a vacancy. The wellbeing score is written to `risk_sc
 own: it only adds a flat weight to something measurable that is already wrong, and counselling and a
 safeguarding case weigh the same, so the score cannot be read backwards to tell them apart. API:
 `apps/server/src/routes/phase17.ts`. Exit criterion: `tests/forecast.test.mjs`.
+
 ## Year 5 (in progress)
 `ivr` (voice-first guardian interactions): an inbound IVR gateway drives `/api/ivr/:school/step` with
 its own shared secret (`IVR_SECRET` or an encrypted per-school setting, constant-time compared) and
@@ -129,14 +131,16 @@ plainly when nothing covers one. Plans are derived, never stored. API:
 `apps/server/src/routes/phase15.ts`; exit criterion `tests/lms-advanced.test.mjs`.
 
 ## Next step
-All nine phases of `docs/PLAN.md` are implemented and each has a test suite that proves its exit criterion on SQLite, MySQL and Postgres. What is left is the work that needs a real school and a real host, not more code:
+All nine phases of `docs/PLAN.md` are implemented, and the years 2–5 modules above sit on top of them.
+Every one has a test suite proving its exit criterion on SQLite, MySQL and Postgres — `pnpm smoke` is
+246 tests. What is left is the work that needs a real school and a real host, not more code:
 
 1. Run the installer on an actual Namecheap Stellar account and time it end to end (Phase 0's exit criterion has only been proven locally and in CI).
 2. Take one pilot school live: Cloudflare and Turnstile against a real site key, a real SMS gateway, a real bKash or SSLCommerz merchant account.
 3. Google Drive and S3 backup targets (Dropbox works today).
 4. The gaps each phase's status paragraph in `docs/PLAN.md` lists under "Not yet".
 
-`pnpm smoke` runs every phase suite plus `tests/gaps1` and `tests/gaps2` (the Year-1 gaps: staff and attendance imports, marks sheets, receipts, instalments, cheques, MPO, gratuity) and `tests/forecast` (the year-4/5 projections), on SQLite by default; `TEST_DB_URL` selects MySQL or Postgres. `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
+`pnpm smoke` runs every phase suite plus the year 1–5 suites (`gaps1`, `gaps2`, `year2a`…`year2c`, `year3a`, `college`, `lms-advanced`, `groups`, `forecast`, `ivr`) (the Year-1 gaps: staff and attendance imports, marks sheets, receipts, instalments, cheques, MPO, gratuity) and `tests/forecast` (the year-4/5 projections), on SQLite by default; `TEST_DB_URL` selects MySQL or Postgres. `PHASE4_BIG=1` runs the 1,500-student assessment exit criterion; `PHASE9_LOAD=1` runs the 5 schools × 1,500 students load run.
 
 ## Environment notes
 - Windows + Git Bash. For files longer than a few dozen lines use the Write tool; large Bash heredocs fail here.

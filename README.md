@@ -34,7 +34,7 @@ on SQLite, MySQL 8 and Postgres 16:
 | 8 | Behaviour, health and the clinic, counselling and safeguarding, LMS, surveys, events | points propose an action; confidential notes stay encrypted |
 | 9 | Hardening: the security review as a test, backup and restore, the engine move, the load run | 5 schools × 1,500 students in one database; a request answers in 0.36 s with 11,800 events still queued |
 
-**Years 2 and 3 of `docs/ROADMAP-5Y.md` are being built on top of those nine phases**, in the same
+**Years 2 to 5 of `docs/ROADMAP-5Y.md` are being built on top of those nine phases**, in the same
 way — a module, its automation rows, its API, a console page, and a test that proves the exit
 criterion on all three engines:
 
@@ -51,6 +51,11 @@ criterion on all three engines:
 | Assessment+ | Competency assessment beside marks, OMR a person checks when the machine is unsure, board registration and results | `tests/year2c.test.mjs` |
 | SaaS & marketplace | Plans and resellers where an unpaid bill stops new work and never locks a school out; plugins behind signed webhooks; a scoped public API at `/api/v1` | `tests/year3a.test.mjs` |
 | Assistant | Data questions answered by code from the school's own rows; drafting needs a provider and is always a draft somebody applies | `tests/year3a.test.mjs` |
+| College & coaching | Credit programmes with a per-term ceiling, a GPA weighted by credit, batches sold on instalments where the payment hands over the seat | `tests/college.test.mjs` |
+| Advanced LMS | Watch time a beat cannot fake, discussions, similarity reported as something to look at, revision plans built from competency gaps | `tests/lms-advanced.test.mjs` |
+| School groups | Consolidated numbers only the head school may read, transfers between two schools of one group, a guardian with children in two schools signing in once | `tests/groups.test.mjs` |
+| Forecasting | Cash flow on this school's own collection rate, uncovered periods per subject, a wellbeing warning that cannot be read backwards | `tests/forecast.test.mjs` |
+| Voice-first IVR | A guardian who cannot read rings the school and hears attendance, fees, the next exam — or asks for a call back | `tests/ivr.test.mjs` |
 
 What is left needs a real school and a real host rather than more code: a run on an actual Namecheap
 account, a pilot school live with a real SMS gateway and payment merchant, and the smaller gaps each

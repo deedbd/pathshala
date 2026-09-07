@@ -225,6 +225,71 @@ exit criterion on all three engines.
 
 ## Year 3 · Platform (after year 2)
 
+### College and coaching modes — shipped
+> **Status (7 Sep 2026): implemented.** `college`: the same tables a school uses, read the way an
+> institution that counts credits rather than years needs them. A programme carries how many terms it
+> runs for and how many credits it takes to finish, and dividing one by the other is the credit ceiling
+> a semester registration is checked against — the load the timetable, the rooms and the teachers were
+> sized for. Registration is `course_registrations`, one row per student per term per subject, and the
+> credit is copied onto it rather than looked up later, so repricing a subject next year cannot rewrite
+> last year's GPA. Everything is validated before anything is written: a half-registered student would
+> have the ceiling enforced against a total nobody agreed to. A student may only register for what
+> their own class is offered, only while the semester is open, and a course that already carries a
+> grade can never be dropped. Results are struck against the school's own grading scale, and the GPA is
+> weighted by credit rather than by how many subjects happen to be on the sheet — a four-credit paper
+> moves the average four times as far as a one-credit lab. A retake replaces the attempt it repeats:
+> counting a failure and the pass that cancelled it would punish the student twice for one course. The
+> programme certificate is earned by credits, never by reaching the last semester, and the shortfall is
+> named so the office can say exactly what is left; `issued_documents` has no column pointing back at a
+> programme, so the snapshot it already keeps is what makes a second certificate impossible. Department
+> portals scope people, subjects, programmes and the registered credit load to one department, and only
+> a member of a department can head it. For coaching centres a batch is sold rather than admitted into:
+> the price becomes an instalment plan against a fee head of the course's own, so six batches are six
+> lines of the ledger, and the seat is handed over by `payment.received` when the first taka actually
+> arrives — a centre that enrols on the promise spends the term teaching people who never paid. Selling
+> the same batch to the same student twice is refused, and the course certificate waits for the last
+> instalment, billed or not. A nightly job chases a light semester exactly one week in, which is late
+> enough that the stragglers have had their chance and early enough that the timetable has not been
+> built around the wrong numbers — and firing on one day is what stops it messaging the same family
+> twenty times without a column to remember that it did. New table: `course_registrations`.
+> `tests/college.test.mjs` is the exit criterion.
+> Not yet: a console page (the API is `/api/college/*`), electives a student picks from a basket rather
+> than the whole class-subject list, an overload a registrar can approve above the ceiling, and a
+> transcript PDF.
+
+### Advanced LMS and adaptive learning — shipped
+> **Status (7 Sep 2026): implemented.** Video progress that means something: the player sends a
+> heartbeat, a beat may add at most three minutes, the total can never exceed the lesson's own
+> running time, and dragging the needle to the end moves only where the student resumes from — so a
+> lesson counts as done at 85% because 85% of it actually went past, not because somebody scrubbed to
+> the credits for the certificate. A lesson with no running time says it cannot be measured instead
+> of inventing a percentage. Discussion threads on a course or a lesson, replies flattened one level
+> so a thread stays readable on a phone, the asker told when somebody answers, and the same rule the
+> rest of the app uses: a student — or the guardian reading for them — sees their own course's
+> threads and nobody else's; a reply takes its course from the post it answers, so a thread cannot be
+> dragged into another class. Similarity between text answers is word-shingle Jaccard, computed here
+> with no service and no model, working the same in Bangla as in English: answers under forty words
+> are not compared at all, because a percentage over "the mitochondrion is the powerhouse of the
+> cell" measures the language and not the student. It reports "these two are 78% alike, and here is
+> the wording they share" to the teacher who set the work, stores the number beside the submission,
+> and does nothing else — no mark moves, no status changes, and no guardian hears about it.
+> Adaptive learning turns the competency ratings into a revision plan: the indicators still to meet,
+> weakest first, each with the lessons, quizzes and materials published on that syllabus unit and
+> whether the child can open them and has already been through them. Where nothing covers an
+> indicator the plan says so by name — the teacher's list of what to write next — rather than sending
+> a child to the nearest chapter it could find. The same question asked of a class-subject gives the
+> teacher the indicator most of the room is stuck on. A weekly job pushes the top three home, once,
+> to the child and their guardians. Nothing is stored: a plan is derived from ratings that change and
+> lessons published this afternoon, so it is built when it is asked for.
+> API: `apps/server/src/routes/phase15.ts`, including `/portal/lessons/:id/watch`,
+> `/portal/discussions` and `/portal/revision/:studentId`. Exit criterion:
+> `tests/lms-advanced.test.mjs` (12 tests).
+> Not yet: a console page for threads and the watch report (both live at `/api/lms/*`), similarity
+> against last year's submissions rather than only within one assignment, and a plan that also reads
+> exam marks rather than competency ratings alone.
+
+---
+
 ### SaaS billing and partners — shipped
 
 > **Status (7 Sep 2026): implemented.** `saas`: plans with limits (students, SMS, storage, modules),
@@ -348,7 +413,6 @@ exit criterion on all three engines.
 > raises an invoice, opens a vacancy or reassigns a period.
 > Not yet: qualification and training records feeding the cover inference, a hiring pipeline that
 > turns a gap into a job posting for a person to approve, and substitution load over the term.
-## Year 5 · Intelligence (after year 3)
 ### Voice-first guardian IVR — shipped
 > **Status (7 Sep 2026): implemented.** `ivr`: the line a guardian who cannot read actually uses. A
 > generic Bangladeshi IVR gateway answers the school's number and posts one step at a time to
@@ -372,69 +436,7 @@ exit criterion on all three engines.
 > with what was asked and what was answered. Exit criterion: `tests/ivr.test.mjs`.
 > Not yet: a console page for the register and the menu (both live at `/api/ivr/*`), speech instead
 > of keypresses, and the outbound half — a call the school places when the guardian does not ring.
-### College and coaching modes — shipped
-> **Status (7 Sep 2026): implemented.** `college`: the same tables a school uses, read the way an
-> institution that counts credits rather than years needs them. A programme carries how many terms it
-> runs for and how many credits it takes to finish, and dividing one by the other is the credit ceiling
-> a semester registration is checked against — the load the timetable, the rooms and the teachers were
-> sized for. Registration is `course_registrations`, one row per student per term per subject, and the
-> credit is copied onto it rather than looked up later, so repricing a subject next year cannot rewrite
-> last year's GPA. Everything is validated before anything is written: a half-registered student would
-> have the ceiling enforced against a total nobody agreed to. A student may only register for what
-> their own class is offered, only while the semester is open, and a course that already carries a
-> grade can never be dropped. Results are struck against the school's own grading scale, and the GPA is
-> weighted by credit rather than by how many subjects happen to be on the sheet — a four-credit paper
-> moves the average four times as far as a one-credit lab. A retake replaces the attempt it repeats:
-> counting a failure and the pass that cancelled it would punish the student twice for one course. The
-> programme certificate is earned by credits, never by reaching the last semester, and the shortfall is
-> named so the office can say exactly what is left; `issued_documents` has no column pointing back at a
-> programme, so the snapshot it already keeps is what makes a second certificate impossible. Department
-> portals scope people, subjects, programmes and the registered credit load to one department, and only
-> a member of a department can head it. For coaching centres a batch is sold rather than admitted into:
-> the price becomes an instalment plan against a fee head of the course's own, so six batches are six
-> lines of the ledger, and the seat is handed over by `payment.received` when the first taka actually
-> arrives — a centre that enrols on the promise spends the term teaching people who never paid. Selling
-> the same batch to the same student twice is refused, and the course certificate waits for the last
-> instalment, billed or not. A nightly job chases a light semester exactly one week in, which is late
-> enough that the stragglers have had their chance and early enough that the timetable has not been
-> built around the wrong numbers — and firing on one day is what stops it messaging the same family
-> twenty times without a column to remember that it did. New table: `course_registrations`.
-> `tests/college.test.mjs` is the exit criterion.
-> Not yet: a console page (the API is `/api/college/*`), electives a student picks from a basket rather
-> than the whole class-subject list, an overload a registrar can approve above the ceiling, and a
-> transcript PDF.
-### Advanced LMS and adaptive learning — shipped
-> **Status (7 Sep 2026): implemented.** Video progress that means something: the player sends a
-> heartbeat, a beat may add at most three minutes, the total can never exceed the lesson's own
-> running time, and dragging the needle to the end moves only where the student resumes from — so a
-> lesson counts as done at 85% because 85% of it actually went past, not because somebody scrubbed to
-> the credits for the certificate. A lesson with no running time says it cannot be measured instead
-> of inventing a percentage. Discussion threads on a course or a lesson, replies flattened one level
-> so a thread stays readable on a phone, the asker told when somebody answers, and the same rule the
-> rest of the app uses: a student — or the guardian reading for them — sees their own course's
-> threads and nobody else's; a reply takes its course from the post it answers, so a thread cannot be
-> dragged into another class. Similarity between text answers is word-shingle Jaccard, computed here
-> with no service and no model, working the same in Bangla as in English: answers under forty words
-> are not compared at all, because a percentage over "the mitochondrion is the powerhouse of the
-> cell" measures the language and not the student. It reports "these two are 78% alike, and here is
-> the wording they share" to the teacher who set the work, stores the number beside the submission,
-> and does nothing else — no mark moves, no status changes, and no guardian hears about it.
-> Adaptive learning turns the competency ratings into a revision plan: the indicators still to meet,
-> weakest first, each with the lessons, quizzes and materials published on that syllabus unit and
-> whether the child can open them and has already been through them. Where nothing covers an
-> indicator the plan says so by name — the teacher's list of what to write next — rather than sending
-> a child to the nearest chapter it could find. The same question asked of a class-subject gives the
-> teacher the indicator most of the room is stuck on. A weekly job pushes the top three home, once,
-> to the child and their guardians. Nothing is stored: a plan is derived from ratings that change and
-> lessons published this afternoon, so it is built when it is asked for.
-> API: `apps/server/src/routes/phase15.ts`, including `/portal/lessons/:id/watch`,
-> `/portal/discussions` and `/portal/revision/:studentId`. Exit criterion:
-> `tests/lms-advanced.test.mjs` (12 tests).
-> Not yet: a console page for threads and the watch report (both live at `/api/lms/*`), similarity
-> against last year's submissions rather than only within one assignment, and a plan that also reads
-> exam marks rather than competency ratings alone.
 
----
 
 ## Milestones
 
