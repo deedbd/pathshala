@@ -80,6 +80,7 @@ export class GovernanceService {
       await this.tasks.create({ schoolId, title: `Resolution ${number}`, description: r.text.slice(0, 2000), taskType: 'governance', assignedTo: r.ownerId ?? null, assignedRole: r.ownerId ? null : 'admin', entityType: 'governance.resolution', entityId: id, dueAt: r.dueDate ? `${r.dueDate} 17:00:00` : null, priority: 'normal' });
       made.push(id);
     }
+    await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'governance.meeting' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, meetingId]);
     await this.outbox.emitNow({ type: 'meeting.minuted', schoolId, aggregateType: 'governance.meeting', aggregateId: meetingId, payload: { meetingId, resolutions: made.length } });
     return { meetingId, resolutions: made.length };
   }
@@ -121,6 +122,10 @@ export class GovernanceService {
     const ex = await this.db.findOne('policy_acknowledgements', { policy_id: policyId, user_id: userId });
     if (ex) return { policyId, alreadyAcknowledged: true };
     await this.db.insert('policy_acknowledgements', { id: ulid(), school_id: schoolId, policy_id: policyId, user_id: userId, acked_at: nowSql() });
+    // when the last name comes off the list the chase closes itself
+    if (!(await this.policyStatus(schoolId, policyId)).pending.length) {
+      await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'governance.policy' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, policyId]);
+    }
     return { policyId, acknowledged: true };
   }
   /** Who has read it and who has not — by name, because "82% acknowledged" chases nobody. */
@@ -193,18 +198,50 @@ export class GovernanceService {
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // decisions with a date that has passed, put in front of the committee that made them
+      /**
+       * O1 and O3: the paperwork of governance, chased.
+       *
+       * Overdue resolutions used to be repeated to their owner every night, which is the surest way
+       * to make somebody filter the sender; a reminder now comes round once a week. Two things that
+       * were never chased at all are: a meeting that was held and whose minutes were never written —
+       * the decisions of that meeting exist nowhere until they are, and a fortnight later nobody can
+       * remember them — and a policy that was published and that half the staff never acknowledged.
+       * "82% acknowledged" chases nobody, so the reminder goes to the people still missing, by name,
+       * and once a fortnight rather than every night. An election past its closing time counts itself.
+       */
       'governance.resolution_watch': async ({ schoolId }) => {
         await this.expireTerms(schoolId);
         const late = await this.resolutions(schoolId, { overdueOnly: true });
         for (const r of late) {
-          if (r.owner_id) await this.notifications.notify({ schoolId, userId: String(r.owner_id), channels: ['in_app', 'push'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} is overdue`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id) });
-          else await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} has nobody on it`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id) });
+          if (r.owner_id) await this.notifications.notifyOnce({ schoolId, userId: String(r.owner_id), channels: ['in_app', 'push'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} is overdue`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id), withinHours: 24 * 7 });
+          else await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} has nobody on it`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id), withinHours: 24 * 7 });
+        }
+        // a meeting that was held and never minuted: three days is long enough to write them up
+        const cutoff = nowSql(new Date(Date.now() - 3 * 86_400_000));
+        const unminuted = await this.db.query<Row>(`SELECT * FROM meetings WHERE school_id = ? AND status = 'scheduled' AND held_at < ? ORDER BY held_at LIMIT 100`, [schoolId, cutoff]);
+        for (const m of unminuted) {
+          await this.tasks.ensure({ schoolId, title: `Write up the minutes of "${String(m.title).slice(0, 80)}"`, description: `Held on ${String(m.held_at).slice(0, 16)}. Until the minutes are recorded, the decisions taken there are not tasks anybody can see.`, taskType: 'governance.minutes', assignedRole: 'admin', entityType: 'governance.meeting', entityId: String(m.id), priority: 'normal' });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'governance.minutes_overdue', title: 'Minutes have not been recorded', body: `"${m.title}" was held on ${String(m.held_at).slice(0, 16)} and has no minutes.`, entityType: 'governance.meeting', entityId: String(m.id), withinHours: 24 * 7 });
+          await this.outbox.emitNow({ type: 'meeting.minutes_overdue', schoolId, aggregateType: 'governance.meeting', aggregateId: String(m.id), payload: { meetingId: String(m.id), title: String(m.title), heldAt: String(m.held_at) } });
+        }
+        // policies published a fortnight ago that people still have not acknowledged
+        const fortnight = nowSql(new Date(Date.now() - 14 * 86_400_000));
+        const policies = await this.db.query<Row>(`SELECT * FROM policy_documents WHERE school_id = ? AND status = 'active' AND created_at < ? ORDER BY created_at LIMIT 50`, [schoolId, fortnight]);
+        let chased = 0;
+        for (const p of policies) {
+          const status = await this.policyStatus(schoolId, String(p.id));
+          if (!status.pending.length) continue;
+          for (const u of status.pending) {
+            await this.notifications.notifyOnce({ schoolId, userId: u.id, channels: ['in_app', 'push'], eventKey: 'governance.policy_unacknowledged', title: `Please read "${p.title}" (v${p.version})`, body: 'It was published a fortnight ago and you have not confirmed you have read it.', entityType: 'governance.policy', entityId: `${p.id}:${u.id}`, withinHours: 24 * 14 });
+          }
+          await this.tasks.ensure({ schoolId, title: `${status.pending.length} of ${status.expected} have not acknowledged "${String(p.title).slice(0, 60)}"`, description: status.pending.map(u => u.name).join(', ').slice(0, 2000), taskType: 'governance.policy', assignedRole: 'admin', entityType: 'governance.policy', entityId: String(p.id) });
+          await this.outbox.emitNow({ type: 'policy.unacknowledged', schoolId, aggregateType: 'governance.policy', aggregateId: String(p.id), payload: { policyId: String(p.id), title: String(p.title), version: Number(p.version), pending: status.pending.length } });
+          chased++;
         }
         // an election whose closing time has passed counts itself
         const due = await this.db.query<Row>(`SELECT id FROM elections WHERE school_id = ? AND status = 'open' AND closes_at < ?`, [schoolId, nowSql()]);
         for (const e of due) await this.closeElection(schoolId, String(e.id));
-        return { overdue: late.length, electionsClosed: due.length };
+        return { overdue: late.length, unminuted: unminuted.length, policiesChased: chased, electionsClosed: due.length };
       },
     };
   }

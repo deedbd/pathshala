@@ -136,6 +136,20 @@ export interface EventPayloads {
   'notice.published': { noticeId: string; title: string; audience?: unknown };
   'message.sent': Record<string, unknown>;
   'test.ping': { at: string; note?: string };
+  // operations watches: everything below is raised by a scheduled job that found work nobody had
+  // picked up. None of them acts on its own — each says what is waiting and for whom. A payload is
+  // what a webhook and an automation rule get to see, so nothing confidential travels in one: the
+  // safeguarding row carries the fact of a case and its age, never a word of what is in it.
+  'payroll.approval_due': { runId: string; month: string; staff: number; net: number; payDay: string };
+  'staff.settlement_due': { staffId: string; exitId: string; lastWorkingDay: string; net: number };
+  'meeting.minutes_overdue': { meetingId: string; title: string; heldAt: string };
+  'policy.unacknowledged': { policyId: string; title: string; version: number; pending: number };
+  'consent.expired': { consentId: string; userId: string; consentType: string; expiredAt: string };
+  'safeguarding.review_due': { caseId: string; riskLevel: string; daysOpen: number };
+  'vehicle.unfit': { vehicleId: string; registrationNo: string; reasons: string; forDate: string };
+  'hostel.rollcall_missing': { hostelId: string; onDate: string; call: string; residents: number };
+  'stock.below_reorder': { itemId: string; sku: string; name: string; quantity: number; reorderLevel: number; purchaseOrderId: string | null };
+  'gate_pass.outstanding': { passId: string; personType: string; expectedIn: string | null; kind: string };
 }
 
 export type EventType = keyof EventPayloads;
@@ -145,6 +159,7 @@ export const EVENT_TYPES = Object.freeze([
   'rule.failed', 'job.failed', 'task.created', 'approval.requested', 'approval.decided', 'notification.failed', 'backup.finished', 'import.finished',
   'student.created', 'student.enrolled', 'guardian.linked', 'staff.created', 'timetable.published', 'substitution.suggested', 'lesson.taught', 'syllabus.behind', 'page.published', 'contact.received',
   'enquiry.created', 'application.submitted', 'applicant.enrolled', 'campaign.opened', 'test.results_entered', 'merit_list.generated', 'offer.made', 'document.requested', 'document.issued', 'book.issued', 'book.returned', 'transport.assigned', 'hostel.allocated', 'outpass.applied', 'po.received', 'complaint.created', 'incident.reported', 'course.published', 'assignment.published', 'event.created', 'academic_year.created', 'calendar.holiday_added', 'leave.approved', 'leave.rejected', 'attendance.marked', 'attendance.absent', 'leave.applied', 'punches.ingested', 'ptm.booked', 'diary.published', 'substitution.approved', 'marks.locked', 'result.published', 'exam.scheduled', 'promotion.applied', 'invoice.created', 'invoice.batch_finished', 'journal.posted', 'expense.created', 'discount.proposed', 'payment.received', 'cheque.received', 'cheque.cleared', 'cheque.bounced', 'instalment_plan.created', 'wallet.topped_up', 'pos.sold', 'shop.ordered', 'scholarship.awarded', 'donation.received', 'alumni.graduated', 'competition.results_recorded', 'work_order.raised', 'work_order.done', 'meeting.minuted', 'policy.published', 'election.closed', 'govt_report.generated', 'data_request.made', 'anomaly.detected', 'risk.flagged', 'broadcast.sent', 'subscription.changed', 'saas_invoice.raised', 'plugin.installed', 'ai.generated', 'group.created', 'student.transferred', 'payroll.calculated', 'payroll.approved', 'payroll.paid', 'staff.joined', 'staff.left', 'application.received', 'notice.published', 'message.sent', 'test.ping', 'forecast.cash_projected', 'forecast.staffing_gap', 'ivr.call_received', 'ivr.callback_requested', 'course.registered', 'course.sold', 'program.completed', 'lesson.completed', 'discussion.replied', 'assignment.similarity_flagged', 'revision_plan.built',
+  'payroll.approval_due', 'staff.settlement_due', 'meeting.minutes_overdue', 'policy.unacknowledged', 'consent.expired', 'safeguarding.review_due', 'vehicle.unfit', 'hostel.rollcall_missing', 'stock.below_reorder', 'gate_pass.outstanding',
 ] as const satisfies readonly EventType[]);
 
 export function isEventType(v: string): v is EventType {

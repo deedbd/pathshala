@@ -190,21 +190,76 @@ export class TransportService {
         }
         return { alerted };
       },
-      // J7: papers and servicing, thirty days out
+      /**
+       * J7 and J10: papers and servicing.
+       *
+       * Two things were wrong with the old pass. It raised a fresh task every night for thirty
+       * nights, so a bus with an insurance renewal due left thirty identical rows in the office's
+       * list; and a date that had already gone by dropped out of the window entirely, so the one
+       * state that matters — the fitness certificate expired last week and the bus went out this
+       * morning — was the one state nobody was told about. The window now runs from "whenever" to
+       * thirty days out, an expired paper is called expired, and `tasks.ensure` keeps it to one task
+       * per vehicle per paper until somebody closes it.
+       */
       'transport.document_expiry': async ({ schoolId }) => {
         const soon = addDays(nowSql().slice(0, 10), 30), today = nowSql().slice(0, 10);
         const fields: [string, string][] = [['insurance_expiry', 'insurance'], ['fitness_expiry', 'fitness certificate'], ['tax_token_expiry', 'tax token'], ['route_permit_expiry', 'route permit']];
-        let raised = 0;
+        let raised = 0, expired = 0;
         for (const [col, label] of fields) {
-          const rows = await this.db.query<Row>(`SELECT * FROM vehicles WHERE school_id = ? AND ${col} IS NOT NULL AND ${col} BETWEEN ? AND ? AND status <> 'inactive'`, [schoolId, today, soon]);
+          const rows = await this.db.query<Row>(`SELECT * FROM vehicles WHERE school_id = ? AND ${col} IS NOT NULL AND ${col} <= ? AND status <> 'inactive'`, [schoolId, soon]);
           for (const v of rows) {
-            await this.tasks.create({ schoolId, title: `Renew the ${label} of ${v.registration_no}`, taskType: 'transport.compliance', assignedRole: 'admin', entityType: 'transport.vehicle', entityId: String(v.id), dueAt: String(v[col]).slice(0, 10), priority: 'high' });
-            raised++;
+            const on = String(v[col]).slice(0, 10);
+            const gone = on < today;
+            if (gone) expired++;
+            // one task per vehicle *per paper*, so the entity is the paper and not the bus
+            const made = await this.tasks.ensure({ schoolId, title: gone ? `${v.registration_no}: the ${label} expired on ${on}` : `Renew the ${label} of ${v.registration_no} by ${on}`, description: gone ? 'A vehicle without valid papers should not be carrying children. Renew it or take the vehicle off the road.' : null, taskType: 'transport.compliance', assignedRole: 'admin', entityType: 'transport.vehicle_paper', entityId: `${v.id}:${col}`, dueAt: on, priority: gone ? 'urgent' : 'high' });
+            if (made) raised++;
           }
         }
-        const service = await this.db.query<Row>(`SELECT m.*, v.registration_no FROM vehicle_maintenance m JOIN vehicles v ON v.id = m.vehicle_id WHERE m.school_id = ? AND m.next_due_date IS NOT NULL AND m.next_due_date BETWEEN ? AND ?`, [schoolId, today, soon]);
-        for (const m of service) { await this.tasks.create({ schoolId, title: `Service due for ${m.registration_no} (${m.service_type})`, taskType: 'transport.maintenance', assignedRole: 'admin', entityType: 'transport.vehicle', entityId: String(m.vehicle_id), dueAt: String(m.next_due_date).slice(0, 10) }); raised++; }
-        return { tasks: raised };
+        const service = await this.db.query<Row>(`SELECT m.*, v.registration_no FROM vehicle_maintenance m JOIN vehicles v ON v.id = m.vehicle_id WHERE m.school_id = ? AND m.next_due_date IS NOT NULL AND m.next_due_date <= ?`, [schoolId, soon]);
+        for (const m of service) { if (await this.tasks.ensure({ schoolId, title: `Service due for ${m.registration_no} (${m.service_type})`, taskType: 'transport.maintenance', assignedRole: 'admin', entityType: 'transport.maintenance', entityId: String(m.id), dueAt: String(m.next_due_date).slice(0, 10), priority: String(m.next_due_date).slice(0, 10) < today ? 'high' : 'normal' })) raised++; }
+        return { tasks: raised, expired };
+      },
+      /**
+       * J9: is the fleet fit to run tomorrow?
+       *
+       * This is the question the transport manager asks at five in the afternoon and the one nobody
+       * asks on the afternoon it matters. A route is checked against the three things that stop it
+       * leaving: no vehicle on it at all, a vehicle with nobody assigned to drive it, and a vehicle
+       * whose papers have run out. The answer goes out once for that date — a second run of the job
+       * the same evening says nothing again — and it names the routes rather than counting them,
+       * because "2 routes have a problem" sends somebody looking for the routes.
+       *
+       * It reports; it never cancels a route or reassigns a driver. Who drives tomorrow is a person's
+       * decision about people.
+       */
+      'transport.readiness': async ({ schoolId, payload }) => {
+        const forDate = typeof payload?.forDate === 'string' ? payload.forDate : addDays(nowSql().slice(0, 10), 1);
+        const routes = await this.db.query<Row>(`SELECT r.*, v.registration_no, v.driver_id, v.status AS vehicle_status, v.insurance_expiry, v.fitness_expiry, v.tax_token_expiry, v.route_permit_expiry,
+            (SELECT COUNT(*) FROM student_transport t WHERE t.route_id = r.id AND t.status = 'active') AS riders
+          FROM transport_routes r LEFT JOIN vehicles v ON v.id = r.vehicle_id WHERE r.school_id = ? AND r.status = 'active' ORDER BY r.name`, [schoolId]);
+        const problems: { routeId: string; route: string; riders: number; reasons: string[] }[] = [];
+        for (const r of routes) {
+          if (!Number(r.riders)) continue;                       // a route nobody rides is not tomorrow's problem
+          const reasons: string[] = [];
+          if (!r.vehicle_id) reasons.push('no vehicle is on the route');
+          else {
+            if (!r.driver_id) reasons.push(`${r.registration_no} has no driver`);
+            if (r.vehicle_status === 'inactive' || r.vehicle_status === 'maintenance') reasons.push(`${r.registration_no} is ${r.vehicle_status}`);
+            for (const [col, label] of [['insurance_expiry', 'insurance'], ['fitness_expiry', 'fitness certificate'], ['tax_token_expiry', 'tax token'], ['route_permit_expiry', 'route permit']] as [string, string][]) {
+              if (r[col] && String(r[col]).slice(0, 10) < forDate) reasons.push(`${label} expired on ${String(r[col]).slice(0, 10)}`);
+            }
+          }
+          if (!reasons.length) continue;
+          problems.push({ routeId: String(r.id), route: String(r.name), riders: Number(r.riders), reasons });
+          if (r.vehicle_id) await this.outbox.emitNow({ type: 'vehicle.unfit', schoolId, aggregateType: 'transport.vehicle', aggregateId: String(r.vehicle_id), payload: { vehicleId: String(r.vehicle_id), registrationNo: String(r.registration_no ?? ''), reasons: reasons.join('; '), forDate } });
+        }
+        if (problems.length) {
+          const body = problems.map(p => `${p.route} (${p.riders} riders): ${p.reasons.join(', ')}`).join(' · ');
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'transport.not_ready', title: `${problems.length} route(s) are not ready for ${forDate}`, body: body.slice(0, 600), entityType: 'transport.readiness', entityId: forDate, withinHours: 20 });
+          await this.tasks.ensure({ schoolId, title: `${problems.length} route(s) cannot run on ${forDate}`, description: body.slice(0, 2000), taskType: 'transport.readiness', assignedRole: 'admin', entityType: 'transport.readiness', entityId: forDate, dueAt: forDate, priority: 'urgent' });
+        }
+        return { forDate, checked: routes.length, problems: problems.length, routes: problems.map(p => p.route) };
       },
     };
   }

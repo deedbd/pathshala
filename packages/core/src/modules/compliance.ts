@@ -6,6 +6,8 @@ import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { FileService } from '../files.js';
 import type { HrService } from './hr.js';
+import type { TaskService } from '../tasks.js';
+import type { SettingsService } from '../settings.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
@@ -26,7 +28,8 @@ export type ReportType = 'banbeis_census' | 'board_registration' | 'mpo_salary_s
 export class ComplianceService {
   constructor(
     private db: Db, private outbox: OutboxService, private notifications: NotificationService,
-    private academic: AcademicService, private files: FileService, private hr: HrService, private adapters: Adapters,
+    private academic: AcademicService, private files: FileService, private hr: HrService,
+    private tasks: TaskService, private settings: SettingsService, private adapters: Adapters,
   ) {}
 
   // ---------- government returns ----------
@@ -275,19 +278,134 @@ export class ComplianceService {
     return { asOf, policies: out, due: out.filter(o => o.rows > 0).length };
   }
 
+  /**
+   * O5, first half: the census the school owes BANBEIS, built without anybody being asked to build it.
+   *
+   * Which months the window opens in is a school setting (`compliance.census_months`, July by
+   * default) because the authority moves it; what does not move is that the return must agree with
+   * the register, and the register is here. In the window the return is generated from live rows and
+   * a task is raised naming what to check before it is submitted — submitting it is a person's act,
+   * on a portal this system does not talk to. A school with no EIIN is not in the scheme and is left
+   * alone, and a period already generated is not generated again.
+   */
+  async censusIfDue(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    const school = await this.db.findOne<Row>('schools', { id: schoolId });
+    if (!school?.eiin) return { generated: false as const, why: 'the school has no EIIN' };
+    const months = (await this.settings.get<number[]>(schoolId, 'compliance.census_months')) ?? [7];
+    const month = Number(onDate.slice(5, 7));
+    if (!months.includes(month)) return { generated: false as const, why: 'outside the census window' };
+    const period = onDate.slice(0, 7);
+    const ex = await this.db.findOne<Row>('govt_reports', { school_id: schoolId, report_type: 'banbeis_census', period });
+    if (ex) return { generated: false as const, why: 'already generated', reportId: String(ex.id) };
+    const report = await this.banbeisCensus(schoolId, { asOf: onDate });
+    const d = report.data as { students?: { total?: number }; staff?: { total?: number } };
+    await this.tasks.ensure({ schoolId, title: `Check and submit the BANBEIS census for ${period}`, description: `Built from the register on ${onDate}: ${d.students?.total ?? 0} pupils and ${d.staff?.total ?? 0} staff. Check the figures against the register before submitting, then mark it submitted here.`, taskType: 'compliance.return', assignedRole: 'admin', entityType: 'compliance.report', entityId: report.id, priority: 'high' });
+    return { generated: true as const, reportId: report.id, period };
+  }
+
+  /**
+   * O5, second half: the stipend list for the period that has come due. The authority pays the
+   * students, not the school, so nothing here moves money — it produces the list of who is on the
+   * programme and how they are paid, and asks the office to send it. A period already recorded as
+   * disbursed for everybody is not asked for again.
+   */
+  async stipendListsIfDue(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    const programs = await this.db.findMany<Row>('stipend_programs', { school_id: schoolId, status: 'active' });
+    const out: { programId: string; period: string; reportId: string; students: number }[] = [];
+    for (const p of programs) {
+      const period = periodFor(String(p.frequency ?? 'quarterly'), onDate);
+      if (!period) continue;                       // not the first month of this programme's cycle
+      if (await this.db.findOne('govt_reports', { school_id: schoolId, report_type: 'stipend_list', period })) continue;
+      const enrolled = await this.db.count('stipend_enrollments', { school_id: schoolId, program_id: String(p.id), status: 'active' });
+      if (!enrolled) continue;
+      const report = await this.stipendList(schoolId, String(p.id), period);
+      await this.tasks.ensure({ schoolId, title: `Send the ${p.name} stipend list for ${period}`, description: `${enrolled} student(s) on the programme. The list is built from the register; check the accounts on it before sending it to ${p.authority ?? 'the authority'}.`, taskType: 'compliance.return', assignedRole: 'admin', entityType: 'compliance.report', entityId: report.id, priority: 'normal' });
+      out.push({ programId: String(p.id), period, reportId: report.id, students: enrolled });
+    }
+    return out;
+  }
+
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
-      // once a month: what retention would touch, and any return that has not been sent
-      'compliance.review': async ({ schoolId }) => {
-        const review = await this.retentionReview(schoolId);
-        if (review.due) await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.retention_due', title: 'Records are past their retention period', body: review.policies.filter(p => p.rows > 0).map(p => `${p.entityType}: ${p.rows} older than ${p.keepYears} years (${p.action})`).join('; '), entityType: 'compliance.retention', entityId: schoolId });
+      /**
+       * O2 and O5, monthly: what the school owes, and what it is holding.
+       *
+       * The retention review still only ever reports — a rule that quietly deleted a leaver's file
+       * would be found out on the day somebody needed the file — but it now leaves a task behind it
+       * as well as a message, because a message read on a phone at nine at night chases nobody. The
+       * returns that are due in this month are generated from the register before anybody is asked
+       * for them, and the ones generated a fortnight ago and still unsent are named again.
+       */
+      'compliance.review': async ({ schoolId, payload }) => {
+        const onDate = typeof payload?.onDate === 'string' ? payload.onDate : nowSql().slice(0, 10);
+        const review = await this.retentionReview(schoolId, onDate);
+        if (review.due) {
+          const summary = review.policies.filter(p => p.rows > 0).map(p => `${p.entityType}: ${p.rows} older than ${p.keepYears} years (${p.action})`).join('; ');
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.retention_due', title: 'Records are past their retention period', body: summary, entityType: 'compliance.retention', entityId: schoolId, withinHours: 24 * 25 });
+          await this.tasks.ensure({ schoolId, title: `${review.due} retention rule(s) have records past their period`, description: `${summary}. Nothing has been deleted: decide, record by record, what the school is still obliged to keep.`, taskType: 'compliance.retention', assignedRole: 'admin', entityType: 'compliance.retention', entityId: schoolId });
+        }
+        const census = await this.censusIfDue(schoolId, onDate);
+        const stipends = await this.stipendListsIfDue(schoolId, onDate);
         const stale = await this.db.query<Row>(`SELECT * FROM govt_reports WHERE school_id = ? AND status = 'generated' AND created_at < ?`, [schoolId, nowSql(new Date(Date.now() - 14 * 86_400_000))]);
-        for (const r of stale) await this.notifications.notifyRole(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.report_unsent', title: `${r.report_type} for ${r.period} has not been submitted`, body: 'It was generated a fortnight ago and is still marked unsent.', entityType: 'compliance.report', entityId: String(r.id) });
-        return { retentionDue: review.due, unsentReports: stale.length };
+        for (const r of stale) {
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.report_unsent', title: `${r.report_type} for ${r.period} has not been submitted`, body: 'It was generated a fortnight ago and is still marked unsent.', entityType: 'compliance.report', entityId: String(r.id), withinHours: 24 * 14 });
+          await this.tasks.ensure({ schoolId, title: `Submit the ${String(r.report_type).replace(/_/g, ' ')} for ${r.period}`, taskType: 'compliance.return', assignedRole: 'admin', entityType: 'compliance.report', entityId: String(r.id), priority: 'high' });
+        }
+        return { retentionDue: review.due, unsentReports: stale.length, censusGenerated: census.generated, stipendLists: stipends.length };
+      },
+      /**
+       * O4, daily: the duties that run the other way, which have clocks on them.
+       *
+       * An export of what the school holds about somebody is produced entirely by this system — no
+       * judgement, nothing irreversible — so a request that is still sitting unread is fulfilled and
+       * the person is told their file is ready. A deletion or a correction is never done this way: a
+       * school has records it is legally obliged to keep, only a person can weigh a request against
+       * that, and so those are escalated on the statutory clock (`compliance.response_days`, thirty
+       * by default) rather than acted on. Consent that has run out is the third: the school stops
+       * being allowed to do the thing on the day the date passes, so the guardian is asked once to
+       * renew it and the office is told what has lapsed.
+       */
+      'compliance.daily_watch': async ({ schoolId }) => {
+        const now = nowSql();
+        const days = Number((await this.settings.get<number>(schoolId, 'compliance.response_days')) ?? 30);
+        // exports the system can finish by itself
+        const exports_ = await this.db.query<Row>(`SELECT * FROM data_requests WHERE school_id = ? AND kind = 'export' AND status IN ('requested','processing') ORDER BY created_at LIMIT 25`, [schoolId]);
+        let fulfilled = 0;
+        for (const r of exports_) { await this.fulfilExport(schoolId, String(r.id)); fulfilled++; }
+        // deletions and corrections: a person decides, and the clock is shown to them
+        const overdue = await this.db.query<Row>(`SELECT d.*, u.display_name FROM data_requests d JOIN users u ON u.id = d.user_id WHERE d.school_id = ? AND d.kind <> 'export' AND d.status IN ('requested','processing') AND d.created_at < ?`, [schoolId, nowSql(new Date(Date.now() - days * 86_400_000))]);
+        for (const r of overdue) {
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'email'], eventKey: 'compliance.request_overdue', title: `A ${r.kind} request is past its ${days}-day answer`, body: `${r.display_name} asked on ${String(r.created_at).slice(0, 10)} and has had no answer. Decide what the school is obliged to keep and answer them.`, entityType: 'compliance.data_request', entityId: String(r.id), withinHours: 24 * 7 });
+          await this.tasks.ensure({ schoolId, title: `Answer the ${r.kind} request from ${r.display_name}`, taskType: 'compliance.data_request', assignedRole: 'admin', entityType: 'compliance.data_request', entityId: String(r.id), priority: 'high' });
+        }
+        // consent that has run out and has not been given again
+        const expired = await this.db.query<Row>(`SELECT c.*, u.display_name, u.phone FROM consent_records c JOIN users u ON u.id = c.user_id
+          WHERE c.school_id = ? AND c.granted = TRUE AND c.expires_at IS NOT NULL AND c.expires_at < ? AND c.expires_at > ?
+          ORDER BY c.expires_at LIMIT 200`, [schoolId, now, nowSql(new Date(Date.now() - 60 * 86_400_000))]);
+        let lapsed = 0;
+        for (const c of expired) {
+          const current = await this.hasConsent(schoolId, String(c.user_id), String(c.consent_type), (c.student_id as string) ?? null);
+          if (current.granted) continue;                       // they have already renewed it
+          await this.notifications.notifyOnce({ schoolId, userId: String(c.user_id), address: (c.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'compliance.consent_expired', title: 'A permission you gave has run out', body: `Your consent for ${String(c.consent_type).replace(/_/g, ' ')} ran out on ${String(c.expires_at).slice(0, 10)}. Please renew it in the app if you are happy to.`, entityType: 'compliance.consent', entityId: String(c.id), withinHours: 24 * 30 });
+          await this.outbox.emitNow({ type: 'consent.expired', schoolId, aggregateType: 'compliance.consent', aggregateId: String(c.id), payload: { consentId: String(c.id), userId: String(c.user_id), consentType: String(c.consent_type), expiredAt: String(c.expires_at) } });
+          lapsed++;
+        }
+        if (lapsed) await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.consent_lapsed', title: `${lapsed} consent(s) have run out`, body: 'Until they are renewed the school may not do what they covered.', entityType: 'compliance.consent', entityId: schoolId, withinHours: 24 * 7 });
+        return { exportsFulfilled: fulfilled, requestsOverdue: overdue.length, consentsLapsed: lapsed };
       },
     };
   }
+}
+
+/**
+ * The period a stipend programme is asking for this month, or null when this is not the first month
+ * of its cycle. Quarterly means January, April, July and October; half-yearly January and July.
+ */
+function periodFor(frequency: string, onDate: string): string | null {
+  const month = Number(onDate.slice(5, 7));
+  const every = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : frequency === 'half_yearly' ? 6 : 12;
+  return (month - 1) % every === 0 ? onDate.slice(0, 7) : null;
 }
 
 const csv = (v: unknown) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };

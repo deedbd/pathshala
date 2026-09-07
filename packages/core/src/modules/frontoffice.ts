@@ -83,6 +83,7 @@ export class FrontOfficeService {
   async returnFromPass(schoolId: string, id: string) {
     const n = await this.db.update('gate_passes', { status: 'returned', actual_in: nowSql(), updated_at: nowSql() }, { id, school_id: schoolId });
     if (!n) throw notFound('gate pass');
+    await this.db.execute(`UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE school_id = ? AND entity_type = 'frontoffice.gate_pass' AND entity_id = ? AND status = 'open'`, [nowSql(), nowSql(), schoolId, id]);
     return { id };
   }
   async gatePasses(schoolId: string, onDate = nowSql().slice(0, 10)) {
@@ -219,6 +220,39 @@ export class FrontOfficeService {
           await this.tasks.create({ schoolId, title: `Overdue ticket ${c.ticket_no}: ${String(c.subject).slice(0, 60)}`, taskType: 'frontoffice.sla', assignedRole: 'principal', entityType: 'frontoffice.complaint', entityId: String(c.id), priority: 'high' });
         }
         return { escalated: breached.length };
+      },
+      /**
+       * N13: who the building still thinks is inside it.
+       *
+       * At the end of the day the visitor book should have an out time against every badge and every
+       * gate pass should be closed. When it does not, one of two things is true: somebody walked out
+       * without signing out, or somebody is still in the building. The register cannot tell which,
+       * and neither can this job — so it closes nothing. Writing an out time the system invented
+       * would turn the one record a school produces after a fire into fiction. It names the open
+       * badges and the outstanding passes to the office, once for that day, and leaves the book alone.
+       *
+       * A child's gate pass whose return time has gone by is the urgent half and is listed first;
+       * the guardian is not messaged, because the office has to find out what actually happened
+       * before it tells a parent anything about where their child is.
+       */
+      'frontoffice.gate_watch': async ({ schoolId, payload }) => {
+        const onDate = typeof payload?.onDate === 'string' ? payload.onDate : nowSql().slice(0, 10);
+        const now = nowSql();
+        const visitors = await this.db.query<Row>(`SELECT * FROM visitor_logs WHERE school_id = ? AND out_at IS NULL AND in_at >= ? AND in_at < ? ORDER BY in_at`, [schoolId, `${onDate} 00:00:00`, `${onDate} 23:59:59`]);
+        const passes = await this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name FROM gate_passes p LEFT JOIN students s ON s.id = p.student_id
+          WHERE p.school_id = ? AND p.actual_in IS NULL AND p.status = 'approved' AND p.expected_in IS NOT NULL AND p.expected_in < ? AND p.out_at >= ? ORDER BY p.expected_in`, [schoolId, now, nowSql(new Date(Date.now() - 7 * 86_400_000))]);
+        for (const p of passes) {
+          const who = p.person_type === 'student' ? `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() : 'a member of staff';
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'frontoffice.pass_outstanding', title: 'A gate pass has not been closed', body: `${who} was due back at ${String(p.expected_in).slice(0, 16)} and the pass is still open. Find out where they are before anybody is told anything.`, entityType: 'frontoffice.gate_pass', entityId: String(p.id), withinHours: 12 });
+          await this.tasks.ensure({ schoolId, title: `Close the gate pass for ${who || 'a visitor'}`, description: `Out at ${String(p.out_at).slice(0, 16)}, due back ${String(p.expected_in).slice(0, 16)}. Nothing has been marked returned automatically.`, taskType: 'frontoffice.gate_pass', assignedRole: 'admin', entityType: 'frontoffice.gate_pass', entityId: String(p.id), priority: p.person_type === 'student' ? 'urgent' : 'high' });
+          await this.outbox.emitNow({ type: 'gate_pass.outstanding', schoolId, aggregateType: 'frontoffice.gate_pass', aggregateId: String(p.id), payload: { passId: String(p.id), personType: String(p.person_type), expectedIn: (p.expected_in as string) ?? null, kind: 'gate_pass' } });
+        }
+        if (visitors.length) {
+          const list = visitors.map(v => `${v.badge_no} ${v.visitor_name} (in at ${String(v.in_at).slice(11, 16)})`).join(', ');
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'frontoffice.visitors_open', title: `${visitors.length} visitor badge(s) are still open`, body: `${list.slice(0, 500)}. Nothing has been signed out for them: check the badges are back and close the book by hand.`, entityType: 'frontoffice.visitor_book', entityId: onDate, withinHours: 20 });
+          await this.tasks.ensure({ schoolId, title: `Close ${visitors.length} visitor badge(s) from ${onDate}`, description: list.slice(0, 2000), taskType: 'frontoffice.visitor_book', assignedRole: 'admin', entityType: 'frontoffice.visitor_book', entityId: onDate, dueAt: onDate });
+        }
+        return { onDate, openBadges: visitors.length, outstandingPasses: passes.length };
       },
     };
   }

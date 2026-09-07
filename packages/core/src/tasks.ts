@@ -28,6 +28,22 @@ export class TaskService {
     return tx ? run(tx) : this.db.transaction(run);
   }
 
+  /**
+   * The same task, raised once and not once a night. A daily watch that finds the same contract
+   * expiring, the same asset overdue for service or the same shelf empty must not leave thirty
+   * identical rows behind it — so a task that is still open for the same thing is reused, and a new
+   * one is only written after somebody has closed the last.
+   *
+   * Returns the id of the task it created, or `null` when one was already open.
+   */
+  async ensure(input: CreateTaskInput & { entityType: string; entityId: string }, tx?: Db): Promise<string | null> {
+    const where: Record<string, unknown> = { school_id: input.schoolId, entity_type: input.entityType, entity_id: input.entityId, status: 'open' };
+    if (input.taskType) where.task_type = input.taskType;
+    const open = await (tx ?? this.db).findOne('tasks', where as never);
+    if (open) return null;
+    return this.create(input, tx);
+  }
+
   async complete(id: string, schoolId: string) {
     return this.db.update('tasks', { status: 'done', completed_at: nowSql(), updated_at: nowSql() }, { id, school_id: schoolId });
   }
