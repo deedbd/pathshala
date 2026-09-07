@@ -222,13 +222,13 @@ export class FacilitiesService {
           const body = `${w.title} was due ${String(w.due_at).slice(0, 16)} and is still ${w.status}.`;
           // the person holding the job hears first; the office hears in any case
           const staff = w.assigned_to ? await this.db.findOne<Row>('staff', { id: String(w.assigned_to) }) : null;
-          if (staff?.user_id) await this.notifications.notifyOnce({ schoolId, userId: String(staff.user_id), channels: ['in_app', 'push'], eventKey: 'facilities.work_assignee_overdue', title: 'A job of yours is overdue', body, entityType: 'facilities.work_order', entityId: String(w.id), withinHours: 48 });
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'facilities.work_overdue', title: 'Maintenance overdue', body, entityType: 'facilities.work_order', entityId: String(w.id), withinHours: 48 });
+          if (staff?.user_id) await this.notifications.notifyOnce(48, { schoolId, userId: String(staff.user_id), channels: ['in_app', 'push'], eventKey: 'facilities.work_assignee_overdue', title: 'A job of yours is overdue', body, entityType: 'facilities.work_order', entityId: String(w.id) });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 48, { channels: ['in_app', 'push'], eventKey: 'facilities.work_overdue', title: 'Maintenance overdue', body, entityType: 'facilities.work_order', entityId: String(w.id) });
         }
         const drills = await this.drillStatus(schoolId);
         const overdue = drills.drills.filter(d => d.overdue);
         for (const d of overdue) {
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'facilities.drill_due', title: `${d.kind} drill is due`, body: d.lastOn ? `The last one was ${d.lastOn}.` : 'There is no record of one ever being held.', entityType: 'facilities.drill', entityId: d.kind, withinHours: 24 * 14 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 14, { channels: ['in_app'], eventKey: 'facilities.drill_due', title: `${d.kind} drill is due`, body: d.lastOn ? `The last one was ${d.lastOn}.` : 'There is no record of one ever being held.', entityType: 'facilities.drill', entityId: d.kind });
           await this.tasks.ensure({ schoolId, title: `Hold the ${d.kind} drill`, description: d.lastOn ? `The last one was on ${d.lastOn}; the school holds one every ${drills.everyMonths} months.` : 'There is no record of one ever being held.', taskType: 'facilities.drill', assignedRole: 'admin', entityType: 'facilities.drill', entityId: d.kind, priority: d.kind === 'fire' ? 'high' : 'normal' });
         }
         const dirty = await this.cleaningDue(schoolId);

@@ -342,14 +342,14 @@ export class ComplianceService {
         const review = await this.retentionReview(schoolId, onDate);
         if (review.due) {
           const summary = review.policies.filter(p => p.rows > 0).map(p => `${p.entityType}: ${p.rows} older than ${p.keepYears} years (${p.action})`).join('; ');
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.retention_due', title: 'Records are past their retention period', body: summary, entityType: 'compliance.retention', entityId: schoolId, withinHours: 24 * 25 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 25, { channels: ['in_app'], eventKey: 'compliance.retention_due', title: 'Records are past their retention period', body: summary, entityType: 'compliance.retention', entityId: schoolId });
           await this.tasks.ensure({ schoolId, title: `${review.due} retention rule(s) have records past their period`, description: `${summary}. Nothing has been deleted: decide, record by record, what the school is still obliged to keep.`, taskType: 'compliance.retention', assignedRole: 'admin', entityType: 'compliance.retention', entityId: schoolId });
         }
         const census = await this.censusIfDue(schoolId, onDate);
         const stipends = await this.stipendListsIfDue(schoolId, onDate);
         const stale = await this.db.query<Row>(`SELECT * FROM govt_reports WHERE school_id = ? AND status = 'generated' AND created_at < ?`, [schoolId, nowSql(new Date(Date.now() - 14 * 86_400_000))]);
         for (const r of stale) {
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.report_unsent', title: `${r.report_type} for ${r.period} has not been submitted`, body: 'It was generated a fortnight ago and is still marked unsent.', entityType: 'compliance.report', entityId: String(r.id), withinHours: 24 * 14 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 14, { channels: ['in_app'], eventKey: 'compliance.report_unsent', title: `${r.report_type} for ${r.period} has not been submitted`, body: 'It was generated a fortnight ago and is still marked unsent.', entityType: 'compliance.report', entityId: String(r.id) });
           await this.tasks.ensure({ schoolId, title: `Submit the ${String(r.report_type).replace(/_/g, ' ')} for ${r.period}`, taskType: 'compliance.return', assignedRole: 'admin', entityType: 'compliance.report', entityId: String(r.id), priority: 'high' });
         }
         return { retentionDue: review.due, unsentReports: stale.length, censusGenerated: census.generated, stipendLists: stipends.length };
@@ -376,7 +376,7 @@ export class ComplianceService {
         // deletions and corrections: a person decides, and the clock is shown to them
         const overdue = await this.db.query<Row>(`SELECT d.*, u.display_name FROM data_requests d JOIN users u ON u.id = d.user_id WHERE d.school_id = ? AND d.kind <> 'export' AND d.status IN ('requested','processing') AND d.created_at < ?`, [schoolId, nowSql(new Date(Date.now() - days * 86_400_000))]);
         for (const r of overdue) {
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'email'], eventKey: 'compliance.request_overdue', title: `A ${r.kind} request is past its ${days}-day answer`, body: `${r.display_name} asked on ${String(r.created_at).slice(0, 10)} and has had no answer. Decide what the school is obliged to keep and answer them.`, entityType: 'compliance.data_request', entityId: String(r.id), withinHours: 24 * 7 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 7, { channels: ['in_app', 'email'], eventKey: 'compliance.request_overdue', title: `A ${r.kind} request is past its ${days}-day answer`, body: `${r.display_name} asked on ${String(r.created_at).slice(0, 10)} and has had no answer. Decide what the school is obliged to keep and answer them.`, entityType: 'compliance.data_request', entityId: String(r.id) });
           await this.tasks.ensure({ schoolId, title: `Answer the ${r.kind} request from ${r.display_name}`, taskType: 'compliance.data_request', assignedRole: 'admin', entityType: 'compliance.data_request', entityId: String(r.id), priority: 'high' });
         }
         // consent that has run out and has not been given again
@@ -387,11 +387,11 @@ export class ComplianceService {
         for (const c of expired) {
           const current = await this.hasConsent(schoolId, String(c.user_id), String(c.consent_type), (c.student_id as string) ?? null);
           if (current.granted) continue;                       // they have already renewed it
-          await this.notifications.notifyOnce({ schoolId, userId: String(c.user_id), address: (c.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'compliance.consent_expired', title: 'A permission you gave has run out', body: `Your consent for ${String(c.consent_type).replace(/_/g, ' ')} ran out on ${String(c.expires_at).slice(0, 10)}. Please renew it in the app if you are happy to.`, entityType: 'compliance.consent', entityId: String(c.id), withinHours: 24 * 30 });
+          await this.notifications.notifyOnce(24 * 30, { schoolId, userId: String(c.user_id), address: (c.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'compliance.consent_expired', title: 'A permission you gave has run out', body: `Your consent for ${String(c.consent_type).replace(/_/g, ' ')} ran out on ${String(c.expires_at).slice(0, 10)}. Please renew it in the app if you are happy to.`, entityType: 'compliance.consent', entityId: String(c.id) });
           await this.outbox.emitNow({ type: 'consent.expired', schoolId, aggregateType: 'compliance.consent', aggregateId: String(c.id), payload: { consentId: String(c.id), userId: String(c.user_id), consentType: String(c.consent_type), expiredAt: String(c.expires_at) } });
           lapsed++;
         }
-        if (lapsed) await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'compliance.consent_lapsed', title: `${lapsed} consent(s) have run out`, body: 'Until they are renewed the school may not do what they covered.', entityType: 'compliance.consent', entityId: schoolId, withinHours: 24 * 7 });
+        if (lapsed) await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 7, { channels: ['in_app'], eventKey: 'compliance.consent_lapsed', title: `${lapsed} consent(s) have run out`, body: 'Until they are renewed the school may not do what they covered.', entityType: 'compliance.consent', entityId: schoolId });
         return { exportsFulfilled: fulfilled, requestsOverdue: overdue.length, consentsLapsed: lapsed };
       },
     };

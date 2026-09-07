@@ -843,7 +843,7 @@ export class HrService {
         const probations = await this.db.query<Row>(`SELECT * FROM staff WHERE school_id = ? AND status = 'probation' AND probation_end IS NOT NULL AND probation_end <= ?`, [schoolId, soon]);
         const documents = await this.db.query<Row>(`SELECT d.*, s.first_name, s.last_name, s.user_id, s.phone FROM staff_documents d JOIN staff s ON s.id = d.staff_id WHERE d.school_id = ? AND d.expires_at IS NOT NULL AND d.expires_at <= ? AND s.status IN ('active','probation','on_leave')`, [schoolId, soon]);
         for (const c of contracts) {
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'hr.contract_expiring', title: 'Contract ending soon', body: `${c.first_name} ${c.last_name ?? ''}: contract ends on ${String(c.end_date).slice(0, 10)}.`, entityType: 'hr.contract', entityId: String(c.id), withinHours: 24 * 14 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 14, { channels: ['in_app', 'push'], eventKey: 'hr.contract_expiring', title: 'Contract ending soon', body: `${c.first_name} ${c.last_name ?? ''}: contract ends on ${String(c.end_date).slice(0, 10)}.`, entityType: 'hr.contract', entityId: String(c.id) });
           await this.tasks.ensure({ schoolId, title: `Renew or close the contract of ${c.first_name}`, taskType: 'hr.contract', assignedRole: 'admin', entityType: 'hr.contract', entityId: String(c.id), dueAt: String(c.end_date).slice(0, 10) });
         }
         for (const s of probations) {
@@ -854,7 +854,7 @@ export class HrService {
         for (const d of documents) {
           const on = String(d.expires_at).slice(0, 10);
           const gone = on < today;
-          await this.notifications.notifyOnce({ schoolId, userId: (d.user_id as string) ?? null, address: (d.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'hr.document_expiring', title: gone ? 'A document of yours has expired' : 'A document of yours is about to expire', body: `${String(d.doc_type).replace(/_/g, ' ')} ${gone ? 'expired on' : 'expires on'} ${on}. Please give the office a current copy.`, entityType: 'hr.staff_document', entityId: String(d.id), withinHours: 24 * 14 });
+          await this.notifications.notifyOnce(24 * 14, { schoolId, userId: (d.user_id as string) ?? null, address: (d.phone as string) ?? null, channels: ['in_app', 'push'], eventKey: 'hr.document_expiring', title: gone ? 'A document of yours has expired' : 'A document of yours is about to expire', body: `${String(d.doc_type).replace(/_/g, ' ')} ${gone ? 'expired on' : 'expires on'} ${on}. Please give the office a current copy.`, entityType: 'hr.staff_document', entityId: String(d.id) });
           await this.tasks.ensure({ schoolId, title: `${d.first_name} ${d.last_name ?? ''}: ${String(d.doc_type).replace(/_/g, ' ')} ${gone ? 'has expired' : `expires on ${on}`}`.trim(), taskType: 'hr.document', assignedRole: 'admin', entityType: 'hr.staff_document', entityId: String(d.id), dueAt: on, priority: gone ? 'high' : 'normal' });
         }
         return { contracts: contracts.length, probations: probations.length, documents: documents.length };
@@ -891,7 +891,7 @@ export class HrService {
             continue;
           }
           const net = Number(run.total_net ?? 0);
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'hr.payroll_awaiting_approval', title: `Payroll for ${month} is waiting for approval`, body: `${Number(run.staff_count)} staff, ${net} net. It was due on ${due} and nobody has approved it.`, entityType: 'hr.payroll', entityId: String(run.id), withinHours: 24 * 14 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 14, { channels: ['in_app', 'push'], eventKey: 'hr.payroll_awaiting_approval', title: `Payroll for ${month} is waiting for approval`, body: `${Number(run.staff_count)} staff, ${net} net. It was due on ${due} and nobody has approved it.`, entityType: 'hr.payroll', entityId: String(run.id) });
           await this.tasks.ensure({ schoolId, title: `Approve the ${month} payroll (${Number(run.staff_count)} staff, ${net} net)`, description: 'The run is calculated and the payslips are ready. Approving it renders them, writes the bank file and posts the journal.', taskType: 'hr.payroll', assignedRole: 'admin', entityType: 'hr.payroll', entityId: String(run.id), dueAt: due, priority: 'high' });
           await this.outbox.emitNow({ type: 'payroll.approval_due', schoolId, aggregateType: 'hr.payroll', aggregateId: String(run.id), payload: { runId: String(run.id), month, staff: Number(run.staff_count), net, payDay: due } });
           awaiting++;
@@ -903,7 +903,7 @@ export class HrService {
           const figures = await this.settlementFigures(schoolId, ex, {});
           const name = `${ex.first_name} ${ex.last_name ?? ''}`.trim();
           await this.tasks.ensure({ schoolId, title: `Settle ${name}: ${figures.settlement.net} net`, description: `Left on ${String(ex.last_working_day).slice(0, 10)}. Leave encashment ${figures.settlement.encashment}, provident fund ${figures.settlement.pfPayable}, gratuity ${figures.settlement.gratuity}, loan recovered ${figures.settlement.loanRecovered}. Check the clearance, then settle.`, taskType: 'hr.settlement', assignedRole: 'accountant', entityType: 'hr.exit', entityId: String(ex.id), dueAt: String(ex.last_working_day).slice(0, 10), priority: 'high' });
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'hr.settlement_due', title: `${name} has left and is not settled`, body: `Last working day ${String(ex.last_working_day).slice(0, 10)}. The settlement comes to ${figures.settlement.net}.`, entityType: 'hr.exit', entityId: String(ex.id), withinHours: 24 * 7 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 7, { channels: ['in_app'], eventKey: 'hr.settlement_due', title: `${name} has left and is not settled`, body: `Last working day ${String(ex.last_working_day).slice(0, 10)}. The settlement comes to ${figures.settlement.net}.`, entityType: 'hr.exit', entityId: String(ex.id) });
           await this.outbox.emitNow({ type: 'staff.settlement_due', schoolId, aggregateType: 'hr.exit', aggregateId: String(ex.id), payload: { staffId: String(ex.staff_id), exitId: String(ex.id), lastWorkingDay: String(ex.last_working_day).slice(0, 10), net: figures.settlement.net } });
           settlements++;
         }

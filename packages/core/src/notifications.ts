@@ -76,29 +76,6 @@ export class NotificationService {
     return ids;
   }
 
-  /**
-   * Has this exact message already gone out about this exact thing recently? A watch that runs every
-   * night finds the same overdue work order, the same open safeguarding case and the same expiring
-   * paper every night, and a school that is told the same thing thirty times stops reading any of it.
-   * The `notifications` rows are the record of what was said, so they are also the guard.
-   */
-  async sentSince(schoolId: string, eventKey: string, entityId: string, withinHours: number): Promise<boolean> {
-    const since = nowSql(new Date(Date.now() - withinHours * 3600_000));
-    const rows = await this.db.query<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM notifications WHERE school_id = ? AND event_key = ? AND entity_id = ? AND created_at >= ?`, [schoolId, eventKey, entityId, since]);
-    return Number(rows[0]?.n ?? 0) > 0;
-  }
-  /** `notify`, unless the same event about the same entity went out inside `withinHours`. */
-  async notifyOnce(input: NotifyInput & { entityId: string; withinHours: number }): Promise<string[]> {
-    if (await this.sentSince(input.schoolId, input.eventKey, input.entityId, input.withinHours)) return [];
-    return this.notify(input);
-  }
-  /** `notifyRole`, with the same guard: the whole fan-out is skipped, not one recipient of it. */
-  async notifyRoleOnce(schoolId: string, role: string, input: Omit<NotifyInput, 'schoolId' | 'userId'> & { entityId: string; withinHours: number }): Promise<string[]> {
-    if (await this.sentSince(schoolId, input.eventKey, input.entityId, input.withinHours)) return [];
-    return this.notifyRole(schoolId, role, input);
-  }
-
   async deliver(ids: string[]): Promise<{ sent: number; failed: number }> {
     let sent = 0, failed = 0;
     for (const id of ids) {

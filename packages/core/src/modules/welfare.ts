@@ -240,7 +240,7 @@ export class WelfareService {
         const due = await this.db.query<Row>(`SELECT v.*, s.first_name FROM vaccinations v JOIN students s ON s.id = v.student_id WHERE v.school_id = ? AND v.next_due_on IS NOT NULL AND v.next_due_on BETWEEN ? AND ?`, [schoolId, nowSql().slice(0, 10), addDays(nowSql().slice(0, 10), 7)]);
         let reminded = 0;
         for (const v of due) {
-          if (await this.notifications.sentSince(schoolId, 'welfare.vaccination_due', String(v.id), 24 * 30)) continue;
+          if (await this.notifications.sentSince(schoolId, 'welfare.vaccination_due', String(v.id), nowSql(new Date(Date.now() - (24 * 30) * 3600_000)))) continue;
           await this.notifyGuardians(schoolId, String(v.student_id), 'welfare.vaccination_due', 'Vaccination due', `${v.first_name}: ${v.vaccine} dose ${v.dose_no} is due on ${String(v.next_due_on).slice(0, 10)}.`, String(v.id), ['sms', 'push', 'in_app']);
           reminded++;
         }
@@ -266,7 +266,7 @@ export class WelfareService {
         const open = await this.db.query<Row>(`SELECT * FROM safeguarding_cases WHERE school_id = ? AND status = 'open' AND created_at < ? ORDER BY created_at LIMIT 200`, [schoolId, fortnight]);
         let reviews = 0;
         for (const c of open) {
-          if (await this.notifications.sentSince(schoolId, 'welfare.case_review_due', String(c.id), 24 * 14)) continue;
+          if (await this.notifications.sentSince(schoolId, 'welfare.case_review_due', String(c.id), nowSql(new Date(Date.now() - (24 * 14) * 3600_000)))) continue;
           const daysOpen = Math.max(0, Math.round((Date.now() - Date.parse(`${String(c.created_at).replace(' ', 'T')}Z`)) / 86_400_000));
           const body = `A case opened ${daysOpen} day(s) ago is still open. Risk level ${c.risk_level}. Open the case to see it.`;
           const alert = { channels: ['push', 'in_app'] as ('push' | 'in_app')[], eventKey: 'welfare.case_review_due', title: 'A safeguarding case is due for review', body, entityType: 'welfare.safeguarding', entityId: String(c.id) };

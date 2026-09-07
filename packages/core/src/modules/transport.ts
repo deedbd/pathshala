@@ -256,7 +256,7 @@ export class TransportService {
         }
         if (problems.length) {
           const body = problems.map(p => `${p.route} (${p.riders} riders): ${p.reasons.join(', ')}`).join(' · ');
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'transport.not_ready', title: `${problems.length} route(s) are not ready for ${forDate}`, body: body.slice(0, 600), entityType: 'transport.readiness', entityId: forDate, withinHours: 20 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 20, { channels: ['push', 'in_app'], eventKey: 'transport.not_ready', title: `${problems.length} route(s) are not ready for ${forDate}`, body: body.slice(0, 600), entityType: 'transport.readiness', entityId: forDate });
           await this.tasks.ensure({ schoolId, title: `${problems.length} route(s) cannot run on ${forDate}`, description: body.slice(0, 2000), taskType: 'transport.readiness', assignedRole: 'admin', entityType: 'transport.readiness', entityId: forDate, dueAt: forDate, priority: 'urgent' });
         }
         return { forDate, checked: routes.length, problems: problems.length, routes: problems.map(p => p.route) };

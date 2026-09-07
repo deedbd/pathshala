@@ -303,7 +303,7 @@ export class InventoryService {
           if (i.preferred_vendor_id && storeId) {
             const qty = Number(i.reorder_qty ?? i.reorder_level);
             poId = (await this.createPurchaseOrder(schoolId, { vendorId: String(i.preferred_vendor_id), storeId, lines: [{ itemId, quantity: qty, unitCost: Number(i.last_cost ?? 0) }], isAuto: true })).id;
-            await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app', 'push'], eventKey: 'inventory.reorder_drafted', title: 'Stock is low', body: `${i.name} is down to ${Number(i.quantity)} ${i.unit}. A draft order for ${qty} is waiting for approval.`, entityType: 'inventory.purchase_order', entityId: poId, withinHours: 24 });
+            await this.notifications.notifyRoleOnce(schoolId, 'admin', 24, { channels: ['in_app', 'push'], eventKey: 'inventory.reorder_drafted', title: 'Stock is low', body: `${i.name} is down to ${Number(i.quantity)} ${i.unit}. A draft order for ${qty} is waiting for approval.`, entityType: 'inventory.purchase_order', entityId: poId });
             drafted++;
           } else {
             if (await this.tasks.ensure({ schoolId, title: `${i.name} is down to ${Number(i.quantity)} ${i.unit} — choose a vendor and order`, taskType: 'inventory.reorder', assignedRole: 'admin', entityType: 'inventory.item', entityId: itemId, priority: 'high' })) flagged++;

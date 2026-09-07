@@ -213,15 +213,15 @@ export class GovernanceService {
         await this.expireTerms(schoolId);
         const late = await this.resolutions(schoolId, { overdueOnly: true });
         for (const r of late) {
-          if (r.owner_id) await this.notifications.notifyOnce({ schoolId, userId: String(r.owner_id), channels: ['in_app', 'push'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} is overdue`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id), withinHours: 24 * 7 });
-          else await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} has nobody on it`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id), withinHours: 24 * 7 });
+          if (r.owner_id) await this.notifications.notifyOnce(24 * 7, { schoolId, userId: String(r.owner_id), channels: ['in_app', 'push'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} is overdue`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id) });
+          else await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 7, { channels: ['in_app'], eventKey: 'governance.resolution_overdue', title: `Resolution ${r.number} has nobody on it`, body: String(r.text).slice(0, 160), entityType: 'governance.resolution', entityId: String(r.id) });
         }
         // a meeting that was held and never minuted: three days is long enough to write them up
         const cutoff = nowSql(new Date(Date.now() - 3 * 86_400_000));
         const unminuted = await this.db.query<Row>(`SELECT * FROM meetings WHERE school_id = ? AND status = 'scheduled' AND held_at < ? ORDER BY held_at LIMIT 100`, [schoolId, cutoff]);
         for (const m of unminuted) {
           await this.tasks.ensure({ schoolId, title: `Write up the minutes of "${String(m.title).slice(0, 80)}"`, description: `Held on ${String(m.held_at).slice(0, 16)}. Until the minutes are recorded, the decisions taken there are not tasks anybody can see.`, taskType: 'governance.minutes', assignedRole: 'admin', entityType: 'governance.meeting', entityId: String(m.id), priority: 'normal' });
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['in_app'], eventKey: 'governance.minutes_overdue', title: 'Minutes have not been recorded', body: `"${m.title}" was held on ${String(m.held_at).slice(0, 16)} and has no minutes.`, entityType: 'governance.meeting', entityId: String(m.id), withinHours: 24 * 7 });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 24 * 7, { channels: ['in_app'], eventKey: 'governance.minutes_overdue', title: 'Minutes have not been recorded', body: `"${m.title}" was held on ${String(m.held_at).slice(0, 16)} and has no minutes.`, entityType: 'governance.meeting', entityId: String(m.id) });
           await this.outbox.emitNow({ type: 'meeting.minutes_overdue', schoolId, aggregateType: 'governance.meeting', aggregateId: String(m.id), payload: { meetingId: String(m.id), title: String(m.title), heldAt: String(m.held_at) } });
         }
         // policies published a fortnight ago that people still have not acknowledged
@@ -232,7 +232,7 @@ export class GovernanceService {
           const status = await this.policyStatus(schoolId, String(p.id));
           if (!status.pending.length) continue;
           for (const u of status.pending) {
-            await this.notifications.notifyOnce({ schoolId, userId: u.id, channels: ['in_app', 'push'], eventKey: 'governance.policy_unacknowledged', title: `Please read "${p.title}" (v${p.version})`, body: 'It was published a fortnight ago and you have not confirmed you have read it.', entityType: 'governance.policy', entityId: `${p.id}:${u.id}`, withinHours: 24 * 14 });
+            await this.notifications.notifyOnce(24 * 14, { schoolId, userId: u.id, channels: ['in_app', 'push'], eventKey: 'governance.policy_unacknowledged', title: `Please read "${p.title}" (v${p.version})`, body: 'It was published a fortnight ago and you have not confirmed you have read it.', entityType: 'governance.policy', entityId: `${p.id}:${u.id}` });
           }
           await this.tasks.ensure({ schoolId, title: `${status.pending.length} of ${status.expected} have not acknowledged "${String(p.title).slice(0, 60)}"`, description: status.pending.map(u => u.name).join(', ').slice(0, 2000), taskType: 'governance.policy', assignedRole: 'admin', entityType: 'governance.policy', entityId: String(p.id) });
           await this.outbox.emitNow({ type: 'policy.unacknowledged', schoolId, aggregateType: 'governance.policy', aggregateId: String(p.id), payload: { policyId: String(p.id), title: String(p.title), version: Number(p.version), pending: status.pending.length } });

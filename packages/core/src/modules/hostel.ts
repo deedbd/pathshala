@@ -292,8 +292,8 @@ export class HostelService {
           if (Number(taken[0]?.n ?? 0) > 0) continue;
           const warden = h.warden_id ? await this.db.findOne<Row>('staff', { id: String(h.warden_id) }) : null;
           const body = `No night roll call has been marked in ${h.name} for ${onDate}. ${Number(h.residents)} resident(s) are unaccounted for on paper.`;
-          if (warden?.user_id) await this.notifications.notifyOnce({ schoolId, userId: String(warden.user_id), channels: ['push', 'in_app', 'sms'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, withinHours: 20 });
-          await this.notifications.notifyRoleOnce(schoolId, 'admin', { channels: ['push', 'in_app'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, withinHours: 20 });
+          if (warden?.user_id) await this.notifications.notifyOnce(20, { schoolId, userId: String(warden.user_id), channels: ['push', 'in_app', 'sms'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}` });
+          await this.notifications.notifyRoleOnce(schoolId, 'admin', 20, { channels: ['push', 'in_app'], eventKey: 'hostel.rollcall_missing', title: 'The night roll call has not been taken', body, entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}` });
           const wardenUser = (warden?.user_id as string) ?? null;   // a task is held by a user account, not a staff row
           await this.tasks.ensure({ schoolId, title: `Take the night roll call in ${h.name} (${onDate})`, taskType: 'hostel.rollcall', assignedTo: wardenUser, assignedRole: wardenUser ? null : 'admin', entityType: 'hostel.rollcall', entityId: `${h.id}:${onDate}`, priority: 'urgent' });
           await this.outbox.emitNow({ type: 'hostel.rollcall_missing', schoolId, aggregateType: 'hostel.hostel', aggregateId: String(h.id), payload: { hostelId: String(h.id), onDate, call: 'night', residents: Number(h.residents) } });
