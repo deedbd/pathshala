@@ -34,6 +34,24 @@ on SQLite, MySQL 8 and Postgres 16:
 | 8 | Behaviour, health and the clinic, counselling and safeguarding, LMS, surveys, events | points propose an action; confidential notes stay encrypted |
 | 9 | Hardening: the security review as a test, backup and restore, the engine move, the load run | 5 schools × 1,500 students in one database; a request answers in 0.36 s with 11,800 events still queued |
 
+**Years 2 and 3 of `docs/ROADMAP-5Y.md` are being built on top of those nine phases**, in the same
+way — a module, its automation rows, its API, a console page, and a test that proves the exit
+criterion on all three engines:
+
+| Area | What it covers | Proven by |
+|---|---|---|
+| Wallet & shop | A card instead of cash, a top-up that is a liability until something is sold, a daily limit refused at the till, orders from the app | `tests/year2a.test.mjs` |
+| Scholarships & giving | Funds that cannot promise more than they hold, awards that become fee discounts, appeals with a public page, receipts with a verification code | `tests/year2a.test.mjs` |
+| Alumni | A directory written the day a class graduates, mentorship capped at three, a job board that closes its own expired posts | `tests/year2a.test.mjs` |
+| Facilities | Bookings the timetable wins, work orders whose deadline comes from their priority, meters that only count up | `tests/year2b.test.mjs` |
+| Governance | Resolutions that become tasks with owners, policies that name who has not read them, a secret ballot | `tests/year2b.test.mjs` |
+| Compliance | The BANBEIS census built from the register, stipends, consent as an append-only history, retention that reports and never deletes | `tests/year2b.test.mjs` |
+| Analytics | Metrics from the register, anomalies against the school's own median, risk scores that carry their reasons, cohort benchmarks | `tests/year2c.test.mjs` |
+| Communication+ | WhatsApp and voice calls beside SMS; one broadcast to an audience resolved from the school's own records | `tests/year2c.test.mjs` |
+| Assessment+ | Competency assessment beside marks, OMR a person checks when the machine is unsure, board registration and results | `tests/year2c.test.mjs` |
+| SaaS & marketplace | Plans and resellers where an unpaid bill stops new work and never locks a school out; plugins behind signed webhooks; a scoped public API at `/api/v1` | `tests/year3a.test.mjs` |
+| Assistant | Data questions answered by code from the school's own rows; drafting needs a provider and is always a draft somebody applies | `tests/year3a.test.mjs` |
+
 What is left needs a real school and a real host rather than more code: a run on an actual Namecheap
 account, a pilot school live with a real SMS gateway and payment merchant, and the smaller gaps each
 phase lists under "Not yet".
