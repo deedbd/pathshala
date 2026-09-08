@@ -8,7 +8,9 @@ import { redirect, useRouteLoaderData } from 'react-router';
  * (the app sits at that host's root) and `/<slug>` when the first path segment did. It is also `''`
  * on the vendor's own host-and-root, where `tenant` is null altogether and no school page is served.
  */
-export type Tenant = { schoolId: string; slug: string; prefix: string; source: string; name: string };
+// the same shape the server publishes (`RequestTenant` in @pathshala/core), declared structurally so
+// this module stays free of a runtime import into core — the web build must not pull core in
+export type Tenant = { schoolId: string; slug: string | null; prefix: string; source: string; name: string };
 
 /** The load context, as far as this module cares. Kept structural so it works in loaders and actions alike. */
 export type TenantContext = { tenant?: Tenant | null };
