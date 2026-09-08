@@ -296,6 +296,33 @@ describe('phase 6', () => {
     assert.equal(twice.cards, 0);
   });
 
+  test('the console can read the card register and download what was issued', async () => {
+    const cards = await api('/documents/id-cards');
+    assert.ok(cards.length >= 1);
+    const card = cards[0];
+    assert.match(String(card.card_no), /^STU-\d{6}$/);
+    assert.ok(card.s_first, 'the register names the holder rather than an id');
+    assert.equal(String(card.valid_to).slice(0, 10), '2027-12-31');
+    assert.ok(card.file_id, 'and the printed sheet is offered for download');
+    assert.equal((await api('/documents/id-cards?status=lost')).length, 0, 'the filter narrows rather than returning everything');
+
+    // an admit card is an issued document like any other, and — unlike before — its PDF is reachable
+    // from the list the office reads, rather than only from the row that issued it. It is raised the
+    // way a seat plan raises one (no student row of its own), so no guardian's list changes.
+    const raised = await app.documents.issue(schoolId, { docType: 'admit_card', personType: 'other', data: { name: 'Seat holder', application_no: '1', test: 'Half-yearly', held_at: '2027-06-01', venue: 'Hall A', guardian: 'Guardian' } });
+    const admitCards = await api('/documents/issued?docType=admit_card');
+    assert.equal(admitCards.length, 1);
+    const admit = admitCards[0];
+    assert.equal(String(admit.document_no), raised.documentNo);
+    assert.ok(admit.file_id, 'the admit card PDF is on the row, so the office can hand it over');
+    assert.ok(String(admit.verification_code).length >= 8);
+    assert.ok(String(admit.document_no).startsWith('ADMIT_-'), admit.document_no);
+    const url = await api(`/files/${admit.file_id}/url`);
+    const u = new URL(url.url);
+    const buf = Buffer.from(await (await fetch(`${baseUrl}${u.pathname}${u.search}`)).arrayBuffer());
+    assert.equal(buf.subarray(0, 4).toString(), '%PDF', 'and it really is the PDF');
+  });
+
   test('a guardian sees their own child’s documents and nobody else’s', async () => {
     const g = (await app.db.query(`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id = g.id WHERE sg.student_id = ?`, [enrolledStudentId]))[0];
     const session = await app.auth.createSession(await app.db.findOne('users', { id: g.user_id }));

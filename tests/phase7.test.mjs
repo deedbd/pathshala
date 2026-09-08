@@ -115,6 +115,46 @@ describe('phase 7', () => {
     assert.ok(hold.expires_at, 'and it is held for them');
   });
 
+  test('renewing a loan moves the due date, and is refused once somebody is waiting for the title', async () => {
+    const b = await api('/library/books', { title: 'Ekattorer Dinguli', authors: ['Jahanara Imam'], price: 300, copies: 1 });
+    const copy = (await app.library.copies(schoolId, b.id))[0];
+    const reader = (await api('/library/members', { memberType: 'student', studentId: students[2].id, maxBooks: 2, loanDays: 7, finePerDay: 5 })).id;
+    const issued = await api('/library/issues', { accessionNo: String(copy.accession_no), memberId: reader });
+    // pull the due date back so the renewal has somewhere to move it to
+    await api(`/library/issues?memberId=${reader}`);
+    await app.db.execute(`UPDATE library_issues SET due_at = ? WHERE id = ?`, [daysAhead(1), issued.id]);
+    const renewed = await api(`/library/issues/${issued.id}/renew`, {});
+    assert.ok(renewed.dueAt > daysAhead(1), `the due date moved forward: ${renewed.dueAt}`);
+    const row = await app.db.findOne('library_issues', { id: issued.id });
+    assert.equal(String(row.due_at).slice(0, 10), renewed.dueAt, 'and the row itself carries the new date');
+    assert.equal(Number(row.renew_count), 1);
+    // once a second reader is in the queue the copy is not renewed out from under them
+    const waiting = (await api('/library/members', { memberType: 'student', studentId: students[3].id })).id;
+    await api('/library/reservations', { bookId: b.id, memberId: waiting });
+    await assert.rejects(() => api(`/library/issues/${issued.id}/renew`, {}), /waiting/);
+    const queue = await api(`/library/reservations?bookId=${b.id}`);
+    assert.equal(queue.length, 1);
+    assert.equal(String(queue[0].status), 'waiting');
+    assert.equal(Number(queue[0].ahead), 0, 'first in the queue');
+    assert.equal(String(queue[0].title), 'Ekattorer Dinguli', 'the list names the book, not an id');
+    // the 48-hour hold shows on the list the moment the copy comes back
+    await api('/library/return', { issueId: issued.id });
+    const ready = (await api(`/library/reservations?bookId=${b.id}`))[0];
+    assert.equal(String(ready.status), 'ready');
+    assert.ok(ready.expires_at, 'and the console can see how long it is held for');
+  });
+
+  test('the member list carries the card, the limits and who it belongs to', async () => {
+    const members = await api('/library/members');
+    assert.ok(members.length >= 3);
+    const mine = members.find(m => String(m.id) === memberId);
+    assert.match(String(mine.card_no), /^LIB-\d{5}$/);
+    assert.equal(Number(mine.max_books), 1);
+    assert.equal(Number(mine.loan_days), 7);
+    assert.ok(mine.s_first, 'a student member is named, not just numbered');
+    assert.ok(members.some(m => String(m.member_type) === 'staff'), 'staff are members too');
+  });
+
   // ---------------- transport ----------------
   test('a route with stops, riders paying the route fee, and today’s trips', async () => {
     vehicleId = (await api('/transport/vehicles', { registrationNo: 'DHAKA-METRO-GA-11-2233', capacity: 40, insuranceExpiry: daysAhead(20) })).id;
@@ -167,6 +207,31 @@ describe('phase 7', () => {
     await drain();
     const task = await app.db.count('tasks', { school_id: schoolId, task_type: 'transport.safety' });
     assert.equal(task, 1, 'and somebody has to account for it');
+  });
+
+  test('the office can read who got on which bus, and where each bus was last seen', async () => {
+    const boardings = await api('/transport/boardings');
+    assert.ok(boardings.length >= 3, 'every tap of the day');
+    const first = boardings.find(b => String(b.student_id) === students[0].id);
+    assert.ok(first, 'the child who boarded the morning bus is on it');
+    assert.equal(String(first.route_name), 'Mirpur route', 'the row names the route, not an id');
+    assert.equal(String(first.stop_name), 'Mirpur 10');
+    assert.ok(first.boarded_at, 'with the time they got on');
+    assert.ok(boardings.some(b => b.boarded_at && !b.alighted_at), 'and one who has not been marked off');
+
+    const live = await api('/transport/live');
+    assert.equal(live.date, new Date().toISOString().slice(0, 10));
+    assert.ok(live.trips.length >= 2);
+    const pickup = live.trips.find(t => t.tripId === tripId);
+    assert.ok(pickup, 'the pickup trip is listed');
+    assert.equal(pickup.route, 'Mirpur route');
+    assert.equal(pickup.scheduledStart, '07:00', 'against which the delay is measured');
+    assert.equal(typeof pickup.delayMin, 'number');
+    assert.ok(pickup.lastFix, 'the GPS packets that were ingested are finally read');
+    assert.equal(Number(pickup.lastFix.latitude.toFixed(4)), 23.8069);
+    assert.equal(typeof pickup.lastFix.ageMin, 'number');
+    assert.ok(pickup.lastFix.ageMin <= 5, 'and the console says how stale the fix is');
+    assert.equal(live.tracked, live.trips.filter(t => t.lastFix).length);
   });
 
   test('papers expiring inside a month become tasks', async () => {
@@ -224,6 +289,24 @@ describe('phase 7', () => {
     const rc = await api('/hostel/roll-call', { hostelId, onDate: new Date().toISOString().slice(0, 10), call: 'night', marks: [{ studentId: students[0].id, status: 'absent' }] });
     assert.equal(rc.saved, 1);
     assert.ok(await notified('hostel.missing_at_rollcall') >= 1, 'the warden and the guardian both hear about it');
+  });
+
+  test('the roll-call sheet lists every resident with what was already marked', async () => {
+    const sheet = await api(`/hostel/roll-call?hostelId=${hostelId}&date=${new Date().toISOString().slice(0, 10)}&call=night`);
+    assert.equal(sheet.taken, true, 'the call above was saved');
+    assert.equal(sheet.rows.length, 1, 'one resident so far');
+    assert.equal(sheet.rows[0].studentId, students[0].id);
+    assert.equal(sheet.rows[0].status, 'absent', 'and the sheet comes back showing it');
+    assert.equal(sheet.rows[0].roomNo, '101');
+    assert.ok(sheet.rows[0].name.length, 'named, not numbered');
+    // tomorrow has no marks yet, so everybody starts present and an out-pass explains itself
+    const tomorrow = daysAhead(1);
+    await app.db.execute(`UPDATE hostel_outpasses SET guardian_consent_at = ?, status = 'approved', leave_from = ?, expected_return = ? WHERE student_id = ? AND status = 'pending'`,
+      [nowSql(), `${tomorrow} 06:00:00`, `${tomorrow} 20:00:00`, students[0].id]);
+    const next = await api(`/hostel/roll-call?hostelId=${hostelId}&date=${tomorrow}&call=night`);
+    assert.equal(next.taken, false);
+    assert.equal(next.rows[0].onOutpass, true, 'the pass is on the sheet before anybody is chased for the absence');
+    assert.equal(next.rows[0].status, 'on_outpass');
   });
 
   test('a mess that charges by the meal bills what was actually eaten, once', async () => {
@@ -328,6 +411,39 @@ describe('phase 7', () => {
     assert.equal(Number(after.find(s => String(s.item_id) === itemId).quantity), system - 2, 'the shelf now agrees with the count');
     const adjust = (await app.inventory.movements(schoolId, itemId)).find(m => m.move_type === 'adjust');
     assert.ok(adjust, 'and the difference is a movement anyone can see');
+  });
+
+  test('the store keeper reads the whole ledger, the requests and the register, not one item at a time', async () => {
+    const ledger = await api('/inventory/movements');
+    assert.ok(ledger.length >= 4, 'the whole store, not one shelf');
+    assert.ok(ledger.every(m => m.item_name && m.store_name), 'each row names its item and its store');
+    assert.ok(ledger.some(m => String(m.ref_type) === 'goods_receipt'), 'including what a delivery put in');
+    const one = await api(`/inventory/movements?itemId=${itemId}`);
+    assert.ok(one.length < ledger.length && one.every(m => String(m.item_id) === itemId), 'and it still narrows to one item');
+    assert.equal((await api('/inventory/movements?moveType=adjust')).length, 1, 'the physical count');
+
+    await api('/inventory/requisitions', { requestedBy: staffId, items: [{ itemId, quantity: 5 }], justification: 'Exam printing' });
+    const reqs = await api('/inventory/requisitions');
+    assert.equal(reqs.length, 1);
+    assert.equal(String(reqs[0].justification), 'Exam printing');
+    assert.ok(reqs[0].first_name, 'the request says who asked, not which id asked');
+
+    await api('/inventory/issues', { requestedBy: staffId, storeId, items: [{ itemId, quantity: 2 }], purpose: 'Class 5 A' });
+    const issues = await api('/inventory/issues');
+    assert.equal(issues.length, 1);
+    assert.equal(String(issues[0].purpose), 'Class 5 A');
+    assert.equal(String(issues[0].store_name), (await app.db.findOne('stores', { id: storeId })).name);
+  });
+
+  test('the asset register carries the dates that decide whether anybody has to act', async () => {
+    const assets = await api('/inventory/assets');
+    assert.ok(assets.length >= 3);
+    const chair = assets[0];
+    assert.equal(chair.next_service_on ?? null, null, 'nothing is due before a service is booked');
+    await api(`/inventory/assets/${chair.id}/service`, { serviceType: 'preventive', cost: 500, nextDueDate: daysAhead(20), notes: 'Tightened' });
+    const after = (await api('/inventory/assets')).find(a => String(a.id) === String(chair.id));
+    assert.equal(String(after.next_service_on).slice(0, 10), daysAhead(20), 'the screen reads the date the expiry job reads');
+    assert.ok(after.last_service_on, 'and when it was last touched');
   });
 
   // ---------------- front office ----------------

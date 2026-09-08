@@ -248,6 +248,15 @@ export class DocumentService {
     return { result: { cards: ids.length, fileId: f.id } };
   }
   async printJobs(schoolId: string) { return this.db.findMany<Row>('print_jobs', { school_id: schoolId }, { orderBy: 'created_at DESC', limit: 50 }); }
+  /** The card register: who holds one, until when, and which sheet it was printed on. */
+  async idCards(schoolId: string, f: { status?: string; personType?: 'student' | 'staff' } = {}) {
+    const where = ['c.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.status) { where.push('c.status = ?'); params.push(f.status); }
+    if (f.personType) { where.push('c.person_type = ?'); params.push(f.personType); }
+    return this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, cl.name AS class_name, st.first_name AS t_first, st.last_name AS t_last, st.employee_no
+      FROM id_cards c LEFT JOIN students s ON s.id = c.student_id LEFT JOIN classes cl ON cl.id = s.current_class_id LEFT JOIN staff st ON st.id = c.staff_id
+      WHERE ${where.join(' AND ')} ORDER BY c.card_no DESC LIMIT 500`, params);
+  }
 
   // ---------- pdf ----------
   private doc(school: Row | null, title: string, body: string, documentNo: string, code: string, data: Record<string, string>) {

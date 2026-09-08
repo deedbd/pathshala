@@ -120,6 +120,23 @@ export class WelfareService {
       visits: await this.db.findMany<Row>('clinic_visits', { school_id: schoolId, student_id: studentId }, { orderBy: 'visited_at DESC', limit: 50 }),
     };
   }
+  /**
+   * The clinic day book: who came in, what they came in with, what was given, who went home. It is
+   * the one welfare list that is not confidential — a treatment note is what the nurse wrote on a
+   * card taped to the door, not a counselling note — so it carries its own words. The counselling
+   * and safeguarding lists still strip theirs.
+   */
+  async clinicVisits(schoolId: string, f: { onDate?: string; studentId?: string; limit?: number } = {}) {
+    const where = ['v.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.onDate) { where.push('v.visited_at >= ? AND v.visited_at <= ?'); params.push(`${f.onDate} 00:00:00`, `${f.onDate} 23:59:59`); }
+    if (f.studentId) { where.push('v.student_id = ?'); params.push(f.studentId); }
+    const limit = Math.min(500, Math.max(1, Math.floor(f.limit ?? 200)));
+    return this.db.query<Row>(`SELECT v.*, s.first_name, s.last_name, s.admission_no, c.name AS class_name, st.first_name AS staff_first, st.last_name AS staff_last
+      FROM clinic_visits v LEFT JOIN students s ON s.id = v.student_id LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN staff st ON st.id = v.staff_id
+      WHERE ${where.join(' AND ')} ORDER BY v.visited_at DESC LIMIT ${limit}`, params);
+  }
+  /** The thresholds the nightly pass measures against — the school's own rows, shown as they are. */
+  async behaviourRules(schoolId: string) { return this.db.findMany<Row>('behaviour_rules', { school_id: schoolId }, { orderBy: 'window_days ASC' }); }
   async recordVaccination(schoolId: string, v: { studentId: string; vaccine: string; doseNo?: number; givenOn?: string | null; nextDueOn?: string | null }) {
     const ex = await this.db.findOne<Row>('vaccinations', { student_id: v.studentId, vaccine: v.vaccine, dose_no: v.doseNo ?? 1 });
     const row = { school_id: schoolId, student_id: v.studentId, vaccine: v.vaccine, dose_no: v.doseNo ?? 1, given_on: v.givenOn ?? null, next_due_on: v.nextDueOn ?? null, certificate_file_id: null };
@@ -168,12 +185,14 @@ export class WelfareService {
     return { id: sessionId, notes: s.notes_encrypted ? decryptSecret(String(s.notes_encrypted), this.appKey) : null };
   }
   async counsellingSessions(schoolId: string, f: { studentId?: string; counsellorId?: string } = {}) {
-    const where: Row = { school_id: schoolId };
-    if (f.studentId) where.student_id = f.studentId;
-    if (f.counsellorId) where.counsellor_id = f.counsellorId;
-    // the list never carries the notes themselves
-    const rows = await this.db.findMany<Row>('counselling_sessions', where, { orderBy: 'session_at DESC', limit: 200 });
-    return rows.map(r => ({ ...r, notes_encrypted: undefined, has_notes: !!r.notes_encrypted }));
+    const where = ['c.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.studentId) { where.push('c.student_id = ?'); params.push(f.studentId); }
+    if (f.counsellorId) { where.push('c.counsellor_id = ?'); params.push(f.counsellorId); }
+    // the list never carries the notes themselves — only whether there are any, and who may read them
+    const rows = await this.db.query<Row>(`SELECT c.*, s.first_name, s.last_name, s.admission_no, cl.name AS class_name, st.first_name AS counsellor_first, st.last_name AS counsellor_last
+      FROM counselling_sessions c JOIN students s ON s.id = c.student_id LEFT JOIN classes cl ON cl.id = s.current_class_id LEFT JOIN staff st ON st.id = c.counsellor_id
+      WHERE ${where.join(' AND ')} ORDER BY c.session_at DESC LIMIT 200`, params);
+    return rows.map(({ notes_encrypted, ...rest }) => ({ ...rest, has_notes: !!notes_encrypted } as Row));
   }
   async safeguardingCase(schoolId: string, c: { studentId: string; category: 'abuse' | 'neglect' | 'bullying' | 'online_safety' | 'self_harm' | 'other'; details: string; riskLevel?: 'low' | 'medium' | 'high'; reportedBy?: string | null; caseOwnerId?: string | null }) {
     const id = ulid();

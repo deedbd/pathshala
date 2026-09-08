@@ -79,10 +79,38 @@ export class InventoryService {
   }
   async stock(schoolId: string, storeId?: string) {
     const where = storeId ? ' AND l.store_id = ?' : '';
-    return this.db.query<Row>(`SELECT l.*, i.name, i.sku, i.unit, i.reorder_level, s.name AS store_name FROM stock_levels l JOIN inventory_items i ON i.id = l.item_id JOIN stores s ON s.id = l.store_id WHERE l.school_id = ?${where} ORDER BY i.name`, storeId ? [schoolId, storeId] : [schoolId]);
+    return this.db.query<Row>(`SELECT l.*, i.name, i.sku, i.unit, i.reorder_level, i.reorder_qty, i.last_cost, s.name AS store_name, c.name AS category_name
+      FROM stock_levels l JOIN inventory_items i ON i.id = l.item_id JOIN stores s ON s.id = l.store_id LEFT JOIN inventory_categories c ON c.id = i.category_id
+      WHERE l.school_id = ?${where} ORDER BY i.name`, storeId ? [schoolId, storeId] : [schoolId]);
   }
-  async movements(schoolId: string, itemId: string) {
-    return this.db.query<Row>(`SELECT m.*, s.name AS store_name FROM stock_movements m JOIN stores s ON s.id = m.store_id WHERE m.school_id = ? AND m.item_id = ? ORDER BY m.created_at DESC LIMIT 200`, [schoolId, itemId]);
+  /**
+   * The append-only ledger. An item id narrows it to one shelf; without one it is the whole store's
+   * day, which is what the store keeper actually looks at.
+   */
+  async movements(schoolId: string, f: string | { itemId?: string; storeId?: string; moveType?: string; limit?: number } = {}) {
+    const opts = typeof f === 'string' ? { itemId: f } : f;
+    const where = ['m.school_id = ?']; const params: unknown[] = [schoolId];
+    if (opts.itemId) { where.push('m.item_id = ?'); params.push(opts.itemId); }
+    if (opts.storeId) { where.push('m.store_id = ?'); params.push(opts.storeId); }
+    if (opts.moveType) { where.push('m.move_type = ?'); params.push(opts.moveType); }
+    const limit = Math.min(500, Math.max(1, Math.floor(opts.limit ?? 200)));
+    return this.db.query<Row>(`SELECT m.*, s.name AS store_name, i.name AS item_name, i.sku, i.unit, st.first_name AS to_first, st.last_name AS to_last
+      FROM stock_movements m JOIN stores s ON s.id = m.store_id JOIN inventory_items i ON i.id = m.item_id LEFT JOIN staff st ON st.id = m.issued_to_staff_id
+      WHERE ${where.join(' AND ')} ORDER BY m.created_at DESC, m.id DESC LIMIT ${limit}`, params);
+  }
+  /** What somebody asked to be bought, and where the request has got to. */
+  async requisitions(schoolId: string, status?: string) {
+    const where = ['r.school_id = ?']; const params: unknown[] = [schoolId];
+    if (status) { where.push('r.status = ?'); params.push(status); }
+    return this.db.query<Row>(`SELECT r.*, s.first_name, s.last_name, d.name AS department_name FROM requisitions r LEFT JOIN staff s ON s.id = r.requested_by LEFT JOIN departments d ON d.id = r.department_id
+      WHERE ${where.join(' AND ')} ORDER BY r.created_at DESC LIMIT 300`, params);
+  }
+  /** What somebody asked to be handed out of the store, and whether it has been. */
+  async issueRequests(schoolId: string, status?: string) {
+    const where = ['r.school_id = ?']; const params: unknown[] = [schoolId];
+    if (status) { where.push('r.status = ?'); params.push(status); }
+    return this.db.query<Row>(`SELECT r.*, s.first_name, s.last_name, st.name AS store_name FROM issue_requests r LEFT JOIN staff s ON s.id = r.requested_by LEFT JOIN stores st ON st.id = r.store_id
+      WHERE ${where.join(' AND ')} ORDER BY r.created_at DESC LIMIT 300`, params);
   }
   /** L1: dropping below the reorder level drafts a purchase order and tells the store keeper once. */
   private async checkReorder(schoolId: string, itemId: string, storeId: string, quantity: number) {
@@ -222,10 +250,20 @@ export class InventoryService {
     });
     return id;
   }
+  /**
+   * The register, with the two dates that decide whether anybody has to do anything about an asset:
+   * when the warranty runs out, and when it is next due for service. The service date is the
+   * earliest one still ahead on its maintenance rows — the same date the expiry job raises a task
+   * for — so the screen and the scheduled job never disagree.
+   */
   async assets(schoolId: string, f: { status?: string } = {}) {
-    const where: Row = { school_id: schoolId };
-    if (f.status) where.status = f.status;
-    return this.db.findMany<Row>('assets', where, { orderBy: 'asset_tag ASC', limit: 1000 });
+    const where = ['a.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.status) { where.push('a.status = ?'); params.push(f.status); }
+    return this.db.query<Row>(`SELECT a.*, r.name AS room_name, s.first_name AS custodian_first, s.last_name AS custodian_last,
+        (SELECT MIN(m.next_due_date) FROM asset_maintenance m WHERE m.asset_id = a.id AND m.next_due_date IS NOT NULL) AS next_service_on,
+        (SELECT MAX(m.service_date) FROM asset_maintenance m WHERE m.asset_id = a.id) AS last_service_on
+      FROM assets a LEFT JOIN rooms r ON r.id = a.location_room_id LEFT JOIN staff s ON s.id = a.custodian_staff_id
+      WHERE ${where.join(' AND ')} ORDER BY a.asset_tag ASC LIMIT 1000`, params);
   }
   async assignAsset(schoolId: string, assetId: string, to: { roomId?: string | null; custodianStaffId?: string | null }) {
     return this.db.update('assets', { location_room_id: to.roomId ?? null, custodian_staff_id: to.custodianStaffId ?? null, status: 'in_use', updated_at: nowSql() }, { id: assetId, school_id: schoolId });

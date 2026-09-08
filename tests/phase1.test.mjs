@@ -212,6 +212,31 @@ describe('phase 1', () => {
     assert.equal(other.status, 403, 'not their child');
   });
 
+  test('people: the guardian directory is one row per family, with their children and their account', async () => {
+    const dir = await api('/people/guardians?q=Abdur');
+    assert.equal(dir.rows.length, 1, 'two children on one phone are one family here');
+    const g = dir.rows[0];
+    assert.equal(String(g.full_name), 'Abdur Rahman');
+    assert.equal(String(g.phone), '+8801712345678', 'the phone is stored normalised, so 01… and +880… are one family and one row');
+    assert.equal(Number(g.children), 2);
+    assert.equal(g.childRows.length, 2);
+    assert.ok(g.childRows.every(c => c.first_name && c.admission_no), 'each child is named and numbered');
+    assert.ok(g.childRows.some(c => c.first_name === 'Ayesha') && g.childRows.some(c => c.first_name === 'Bilal'));
+    assert.equal(g.hasAccount, true, 'the account made above shows here');
+    assert.ok(g.lastLoginAt && String(g.lastLoginAt).length >= 16, `the OTP sign-in above is what the office sees: ${g.lastLoginAt}`);
+    assert.ok(!Object.keys(g).includes('password_hash'), 'the directory carries no credential');
+
+    // it pages, and the filter really filters
+    const page = await api('/people/guardians?limit=10');
+    assert.equal(page.rows.length, 10);
+    assert.ok(page.total > 10, `${page.total} guardians in all`);
+    const second = await api('/people/guardians?limit=10&offset=10');
+    assert.ok(!second.rows.some(r => page.rows.some(p => String(p.id) === String(r.id))), 'the second page is a different ten');
+    const noAccount = await api('/people/guardians?hasAccount=0&limit=5');
+    assert.ok(noAccount.rows.every(r => !r.hasAccount), 'and a guardian with no way in can be found');
+    assert.equal((await fetch(`${baseUrl}/api/people/guardians`, { headers: { cookie: guardianCookie } })).status, 403, 'a guardian never reads the directory');
+  });
+
   test('ssr pages render: /site, /portal (guardian), console pages (admin)', async () => {
     for (const [p, ck, needle] of [['/site', '', 'Phase One School'], ['/site/admission', '', 'admission'], ['/portal', guardianCookie, 'Ayesha'], [`/portal/child/${childId}`, guardianCookie, 'Ayesha'], ['/academic', cookie, 'Class'], ['/students?q=Ayesha', cookie, 'Ayesha'], ['/timetable', cookie, 'Auto'], ['/staff', cookie, 'Teacher1'], ['/import', cookie, 'template'], ['/syllabus', cookie, 'Annual'], ['/calendar', cookie, 'Victory'], ['/website', cookie, 'Winter']]) {
       const r = await fetch(`${baseUrl}${p}`, { headers: ck ? { cookie: ck } : {} });

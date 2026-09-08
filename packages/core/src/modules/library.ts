@@ -175,6 +175,17 @@ export class LibraryService {
     await this.db.insert('library_reservations', { id, school_id: schoolId, book_id: bookId, member_id: memberId, reserved_at: nowSql(), notified_at: null, expires_at: null, status: 'waiting' });
     return id;
   }
+  /** The queue and the holds: who is waiting for what, and when a 48-hour hold runs out. */
+  async reservations(schoolId: string, f: { status?: string; bookId?: string } = {}) {
+    const where = ['r.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.status) { where.push('r.status = ?'); params.push(f.status); }
+    if (f.bookId) { where.push('r.book_id = ?'); params.push(f.bookId); }
+    return this.db.query<Row>(`SELECT r.*, b.title, b.available_copies, m.card_no, s.first_name, s.last_name, st.first_name AS staff_first, st.last_name AS staff_last,
+        (SELECT COUNT(*) FROM library_reservations q WHERE q.book_id = r.book_id AND q.status = 'waiting' AND (q.reserved_at < r.reserved_at OR (q.reserved_at = r.reserved_at AND q.id < r.id))) AS ahead
+      FROM library_reservations r JOIN library_books b ON b.id = r.book_id JOIN library_members m ON m.id = r.member_id
+      LEFT JOIN students s ON s.id = m.student_id LEFT JOIN staff st ON st.id = m.staff_id
+      WHERE ${where.join(' AND ')} ORDER BY r.reserved_at DESC LIMIT 300`, params);
+  }
   /** I4: a returned copy is held for the next member for 48 hours. */
   private async offerToNextInQueue(schoolId: string, bookId: string) {
     const next = await this.db.query<Row>(`SELECT * FROM library_reservations WHERE school_id = ? AND book_id = ? AND status = 'waiting' ORDER BY reserved_at ASC, id ASC LIMIT 1`, [schoolId, bookId]);
