@@ -189,9 +189,25 @@ describe('phase 4', () => {
     assert.ok(list.some(x => x.decision === 'promoted'));
     assert.ok(list.some(x => x.decision === 'retained'), 'students who failed are retained');
     const nextYearId = await app.academic.createYear(schoolId, { name: '2027', startDate: '2027-01-01', endDate: '2027-12-31', cloneFromYearId: yearId });
+    // the dry run is the console's Preview button: it must be readable and it must write nothing
+    const enrolBefore = await app.db.count('student_enrollments', { school_id: schoolId, academic_year_id: nextYearId });
+    const promotionsBefore = await app.db.count('promotions', { school_id: schoolId });
     const dry = await api('/exams/annual/promote', { fromYearId: yearId, toYearId: nextYearId });
     assert.equal(dry.applied, false);
     assert.ok(dry.promoted > 0);
+    assert.equal(await app.db.count('student_enrollments', { school_id: schoolId, academic_year_id: nextYearId }), enrolBefore, 'a preview creates no enrolment');
+    assert.equal(await app.db.count('promotions', { school_id: schoolId }), promotionsBefore, 'and no promotion row');
+    assert.equal(dry.promoted + dry.retained + dry.graduated, dry.students, 'every child is in exactly one column');
+    assert.ok(dry.byClass.length, 'the preview breaks down by class');
+    for (const c of dry.byClass) {
+      assert.equal(c.promote + c.retain + c.graduate, c.students, `${c.className} adds up`);
+      assert.match(c.rule, /GPA/, 'and each row says the rule it was judged by');
+    }
+    assert.equal(dry.byClass.reduce((a, c) => a + c.students, 0), dry.students);
+    // running the preview twice still writes nothing
+    const dry2 = await api('/exams/annual/promote', { fromYearId: yearId, toYearId: nextYearId });
+    assert.deepEqual({ p: dry2.promoted, r: dry2.retained, g: dry2.graduated }, { p: dry.promoted, r: dry.retained, g: dry.graduated });
+    assert.equal(await app.db.count('promotions', { school_id: schoolId }), promotionsBefore);
     const applied = await api('/exams/annual/promote', { fromYearId: yearId, toYearId: nextYearId, apply: true });
     assert.equal(applied.applied, true);
     const moved = await app.db.count('student_enrollments', { school_id: schoolId, academic_year_id: nextYearId, status: 'active' });
@@ -217,6 +233,18 @@ describe('phase 4', () => {
     // asking for more than the bank holds is reported, not silently short
     const thin = await api('/questions/papers', { classSubjectId: String(cs.id), title: 'Too big', blueprint: { mcq: { count: 50 } } });
     assert.ok(thin.missing.length === 1 && thin.missing[0].includes('wanted 50'));
+    // the console reads the bank by name, not by id, and knows how often each question has been set
+    const bank = await api('/questions');
+    assert.ok(bank.length >= 15, `${bank.length} questions`);
+    assert.ok(bank.every(q => q.subject_name), 'every row carries its subject name');
+    assert.ok(bank.some(q => Number(q.usage_count) > 0), 'the ones the paper took are counted');
+    assert.equal((await api('/questions?type=short')).length, 5);
+    assert.ok((await api(`/questions?subjectId=${subjectId}`)).length >= 15);
+    const papers = await api('/questions/papers');
+    const model = papers.find(p => p.title === 'Model test');
+    assert.ok(model, JSON.stringify(papers.map(p => p.title)));
+    assert.equal(Number(model.questions), 12);
+    assert.ok(model.class_name && model.subject_name, 'a paper says which class and subject it is for');
   });
 
   test('online exam auto-grades a submission', async () => {
@@ -233,6 +261,16 @@ describe('phase 4', () => {
     detail.items.forEach((it, i) => { answers[String(it.question_id)] = i < 3 ? 'a' : 'z'; });
     const r = await api(`/exams/online/${online.id}/submit`, { answers }, 'POST', { cookie: `ps_session=${session.token}` });
     assert.equal(r.score, 6, 'three correct answers at two marks each');
+    // and the office can see it happened: the list the console reads
+    const list = await api('/exams/online');
+    const row = list.find(x => x.id === online.id);
+    assert.ok(row, JSON.stringify(list));
+    assert.equal(row.title, 'Weekly quiz');
+    assert.ok(row.section_name && row.class_name && row.subject_name, 'the row names the section and the subject');
+    assert.equal(Number(row.questions), 5, 'the linked paper holds five questions');
+    assert.equal(Number(row.attempts), 1, 'one student has sat it');
+    assert.ok(Number.isFinite(Number(row.roll)), 'against a roll it can be compared to');
+    assert.equal((await api(`/exams/online?sectionId=${sectionId}`)).length, list.length);
   });
 
   test('guardian sees the published result and the report card, but nothing unpublished', async () => {

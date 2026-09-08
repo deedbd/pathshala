@@ -9,6 +9,18 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const statusSchema = z.enum(['present', 'absent', 'late', 'half_day', 'excused', 'holiday']);
 export const markSectionSchema = z.object({ sectionId: z.string(), onDate: dateSchema, marks: z.array(z.object({ studentId: z.string(), status: statusSchema, checkIn: z.string().optional().nullable(), lateMinutes: z.coerce.number().optional().nullable(), remarks: z.string().max(255).optional().nullable() })).max(500) });
 export const leaveSchema = z.object({ applicantType: z.enum(['student', 'staff']), studentId: z.string().optional().nullable(), staffId: z.string().optional().nullable(), leaveTypeId: z.string(), fromDate: dateSchema, toDate: dateSchema, halfDay: z.enum(['first', 'second']).optional().nullable(), reason: z.string().min(3).max(2000), documentFileId: z.string().optional().nullable() });
+/** Every field of one attendance policy. Anything left out keeps the value the row already holds. */
+export const policySchema = z.object({
+  audience: z.enum(['student', 'staff']), classId: z.string().optional().nullable(), shiftId: z.string().optional().nullable(),
+  lateAfterMinutes: z.coerce.number().int().min(0).max(600).optional(),
+  halfDayAfterMinutes: z.coerce.number().int().min(0).max(600).optional(),
+  autoAbsentAt: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, 'HH:MM').optional().nullable(),
+  notifyOnArrival: z.coerce.boolean().optional(), notifyOnAbsent: z.coerce.boolean().optional(), notifyOnLate: z.coerce.boolean().optional(),
+  consecutiveAbsentAlert: z.coerce.number().int().min(1).max(60).optional(),
+  minAttendancePct: z.coerce.number().min(0).max(100).optional(),
+  blockExamBelowMin: z.coerce.boolean().optional(),
+  lateCountToLop: z.coerce.number().int().min(0).max(60).optional().nullable(),
+});
 export const diarySchema = z.object({ sectionId: z.string(), onDate: dateSchema, teacherId: z.string().optional().nullable(), classSubjectId: z.string().optional().nullable(), entryType: z.enum(['homework', 'note', 'reminder', 'announcement']).optional(), body: z.string().min(1).max(20000), dueDate: dateSchema.optional().nullable() });
 
 /** Phase 2 API: attendance (register, devices, policies), leave, chat, PTM, diary and daily reports. */
@@ -22,6 +34,7 @@ export function mountPhase2(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.get('/attendance/register', wrap(async req => { const u = requirePerm(req, 'attendance.view'); const sectionId = q(req, 'sectionId'); if (!sectionId) throw new HttpError(400, 'sectionId required'); return app.attendance.register(u.school_id, sectionId, q(req, 'date') ?? today()); }));
   api.post('/attendance/mark', wrap(async req => { const u = requirePerm(req, 'attendance.edit'); const b = markSectionSchema.parse(req.body); return app.attendance.markSection(u.school_id, b.sectionId, b.onDate, b.marks as never, u.id); }));
   api.get('/attendance/summary', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.summary(u.school_id, { sectionId: q(req, 'sectionId'), from: q(req, 'from') ?? today(), to: q(req, 'to') ?? today() }); }));
+  api.get('/attendance/today', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.today(u.school_id, q(req, 'date') ?? today()); }));
   api.get('/attendance/students/:id', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.studentHistory(u.school_id, req.params.id as string, q(req, 'from') ?? today().slice(0, 8) + '01', q(req, 'to') ?? today()); }));
   // A person pressing this means "mark them now", whatever the clock says: the half-hourly sweep is
   // the one that waits for each shift's cut-off, and it is the only caller that should.
@@ -30,10 +43,18 @@ export function mountPhase2(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.get('/attendance/staff', wrap(async req => { const u = requirePerm(req, 'hr.view'); return app.attendance.staffRegister(u.school_id, q(req, 'date') ?? today()); }));
   api.post('/attendance/staff', wrap(async req => { const u = requirePerm(req, 'hr.edit'); const b = z.object({ staffId: z.string(), onDate: dateSchema, status: z.enum(['present', 'absent', 'late', 'half_day', 'excused', 'holiday', 'wfh']), checkIn: z.string().optional().nullable(), checkOut: z.string().optional().nullable() }).parse(req.body); return { id: await app.attendance.markStaff(u.school_id, b.staffId, b.onDate, b.status, { checkIn: b.checkIn, checkOut: b.checkOut, markedBy: u.id }) }; }));
   api.get('/attendance/policies', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.policies(u.school_id); }));
-  api.put('/attendance/policies', wrap(async req => { const u = requirePerm(req, 'attendance.edit'); const b = z.object({ audience: z.enum(['student', 'staff']), classId: z.string().optional().nullable(), shiftId: z.string().optional().nullable(), lateAfterMinutes: z.coerce.number().optional(), autoAbsentAt: z.string().optional().nullable(), notifyOnAbsent: z.coerce.boolean().optional(), notifyOnLate: z.coerce.boolean().optional(), minAttendancePct: z.coerce.number().optional() }).parse(req.body); return { id: await app.attendance.setPolicy(u.school_id, b) }; }));
+  api.put('/attendance/policies', wrap(async req => {
+    const u = requirePerm(req, 'attendance.edit');
+    const b = policySchema.parse(req.body);
+    const before = await app.attendance.policyFor(u.school_id, b.audience, b.classId ?? null, b.shiftId ?? null);
+    const id = await app.attendance.setPolicy(u.school_id, b);
+    // the cut-off and the thresholds decide what the automation does tomorrow, so who changed them is audited
+    await app.audit.log({ action: 'update', entityType: 'attendance.policy', entityId: id, before, after: req.body });
+    return { id };
+  }));
 
   // ---------- devices ----------
-  api.get('/attendance/devices', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.devices(u.school_id); }));
+  api.get('/attendance/devices', wrap(async req => { const u = requirePerm(req, 'attendance.view'); return app.attendance.devices(u.school_id, q(req, 'date') ?? today()); }));
   api.post('/attendance/devices', wrap(async req => { const u = requirePerm(req, 'attendance.create'); const b = z.object({ name: z.string().min(1).max(80), deviceType: z.enum(['biometric', 'rfid', 'face', 'qr', 'gps_bus', 'mobile_app']), vendor: z.string().max(60).optional(), serialNo: z.string().max(80).optional(), location: z.string().max(120).optional(), direction: z.enum(['in', 'out', 'both']).optional() }).parse(req.body); return app.attendance.registerDevice(u.school_id, b); }));
   /**
    * Device push endpoint. Devices authenticate with the key shown once at registration

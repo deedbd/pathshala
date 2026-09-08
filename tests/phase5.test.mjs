@@ -305,4 +305,59 @@ describe('phase 5', () => {
     assert.equal(html.status, 200);
     assert.ok((await html.text()).includes('2026-05'));
   });
+
+  // The nightly watch has been raising tasks about rows nobody could look at. These are the reads.
+  test('the console can read what the expiry watch is alerting about', async () => {
+    const rows = await api('/hr/expiries?days=60');
+    const contract = rows.find(r => r.kind === 'contract' && r.staff_id === staff[4].id);
+    assert.ok(contract, JSON.stringify(rows.slice(0, 5)));
+    assert.match(contract.what, /contract ends/);
+    assert.ok(contract.name && contract.on_date, 'the row names the person and the date');
+    assert.ok(contract.days > 0 && contract.days <= 60, `in ${contract.days} days`);
+    assert.deepEqual([...rows].sort((a, b) => a.days - b.days).map(r => r.id), rows.map(r => r.id), 'soonest first');
+    // a window that closes before the contract does not report it
+    assert.equal((await api('/hr/expiries?days=1')).some(r => r.staff_id === staff[4].id && r.kind === 'contract'), false);
+    // and the contract list itself carries the person, not just an id
+    const contracts = await api('/hr/contracts');
+    assert.ok(contracts.length >= 1);
+    assert.ok(contracts.every(c => c.first_name), 'every contract row names its member of staff');
+  });
+
+  test('leave balances can be read back after they are accrued', async () => {
+    const rows = await api('/hr/leave-balances');
+    assert.ok(rows.length >= 3, `${rows.length} balances`);
+    const mine = rows.filter(r => String(r.staff_id) === staff[0].id);
+    assert.ok(mine.length >= 3, 'casual, sick and earned');
+    for (const b of mine) {
+      assert.ok(b.leave_type, 'the type is named, not an id');
+      assert.ok(b.first_name, 'and so is the person');
+      assert.equal(Number(b.remaining), Number(b.allocated) + Number(b.carried_forward) - Number(b.used) - Number(b.encashed));
+    }
+    assert.equal((await api(`/hr/leave-balances?staffId=${staff[1].id}`)).every(r => String(r.staff_id) === staff[1].id), true);
+    // an approved leave is deducted, and the balance the console shows moves with it
+    const casual = mine.find(b => /casual/i.test(String(b.leave_type))) ?? mine[0];
+    const before = Number(casual.remaining);
+    const applied = await api('/leave', { applicantType: 'staff', staffId: staff[0].id, leaveTypeId: String(casual.leave_type_id), fromDate: '2026-07-06', toDate: '2026-07-06', reason: 'A day off' });
+    assert.equal(applied.status, 'approved');
+    const after = (await api('/hr/leave-balances')).find(r => r.id === casual.id);
+    assert.equal(Number(after.remaining), before - 1, 'one day came off the balance');
+  });
+
+  test('the departments view names the head and counts the desk', async () => {
+    const deptId = await app.people.createDepartment(schoolId, 'Science');
+    await app.db.update('staff', { department_id: deptId }, { id: staff[0].id });
+    await app.db.update('staff', { department_id: deptId }, { id: staff[1].id });
+    await app.people.setDepartmentHead(schoolId, deptId, staff[0].id);
+    const rows = await api('/people/departments');
+    const science = rows.find(r => r.name === 'Science');
+    assert.ok(science, JSON.stringify(rows));
+    assert.equal(science.headcount, 2);
+    assert.equal(science.head, 'Teacher1', 'the head is named, not an id');
+    assert.ok(science.teaching >= 1);
+    // everybody who has no department is still counted, rather than quietly missing from the page
+    const unassigned = rows.find(r => r.kind === 'unassigned');
+    assert.ok(unassigned && unassigned.headcount > 0, 'staff with no department are reported, not dropped');
+    // a head has to belong to the department they head
+    await assert.rejects(() => app.people.setDepartmentHead(schoolId, deptId, staff[9].id), /belong/);
+  });
 });
