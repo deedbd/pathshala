@@ -49,6 +49,7 @@ export default function Console() {
           <NavLink to="/calendar" className={link} style={style}>{tr('nav.calendar')}</NavLink>
           <NavLink to="/import" className={link} style={style}>{tr('nav.import')}</NavLink>
           <NavLink to="/website" className={link} style={style}>{tr('nav.website')}</NavLink>
+          <NavLink to="/settings" className={link} style={style}>{tr('nav.settings')}</NavLink>
           {d.canAutomation && <NavLink to="/automation" className={link} style={style}>{tr('nav.automation')}</NavLink>}
         </nav>
         <div className="hidden sm:mt-auto sm:block">

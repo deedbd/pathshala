@@ -32,6 +32,7 @@ export default [
     route('college', 'routes/college.tsx'),
     route('group', 'routes/group.tsx'),
     route('platform', 'routes/platform.tsx'),
+    route('settings', 'routes/settings.tsx'),
   ]),
   // the door: Pathshala's own sign-in, behind a path from .env that nothing links to. A wrong
   // path is a 404 like any other, so a school's site says nothing about a vendor console

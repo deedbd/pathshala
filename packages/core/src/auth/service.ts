@@ -166,4 +166,17 @@ export class AuthService {
     await this.db.update('users', { password_hash: await hashPassword(password), updated_at: nowSql() }, { id: userId });
     await this.logoutEverywhere(userId);
   }
+
+  /**
+   * Turn a login on or off. Disabling ends every session the person is holding as well — leaving one
+   * open would let somebody who was just removed carry on working until their cookie expired.
+   */
+  async setActive(userId: string, active: boolean) {
+    const user = await this.db.findOne<UserRow>('users', { id: userId });
+    if (!user) throw new HttpError(404, 'user not found', 'not_found');
+    await this.db.update('users', { is_active: active, updated_at: nowSql() }, { id: userId });
+    if (!active) await this.logoutEverywhere(userId);
+    await this.deps.audit.log({ action: active ? 'enable' : 'disable', entityType: 'user', entityId: userId, schoolId: user.school_id, before: { isActive: !!Number(user.is_active) }, after: { isActive: active } });
+    return { userId, isActive: active };
+  }
 }
