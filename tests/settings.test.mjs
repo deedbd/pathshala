@@ -325,10 +325,10 @@ describe('settings: the school looking at its own rules', () => {
     }
     assert.equal(html.includes('ivr-shared-secret'), false, 'and no secret is server-rendered into it');
     assert.ok((await (await fetch(`${baseUrl}/dashboard`, { headers: { cookie: admin.cookie } })).text()).includes('/settings'), 'the sidebar links to it');
-    // signed out it is the sign-in page, not the settings
+    // signed out there is nothing here at all — not a redirect to a sign-in page, which would tell a
+    // stranger which school lives at this address and where its door is
     const out = await fetch(`${baseUrl}/settings`, { redirect: 'manual' });
-    assert.equal(out.status, 302);
-    assert.match(out.headers.get('location'), /^\/login/);
+    assert.equal(out.status, 404);
     // and the page asks the same questions the API does: a teacher is refused here too, so no
     // server render hands over an audit log that /api/audit would have withheld
     const notAllowed = await fetch(`${baseUrl}/settings`, { redirect: 'manual', headers: { cookie: teacher.cookie } });

@@ -63,7 +63,8 @@ test('installer: school + admin (step 8) with tenant seeds', async () => {
   const r = await app.installer.createSchool({ schoolName: 'Demo High School', schoolNameBn: 'ডেমো উচ্চ বিদ্যালয়', schoolCode: 'DEMO', institutionType: 'school', locale: 'bn', adminName: 'Abu Sayed', adminPhone: '01712345678', adminEmail: 'admin@example.com', adminPassword: 'secret-pass-1' });
   schoolId = r.schoolId; adminId = r.userId;
   assert.ok(schoolId && adminId);
-  assert.equal(await app.db.count('roles', { school_id: schoolId }), 10);
+  // ten roles a school uses, plus platform_owner — held by nobody until an installation is made a vendor's
+  assert.equal(await app.db.count('roles', { school_id: schoolId }), 11);
   assert.equal(await app.db.count('scheduled_jobs', { school_id: schoolId }), SCHEDULED_JOBS, 'one row per job in db/seeds/scheduled_jobs.json');
   assert.ok((await app.db.count('automation_rules', { school_id: schoolId })) >= 30);
   assert.ok((await app.db.count('gl_accounts', { school_id: schoolId })) > 40);
