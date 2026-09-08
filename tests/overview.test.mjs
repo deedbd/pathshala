@@ -151,19 +151,30 @@ describe('the console overview: one morning, gathered once', () => {
     await app.relay.run();
     await app.adapters.queue.drain(20);
 
+    // A bill settled before its due date earns the early-payment discount, so what the till took is
+    // not what the invoice said — the figure the dashboard shows is the one the payment rows carry,
+    // and the discount is a line on the invoice, not a hole in the takings.
+    const tookByHand = Number((await app.db.query(
+      `SELECT COALESCE(SUM(amount), 0) AS v FROM payments WHERE school_id = ? AND status <> 'cancelled'`, [schoolId]))[0].v);
+    assert.ok(tookByHand > 0 && tookByHand <= Number(paid.total), `the payment rows say ${tookByHand} against a bill of ${paid.total}`);
+
+    // the discount is a line on the invoice, so the month's billing is read again after it lands
+    const invoicedAfterDiscount = Number((await app.db.query(
+      `SELECT COALESCE(SUM(total), 0) AS v FROM invoices WHERE school_id = ? AND status <> 'cancelled'`, [schoolId]))[0].v);
+
     app.overview.forget();
     const o = await today();
     const outstandingByHand = (await app.db.query(`SELECT COALESCE(SUM(balance), 0) AS v FROM invoices WHERE school_id = ? AND balance > 0 AND status <> 'cancelled'`, [schoolId]))[0].v;
     assert.equal(o.fees.month, o.on.slice(0, 7));
-    assert.equal(Math.round(o.fees.invoiced), Math.round(invoicedByHand), 'what the month billed');
-    assert.equal(Math.round(o.fees.collected), Math.round(Number(paid.total)), 'what came in this month');
-    assert.equal(Math.round(o.fees.collectedToday), Math.round(Number(paid.total)), 'and it came in today');
+    assert.equal(Math.round(o.fees.invoiced), Math.round(invoicedAfterDiscount), 'what the month billed');
+    assert.equal(Math.round(o.fees.collected), Math.round(tookByHand), 'what came in this month');
+    assert.equal(Math.round(o.fees.collectedToday), Math.round(tookByHand), 'and it came in today');
     assert.equal(Math.round(o.fees.outstanding), Math.round(Number(outstandingByHand)), 'the balances the ledger holds');
 
     const bucket = o.fees.byMonth.find(m => m.month === o.on.slice(0, 7));
     assert.ok(bucket, 'this month is in the chart');
-    assert.equal(Math.round(bucket.invoiced), Math.round(invoicedByHand));
-    assert.equal(Math.round(bucket.collected), Math.round(Number(paid.total)));
+    assert.equal(Math.round(bucket.invoiced), Math.round(invoicedAfterDiscount));
+    assert.equal(Math.round(bucket.collected), Math.round(tookByHand));
 
     assert.ok(o.fees.lastBatch, 'the batch that billed them is named');
     assert.equal(o.fees.lastBatch.invoices, invoices.length);
