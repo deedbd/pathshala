@@ -5,7 +5,7 @@ import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import type { AcademicService } from './academic.js';
 import type { ApprovalService } from '../approvals.js';
-import { localHHMM } from '../util.js';
+import { localDate, localDayRange, localHHMM } from '../util.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export type StudentStatus = 'present' | 'absent' | 'late' | 'half_day' | 'excused' | 'holiday';
@@ -262,6 +262,70 @@ export class AttendanceService {
   private async schoolClock(schoolId: string) {
     const school = await this.db.findOne<{ timezone: string | null }>('schools', { id: schoolId });
     return localHHMM(new Date(), String(school?.timezone ?? 'Asia/Dhaka'));
+  }
+
+  /**
+   * The school's own day, with the UTC window its timestamps fall in. Everything that says "today"
+   * — the register, the morning's messages, the day's takings — has to agree on which day that is,
+   * and the answer is the school's calendar, not the server's.
+   */
+  async schoolDay(schoolId: string, onDate?: string | null) {
+    const school = await this.db.findOne<{ timezone: string | null }>('schools', { id: schoolId });
+    const timezone = String(school?.timezone ?? 'Asia/Dhaka');
+    const on = onDate ?? localDate(new Date(), timezone);
+    return { on, timezone, ...localDayRange(on, timezone) };
+  }
+
+  /**
+   * One day's register in four numbers each for students and staff, plus the absence messages that
+   * actually went to guardians — the three things a head teacher looks at before nine o'clock.
+   *
+   * `total` counts the marks made, not the roll: a register half filled in is 30 marks, and saying
+   * "14% present" because the other 170 children have no row yet would be a lie the page could not
+   * take back. A day nobody has marked has a total of zero, and the caller is expected to show that
+   * as "not marked yet" rather than as nought per cent. Holidays are excluded from the total for the
+   * same reason. "Present" means present or late, as `AnalyticsService` already counts it, so the
+   * dashboard and the attendance metric can never disagree.
+   *
+   * One query: three aggregates over three tables, added up by the engine.
+   */
+  async dayTotals(schoolId: string, onDate: string, range: { from: string; to: string }) {
+    const [r] = await this.db.query<Row>(`SELECT
+        COALESCE(SUM(sp), 0) AS sp, COALESCE(SUM(sa), 0) AS sa, COALESCE(SUM(sl), 0) AS sl, COALESCE(SUM(se), 0) AS se, COALESCE(SUM(st), 0) AS st,
+        COALESCE(SUM(fp), 0) AS fp, COALESCE(SUM(fa), 0) AS fa, COALESCE(SUM(fl), 0) AS fl, COALESCE(SUM(ft), 0) AS ft, COALESCE(SUM(sms), 0) AS sms
+      FROM (
+        SELECT SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) AS sp, SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) AS sa,
+               SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END) AS sl, SUM(CASE WHEN status = 'excused' THEN 1 ELSE 0 END) AS se,
+               SUM(CASE WHEN status <> 'holiday' THEN 1 ELSE 0 END) AS st,
+               0 AS fp, 0 AS fa, 0 AS fl, 0 AS ft, 0 AS sms
+          FROM student_attendance WHERE school_id = ? AND on_date = ?
+        UNION ALL
+        SELECT 0, 0, 0, 0, 0,
+               SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END), SUM(CASE WHEN status <> 'holiday' THEN 1 ELSE 0 END), 0
+          FROM staff_attendance WHERE school_id = ? AND on_date = ?
+        UNION ALL
+        SELECT 0, 0, 0, 0, 0, 0, 0, 0, 0, COUNT(*)
+          FROM notifications WHERE school_id = ? AND channel = 'sms' AND event_key = 'attendance.absent'
+            AND status IN ('sent', 'delivered') AND created_at BETWEEN ? AND ?
+      ) parts`, [schoolId, onDate, schoolId, onDate, schoolId, range.from, range.to]);
+    const n = (v: unknown) => Number(v ?? 0);
+    const pct = (present: number, late: number, total: number) => (total > 0 ? Math.round(((present + late) * 1000) / total) / 10 : null);
+    const students = { present: n(r?.sp), absent: n(r?.sa), late: n(r?.sl), excused: n(r?.se), total: n(r?.st), pct: null as number | null };
+    const staff = { present: n(r?.fp), absent: n(r?.fa), late: n(r?.fl), total: n(r?.ft), pct: null as number | null };
+    students.pct = pct(students.present, students.late, students.total);
+    staff.pct = pct(staff.present, staff.late, staff.total);
+    return { onDate, students, staff, smsSent: n(r?.sms) };
+  }
+
+  /** The same day's marks grouped by section, so a page can name the classes nobody has marked. */
+  async dayBySection(schoolId: string, onDate: string) {
+    return this.db.query<Row>(`SELECT section_id,
+        SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) AS present,
+        SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) AS absent,
+        SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END) AS late,
+        SUM(CASE WHEN status <> 'holiday' THEN 1 ELSE 0 END) AS marked
+      FROM student_attendance WHERE school_id = ? AND on_date = ? AND section_id IS NOT NULL GROUP BY section_id`, [schoolId, onDate]);
   }
 
   /**

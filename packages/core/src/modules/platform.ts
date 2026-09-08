@@ -249,6 +249,79 @@ export class PlatformService {
     return { steps, done, total: steps.length, complete: done === steps.length };
   }
 
+  // ---------- what the machine did by itself ----------
+  /**
+   * The day's automation in three queries: how much ran and how much of it failed, the last few
+   * things that happened, and what is still due before the day is out.
+   *
+   * Three tables hold "the machine did something" — a rule that fired (`automation_runs`), a queued
+   * job (`background_jobs`) and a scheduled job's last tick (`scheduled_jobs`) — and a head teacher
+   * does not care which. Each is capped inside the query, so a school with fifteen hundred children
+   * never sorts a morning's whole log and never brings it into this process's memory.
+   *
+   * The three kinds then take turns rather than being merged by the clock alone. Strict recency
+   * reads well and shows nothing: one morning's messages queue forty `notifications.deliver` rows
+   * and they fill all eight places, so the rule that raised them and the nightly job that failed are
+   * both below the fold. Taking turns and *then* ordering the chosen few by time keeps the list
+   * newest-first while guaranteeing that a kind which ran at all is visible.
+   *
+   * A failure that nobody sees is the thing this exists to prevent, so `failed` counts all three
+   * kinds: a scheduled backup that threw is exactly as important as a rule that did.
+   */
+  async activity(schoolId: string, range: { from: string; to: string }, limit = 8) {
+    const params = [schoolId, range.from, range.to];
+    const [counts, feed, upcoming] = await Promise.all([
+      this.db.query<Row>(`SELECT COALESCE(SUM(n), 0) AS runs, COALESCE(SUM(f), 0) AS failed FROM (
+          SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS f
+            FROM automation_runs WHERE school_id = ? AND started_at BETWEEN ? AND ?
+          UNION ALL
+          SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
+            FROM background_jobs WHERE school_id = ? AND created_at BETWEEN ? AND ?
+          UNION ALL
+          SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_status = 'failed' THEN 1 ELSE 0 END), 0)
+            FROM scheduled_jobs WHERE school_id = ? AND last_run_at BETWEEN ? AND ?
+        ) parts`, [...params, ...params, ...params]),
+      // each branch is capped before the union, so the engine never sorts a morning's whole log
+      this.db.query<Row>(`SELECT id, kind, title, ran_at, status, error FROM (
+          SELECT * FROM (
+            SELECT r.id AS id, 'rule' AS kind, a.code AS title, r.started_at AS ran_at, r.status AS status, r.error AS error
+              FROM automation_runs r JOIN automation_rules a ON a.id = r.rule_id
+              WHERE r.school_id = ? AND r.started_at BETWEEN ? AND ? ORDER BY r.started_at DESC, r.id DESC LIMIT ?
+          ) rules
+          UNION ALL
+          SELECT * FROM (
+            SELECT j.id AS id, 'system' AS kind, j.job_name AS title, j.created_at AS ran_at, j.status AS status, j.error AS error
+              FROM background_jobs j WHERE j.school_id = ? AND j.created_at BETWEEN ? AND ? ORDER BY j.created_at DESC, j.id DESC LIMIT ?
+          ) jobs
+          UNION ALL
+          SELECT * FROM (
+            SELECT s.id AS id, 'cron' AS kind, s.job_key AS title, s.last_run_at AS ran_at, COALESCE(s.last_status, 'unknown') AS status, '' AS error
+              FROM scheduled_jobs s WHERE s.school_id = ? AND s.last_run_at BETWEEN ? AND ? ORDER BY s.last_run_at DESC, s.id DESC LIMIT ?
+          ) crons
+        ) feed ORDER BY ran_at DESC, id DESC`, [...params, limit, ...params, limit, ...params, limit]),
+      this.db.query<Row>(`SELECT id, job_key, next_run_at FROM scheduled_jobs
+        WHERE school_id = ? AND is_active = TRUE AND next_run_at IS NOT NULL AND next_run_at BETWEEN ? AND ?
+        ORDER BY next_run_at ASC, id ASC LIMIT ?`, [schoolId, range.from, range.to, limit]),
+    ]);
+    const rows = feed.map(f => ({
+      id: String(f.id), kind: String(f.kind) as 'rule' | 'system' | 'cron', title: String(f.title),
+      at: String(f.ran_at), status: String(f.status), error: f.error ? String(f.error) : null,
+    }));
+    // the three kinds take turns, then what was chosen is put back in time order
+    const byKind = (['rule', 'system', 'cron'] as const).map(k => rows.filter(r => r.kind === k));
+    const chosen: typeof rows = [];
+    for (let round = 0; chosen.length < limit && byKind.some(l => l.length > round); round++) {
+      for (const list of byKind) { if (chosen.length >= limit) break; if (list[round]) chosen.push(list[round]!); }
+    }
+    chosen.sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1));
+    return {
+      runsToday: Number(counts[0]?.runs ?? 0),
+      failedToday: Number(counts[0]?.failed ?? 0),
+      feed: chosen,
+      upcoming: upcoming.map(u => ({ id: String(u.id), jobKey: String(u.job_key), at: String(u.next_run_at) })),
+    };
+  }
+
   // ---------- health ----------
   /** What the platform itself is doing: queue depth, failures, storage, and the last backup. */
   async health(schoolId?: string | null) {

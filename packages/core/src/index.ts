@@ -46,6 +46,7 @@ export { LmsService, type CourseInput, type AssignmentInput, type DiscussionView
 export { AdaptiveService, type RevisionIndicator } from './modules/adaptive.js';
 export { EngagementService, type SurveyInput } from './modules/engagement.js';
 export { PlatformService, type BackupTargetConfig } from './modules/platform.js';
+export { OverviewService, type OverviewToday, type OverviewOptions, type SectionToday } from './modules/overview.js';
 export { OwnerService, generatePassword, type OwnerUser, type ProvisionInput, type SchoolFilter, type OwnerSchoolStatus } from './modules/owner.js';
 export { DocumentService, type IssueInput, type DocType } from './modules/documents.js';
 export { AdmissionsService, type CampaignInput, type ApplicationInput } from './modules/admissions.js';

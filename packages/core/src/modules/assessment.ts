@@ -91,6 +91,36 @@ export class AssessmentService {
     const where: Row = { school_id: schoolId }; if (yearId) where.academic_year_id = yearId;
     return this.db.query<Row>(`SELECT e.*, t.name AS exam_type, (SELECT COUNT(*) FROM exam_schedules s WHERE s.exam_id = e.id) AS subjects, (SELECT COUNT(*) FROM exam_results r WHERE r.exam_id = e.id) AS results FROM exams e JOIN exam_types t ON t.id = e.exam_type_id WHERE e.school_id = ?${yearId ? ' AND e.academic_year_id = ?' : ''} ORDER BY e.start_date DESC`, yearId ? [schoolId, yearId] : [schoolId]);
   }
+  /**
+   * The three exam facts a dashboard needs, without walking a single exam. The next exam is `null`
+   * when none is scheduled — not a date in the past dressed up as the next one. "Marks pending"
+   * counts papers that have actually been sat and whose marks nobody has begun to enter, which is
+   * the only sense in which a subject is late; a paper still to be sat owes nothing yet. "Results
+   * waiting" is report cards computed and sitting unpublished, which is a decision somebody owes.
+   */
+  async overview(schoolId: string, today: string) {
+    const [next, counts] = await Promise.all([
+      this.db.query<Row>(`SELECT id, name, start_date FROM exams WHERE school_id = ? AND start_date >= ? AND status NOT IN ('locked', 'published')
+        ORDER BY start_date ASC, id ASC LIMIT 1`, [schoolId, today]),
+      this.db.query<Row>(`SELECT COALESCE(SUM(m), 0) AS marks_pending, COALESCE(SUM(r), 0) AS results_waiting FROM (
+          SELECT COUNT(*) AS m, 0 AS r FROM exam_schedules s JOIN exams e ON e.id = s.exam_id
+            WHERE s.school_id = ? AND e.status IN ('scheduled', 'ongoing', 'marks_entry', 'processing')
+              AND s.exam_date IS NOT NULL AND s.exam_date <= ? AND s.marks_entry_locked = FALSE
+              AND NOT EXISTS (SELECT 1 FROM marks mk WHERE mk.schedule_id = s.id)
+          UNION ALL
+          SELECT 0, COUNT(*) FROM exam_results WHERE school_id = ? AND published_at IS NULL
+        ) parts`, [schoolId, today, schoolId]),
+    ]);
+    const exam = next[0];
+    return {
+      next: exam
+        ? { id: String(exam.id), name: String(exam.name), startDate: String(exam.start_date).slice(0, 10), daysAway: Math.round((Date.parse(`${String(exam.start_date).slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000) }
+        : null,
+      marksPending: Number(counts[0]?.marks_pending ?? 0),
+      resultsWaiting: Number(counts[0]?.results_waiting ?? 0),
+    };
+  }
+
   async schedules(schoolId: string, examId: string) {
     return this.db.query<Row>(`SELECT s.*, sub.name AS subject_name, sub.name_bn AS subject_name_bn, c.name AS class_name, c.id AS class_id, c.numeric_level,
       (SELECT COUNT(*) FROM marks m WHERE m.schedule_id = s.id) AS entered

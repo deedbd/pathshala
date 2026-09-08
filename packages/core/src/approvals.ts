@@ -62,4 +62,35 @@ export class ApprovalService {
   }
 
   async pending(schoolId: string, limit = 50) { return this.db.findMany('approval_requests', { school_id: schoolId, status: 'pending' }, { orderBy: 'created_at DESC', limit }); }
+
+  /**
+   * Who is waiting for a decision, in a shape a dashboard can print: the entity in words, whatever
+   * the requester put in the summary, and the name of the person who asked. The count is the whole
+   * queue even though only the first few are listed — a card that says "6 waiting" when there are
+   * thirty is worse than no card.
+   */
+  async pendingSummary(schoolId: string, limit = 6) {
+    const [total, rows] = await Promise.all([
+      this.db.count('approval_requests', { school_id: schoolId, status: 'pending' }),
+      this.db.query<Record<string, unknown>>(`SELECT a.id, a.entity_type, a.entity_id, a.summary, a.created_at, u.display_name AS requested_by
+        FROM approval_requests a LEFT JOIN users u ON u.id = a.requested_by
+        WHERE a.school_id = ? AND a.status = 'pending' ORDER BY a.created_at DESC, a.id DESC LIMIT ?`, [schoolId, limit]),
+    ]);
+    return {
+      total,
+      items: rows.map(r => {
+        const summary = json<Record<string, unknown>>(r.summary) ?? {};
+        const detail = Object.entries(summary)
+          .filter(([, v]) => v != null && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'))
+          .map(([k, v]) => `${k}: ${v}`).join(' · ');
+        return {
+          id: String(r.id), kind: String(r.entity_type),
+          title: String(r.entity_type).replace(/[._]/g, ' '),
+          detail: detail ? detail.slice(0, 160) : null,
+          requestedBy: r.requested_by == null ? null : String(r.requested_by),
+          at: String(r.created_at),
+        };
+      }),
+    };
+  }
 }

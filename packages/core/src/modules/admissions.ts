@@ -519,6 +519,27 @@ export class AdmissionsService {
     };
   }
 
+  /**
+   * What arrived today and which campaign it arrived for — two counts over two tables in one query,
+   * and the open campaign's name so a dashboard can say what the forms are for. `campaign` is null
+   * when nothing is open, which is a different thing from nobody applying.
+   */
+  async todayOverview(schoolId: string, range: { from: string; to: string }) {
+    const [counts, campaign] = await Promise.all([
+      this.db.query<Row>(`SELECT COALESCE(SUM(a), 0) AS applications, COALESCE(SUM(e), 0) AS enquiries FROM (
+          SELECT COUNT(*) AS a, 0 AS e FROM admission_applications WHERE school_id = ? AND created_at BETWEEN ? AND ?
+          UNION ALL
+          SELECT 0, COUNT(*) FROM admission_enquiries WHERE school_id = ? AND created_at BETWEEN ? AND ?
+        ) parts`, [schoolId, range.from, range.to, schoolId, range.from, range.to]),
+      this.db.query<Row>(`SELECT name FROM admission_campaigns WHERE school_id = ? AND status = 'open' ORDER BY opens_at DESC, id DESC LIMIT 1`, [schoolId]),
+    ]);
+    return {
+      newApplications: Number(counts[0]?.applications ?? 0),
+      newEnquiries: Number(counts[0]?.enquiries ?? 0),
+      campaign: campaign[0] ? String(campaign[0].name) : null,
+    };
+  }
+
   // ---------- scheduled ----------
   jobs(): Record<string, ScheduledFn> {
     return {
