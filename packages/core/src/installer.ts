@@ -15,6 +15,7 @@ import type { NotificationService } from './notifications.js';
 import type { Relay } from './automation/relay.js';
 import { runWithContext, systemContext } from './context.js';
 import { slugify } from './util.js';
+import { ensureSchoolSlugs } from './tenant.js';
 
 export const INSTALL_STEPS = ['schema', 'seeds', 'school', 'selftest', 'done'] as const;
 export type InstallStep = typeof INSTALL_STEPS[number];
@@ -44,9 +45,14 @@ export class InstallerService {
    * Reconciles every school on this installation against the automation catalogue the build ships.
    * `syncCatalogue` is the rule; this is the pass over the schools, run once at boot.
    */
-  async ensureAutomationCatalogue(): Promise<{ schools: number; jobs: number; rules: number }> {
-    const added = { schools: 0, jobs: 0, rules: 0 };
+  async ensureAutomationCatalogue(): Promise<{ schools: number; jobs: number; rules: number; slugs: number }> {
+    const added = { schools: 0, jobs: 0, rules: 0, slugs: 0 };
     if (!(await this.hasSchema())) return added;
+    // a school installed before `schools.slug` existed has no web address of its own, and nobody is
+    // going to type one in for it: it is repaired here, for the same reason the catalogue is
+    const web = await ensureSchoolSlugs(this.db).catch(e => { this.deps.log.error('school slugs', e); return { schools: 0, slugs: [] as Array<{ schoolId: string; slug: string }> }; });
+    added.slugs = web.slugs.length;
+    if (web.slugs.length) this.deps.log.info(`web addresses: ${web.slugs.map(s => `/${s.slug}`).join(', ')}`);
     const schools = await this.db.query<{ id: string }>(`SELECT id FROM schools WHERE status <> 'closed' ORDER BY created_at, id`);
     for (const school of schools) {
       const r = await syncCatalogue(this.db, this.config.dbDir, String(school.id));
@@ -140,6 +146,9 @@ export class InstallerService {
         await this.deps.outbox.emit(tx, { type: 'school.created', schoolId, aggregateType: 'core.school', aggregateId: schoolId, payload: { schoolId, name: input.schoolName, code } });
         return { schoolId };
       });
+      // its own web address, straight away: a school provisioned this afternoon must be reachable at
+      // /<slug> before the next boot, because that is the link the owner reads out on the telephone
+      await ensureSchoolSlugs(this.db, schoolId).catch(e => this.deps.log.error('school slug', e));
       await seed(this.db, { dbDir: this.config.dbDir, schoolId, log: m => this.deps.log.info(`seed: ${m}`) });
       const userId = await runWithContext(systemContext(schoolId), () => this.deps.auth.createUser({ schoolId, userType: 'admin', displayName: input.adminName, phone: input.adminPhone, email: input.adminEmail || null, password: input.adminPassword, locale: input.locale, roles: ['super_admin'] }));
       if (this.deps.afterSchool) await runWithContext(systemContext(schoolId, { userId }), () => this.deps.afterSchool!(schoolId, input));

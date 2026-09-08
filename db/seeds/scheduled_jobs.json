@@ -358,5 +358,10 @@
     "job_key": "cms.scheduled_publish",
     "cron_expr": "*/10 * * * *",
     "rows": "P35"
+  },
+  {
+    "job_key": "platform.domain_watch",
+    "cron_expr": "0 6 * * *",
+    "rows": "P36"
   }
 ]

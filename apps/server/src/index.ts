@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createRequestHandler } from '@react-router/express';
-import { createApp, runWithContext, normalizeBdPhone, HttpError, type App, type UserRow, type SessionRow, type RequestContext } from '@pathshala/core';
+import { createApp, runWithContext, normalizeBdPhone, HttpError, type App, type UserRow, type SessionRow, type RequestContext, type RequestTenant } from '@pathshala/core';
 import { LocalStorage, SseRealtime } from '@pathshala/adapters';
 import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, settingWriteSchema, z } from '@pathshala/schemas';
 import { mountPhase1, mountPublic } from './routes/phase1.js';
@@ -30,8 +30,23 @@ import { mountOwner, suspendedSchoolGuard } from './routes/owner.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
 
-export interface RequestState { user: UserRow | null; session: SessionRow | null; token: string | null; locale: 'bn' | 'en'; requestId: string }
+/**
+ * Which school this request is for, decided from the address alone — before anybody has signed in,
+ * which is the whole point: the login page a visitor opens has to be their own school's.
+ * `null` is the vendor's own space (`source === 'none'`), where the owner console lives.
+ */
+export type TenantState = RequestTenant;
+export interface RequestState { user: UserRow | null; session: SessionRow | null; token: string | null; locale: 'bn' | 'en'; requestId: string; tenant: TenantState | null }
 declare global { namespace Express { interface Request { ps: RequestState } } }
+
+/**
+ * API paths that answer for themselves rather than for a tenant: signing in and out, the installer,
+ * the public website endpoints, and the scoped bearer API whose token already names a school. Every
+ * other `/api/*` path belongs to the school the address resolved to.
+ */
+const TENANT_FREE_API = /^\/api\/(auth|install|public|v1)(\/|$)/;
+/** The vendor's own half of the platform. It exists only where no school owns the address. */
+const VENDOR_ONLY = /^\/(owner|x)(\/|$)/;
 
 export async function createServer(app: App = createApp()) {
   const { config, log } = app;
@@ -43,26 +58,63 @@ export async function createServer(app: App = createApp()) {
   server.use(['/api', '/cron'], express.json({ limit: '20mb' }), express.urlencoded({ extended: true, limit: '2mb' }));
   server.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-  // ---- per-request context: session → user → tenant → AsyncLocalStorage ----
+  // ---- per-request context: tenant → session → user → AsyncLocalStorage ----
+  // The tenant comes first and comes from the address, not from the session: a visitor who has never
+  // signed in still has to reach their own school's login page, and a school's console must never be
+  // decided by "whoever was created first".
   server.use(async (req, res, next) => {
     const requestId = String(req.headers['x-request-id'] || randomUUID());
     res.setHeader('X-Request-Id', requestId);
+    let tenant: TenantState | null = null;
+    try {
+      // `req.hostname` and not the raw header: `trust proxy` is on, so behind Cloudflare or a cPanel
+      // proxy the address the visitor actually typed arrives in X-Forwarded-Host
+      const r = await app.tenant.resolve({ host: req.hostname || req.headers.host, path: req.path });
+      if (r.school) tenant = { schoolId: r.school.id, slug: r.school.slug, prefix: r.prefix, source: r.source as TenantState['source'], name: r.school.name };
+    } catch { /* schema not installed yet: the installer runs in the vendor's own space */ }
     const cookies = parseCookies(req.headers.cookie);
     const bearer = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null;
     let user: UserRow | null = null, session: SessionRow | null = null;
     const token = cookies[SESSION_COOKIE] ?? bearer ?? null;
     try { const r = await app.auth.resolveSession(token); if (r) { user = r.user; session = r.session; } } catch (e) { /* schema not installed yet */ }
     const locale = ((user?.locale as 'bn' | 'en') || (cookies.ps_locale as 'bn' | 'en') || 'bn');
-    req.ps = { user, session, token, locale, requestId };
+    req.ps = { user, session, token, locale, requestId, tenant };
     const ctx: RequestContext = { requestId, schoolId: user?.school_id ?? null, userId: user?.id ?? null, actorType: user ? 'user' : 'system', locale, ip: req.ip ?? null, userAgent: req.headers['user-agent'] ?? null };
     if (user) { const a = await app.rbac.accessFor(user.id); ctx.roles = a.roles; ctx.permissions = a.permissions; }
     runWithContext(ctx, () => next());
   });
 
+  /**
+   * What an address being owned by a school actually costs.
+   *
+   * Two rules, and both answer 404 rather than 403, because a refusal that explains itself is a map.
+   *
+   *  1. **The vendor's console is only where no school owns the address.** `/owner`, `/x/<door>` and
+   *     `/api/owner` exist at the root of the installation and nowhere else — on a school's own
+   *     domain, or under its slug, they are simply not there.
+   *  2. **A session for one school sees nothing of another's.** Signing in to school A and then
+   *     opening school B's address must not read B's register — the session is A's, and B's API says
+   *     there is nothing here. The web layer renders B's sign-in page instead, which is the answer a
+   *     person actually wants; only signing in, the installer and the public site are exempt, because
+   *     none of them answers for a tenant.
+   */
+  server.use((req, res, next) => {
+    const isApi = req.path.startsWith('/api/') || req.path === '/api';
+    const gone = () => isApi ? res.status(404).json({ error: 'not found', code: 'not_found' }) : res.status(404).type('text/plain').send('Not found');
+    const vendorPath = VENDOR_ONLY.test(req.path) || req.path === '/api/owner' || req.path.startsWith('/api/owner/');
+    if (vendorPath && req.ps.tenant) return gone();
+    const t = req.ps.tenant, u = req.ps.user;
+    if (t && u && isApi && !TENANT_FREE_API.test(req.path) && String(u.school_id) !== t.schoolId) return gone();
+    next();
+  });
+
   // ---- health, cron, heartbeat ----
   server.get('/_health', async (_req, res) => {
     let dbOk = false; try { await app.db.query('SELECT 1 AS ok'); dbOk = true; } catch { /* down */ }
-    res.json({ ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode, version: process.env.APP_VERSION ?? '0.1.0', node: process.version });
+    // `installation` and `url` are what the domain watch compares: a school's custom domain is only
+    // "pointing here" if what answers at it is this installation, not merely something that answers.
+    // The id is a one-way digest of the app key — stable across restarts, and it discloses nothing.
+    res.json({ ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode, version: process.env.APP_VERSION ?? '0.1.0', node: process.version, installation: app.tenant.installationId(), url: config.appUrl });
   });
   server.all('/cron/tick', async (req, res) => {
     const key = String(req.query.key ?? req.headers['x-cron-key'] ?? '');
@@ -267,7 +319,9 @@ export async function createServer(app: App = createApp()) {
     const serverBuild = path.join(webBuildDir, 'server', 'index.js');
     server.use(createRequestHandler({
       build: () => import(pathToFileUrl(serverBuild)) as never,
-      getLoadContext: req => ({ app, user: req.ps.user, session: req.ps.session, locale: req.ps.locale, requestId: req.ps.requestId, setSessionCookie }),
+      // `tenant` is null in the vendor's own space and otherwise names the school this address
+      // belongs to, with the `prefix` every link on the page has to carry
+      getLoadContext: req => ({ app, user: req.ps.user, session: req.ps.session, locale: req.ps.locale, requestId: req.ps.requestId, tenant: req.ps.tenant, setSessionCookie }),
       mode: config.isProduction ? 'production' : 'development',
     }));
     log.info(`web build: ${webBuildDir}`);

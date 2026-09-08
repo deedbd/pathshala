@@ -70,6 +70,24 @@ export function mountOwner(api: Router, app: App, wrap: Wrap, requirePerm: (req:
     return app.owner.setPlan(u, req.params.id as string, b);
   }));
 
+  /**
+   * Where a school opens. The GET is what the vendor reads down a telephone to a school's IT person
+   * — the DNS records carry this server's real address, and the second one says in words that `www.`
+   * is covered. The POST names the school and, where a cPanel token is configured, adds the alias
+   * that makes an unknown hostname reach our folder at all; where it is not, the reply says exactly
+   * what to add by hand instead of failing silently.
+   */
+  api.get('/schools/:id/web', wrap(async req => app.owner.webAddress(requirePerm(req, 'saas.view'), req.params.id as string)));
+  api.post('/schools/:id/web', wrap(async req => {
+    const u = requirePerm(req, 'saas.edit');
+    const b = z.object({
+      slug: z.string().trim().toLowerCase().min(2).max(40).optional(),
+      // null removes the domain; the string form is validated properly in TenantService
+      customDomain: z.string().trim().toLowerCase().max(160).nullable().optional(),
+    }).parse(req.body ?? {});
+    return app.owner.setWebAddress(u, req.params.id as string, b);
+  }));
+
   api.post('/schools/:id/admin', wrap(async req => {
     const u = requirePerm(req, 'saas.create');
     const b = z.object({ name: z.string().trim().min(2).max(160), phone: bdPhoneSchema, email: emailSchema.or(z.literal('')).optional().nullable(), password: passwordSchema.or(z.literal('')).optional().nullable() }).parse(req.body);

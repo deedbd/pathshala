@@ -6,6 +6,7 @@
 CREATE TABLE IF NOT EXISTS "schools" (
   "id" CHAR(26) NOT NULL,
   "code" VARCHAR(32) NOT NULL,
+  "slug" VARCHAR(60),
   "name" VARCHAR(160) NOT NULL,
   "name_bn" VARCHAR(160),
   "institution_type" VARCHAR(40) NOT NULL DEFAULT 'school',
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS "schools" (
   "deleted_at" TIMESTAMP(3),
   PRIMARY KEY ("id"),
   UNIQUE ("code"),
+  UNIQUE ("slug"),
   UNIQUE ("custom_domain"),
   CHECK ("institution_type" IN ('school', 'college', 'school_college', 'madrasa', 'kindergarten', 'coaching', 'university')),
   CHECK ("status" IN ('trial', 'active', 'suspended', 'closed'))

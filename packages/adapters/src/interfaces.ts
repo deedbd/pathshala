@@ -85,6 +85,7 @@ export interface PushAdapter { readonly kind: string; send(sub: PushSubscription
 
 import type { VoiceAdapter, WhatsAppAdapter } from './voice.js';
 import type { AiAdapter } from './ai.js';
+import type { CPanelAdapter } from './cpanel.js';
 
 export interface Adapters {
   queue: QueueAdapter;
@@ -98,6 +99,8 @@ export interface Adapters {
   whatsapp: WhatsAppAdapter;
   voice: VoiceAdapter;
   ai: AiAdapter;
+  /** The hosting panel, where there is one: a custom domain needs an alias before Apache routes it. */
+  cpanel: CPanelAdapter;
 }
 
 export interface Logger { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void; error(msg: string, meta?: unknown): void; debug(msg: string, meta?: unknown): void }

@@ -320,6 +320,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `ivr.line_watch` | `0 9 * * 6` | P33 |
 | `alumni.job_board` | `0 8 * * *` | P34 |
 | `cms.scheduled_publish` | `*/10 * * * *` | P35 |
+| `platform.domain_watch` | `0 6 * * *` | P36 |
 
 ---
 
@@ -366,3 +367,4 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | P33 | IVR | ⏰ weekly | A configured voice line with no call in seven days is reported once — the guardians who use it are the least likely to ring and say it is broken |
 | P34 | Alumni | ⏰ daily | A job post is closed on the date its author set, and they are told three days before rather than discovering it by accident |
 | P35 | CMS | ⏰ every 10 min | A page or post whose author set a go-live date is published on it; a website message unanswered for two days, and a custom domain with no certificate after three, are reported once |
+| P36 | Tenancy | ⏰ daily | Every school with a web address of its own is looked up: does the hostname resolve, does it reach this installation, is the certificate valid. Only a **change** of state reaches the vendor — a domain that stopped pointing here, one that started, or a certificate that went bad. A domain nobody has pointed yet is not news, and the same finding is never repeated nightly |
