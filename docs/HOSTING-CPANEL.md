@@ -33,6 +33,29 @@ xlsx) — no compiler, no npm on the server. Migrations run automatically when t
 
 ---
 
+## 1b. Where it lives: a domain or a subdomain, not a folder
+
+A Pathshala install owns the whole document root it sits in — `https://school.edu.bd` or
+`https://pathshala.deedbd.com`. The zip is the same for every customer because every path it emits
+starts at `/`: the client bundle asks for `/assets/…`, the console redirects to `/dashboard`, the
+session cookie is scoped to `/`, and Passenger is told `PassengerBaseURI "/"` by the installer.
+
+Serving it from a **folder** of an existing site (`https://deedbd.com/pathshala`) is therefore not a
+configuration — it is a different build. React Router's basename is fixed when the bundle is built,
+so a subdirectory install needs a zip made for that exact path, and a customer who later moves it to
+the root needs another one. It also shares cookies with everything else on that hostname. If a
+subdirectory install is ever genuinely wanted, the work is: a `basename` in `react-router.config.ts`,
+the same prefix as Vite's `base`, the Express app mounted under it, `Path=` on the session cookie,
+and `--base` carried through `scripts/build-release.mjs` and `verify-release.mjs`.
+
+On cPanel, give the subdomain a document root **outside** `public_html` (say `/home/<user>/pathshala`)
+rather than the default `public_html/pathshala`, or the same files answer on both
+`pathshala.deedbd.com` and `deedbd.com/pathshala` — the second of which is the one path the build is
+not made for. AutoSSL covers a subdomain like any other host; behind Cloudflare the subdomain needs
+its own proxied record.
+
+---
+
 ## 2. What happens when the domain is opened the first time
 
 ```
