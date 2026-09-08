@@ -238,9 +238,13 @@ export function createApp(opts: CreateAppOptions = {}): App {
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
       const loops = () => {
-        // an update ships jobs the database has never heard of; the schools already installed get
-        // their rows here, before the scheduler goes looking for something to run
-        installer.ensureAutomationCatalogue().catch(e => log.error('automation catalogue', e));
+        // Order matters. An update ships columns, jobs and rules the database has never heard of.
+        // The shape comes first (ensureSchema adds the missing tables, columns and indexes), then the
+        // rows that fill it — so a school that has just gained a column gets its value in the same
+        // pass, before the scheduler goes looking for something to run.
+        installer.ensureSchema()
+          .then(() => installer.ensureAutomationCatalogue())
+          .catch(e => log.error('schema/automation catalogue', e));
         relay.start(500);
         if (adapters.mode === 'inprocess') { adapters.queue.start(); adapters.scheduler.start(); }
         log.info('background loops running');

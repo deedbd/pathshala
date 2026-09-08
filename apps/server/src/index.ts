@@ -62,7 +62,14 @@ export async function createServer(app: App = createApp()) {
   // ---- health, cron, heartbeat ----
   server.get('/_health', async (_req, res) => {
     let dbOk = false; try { await app.db.query('SELECT 1 AS ok'); dbOk = true; } catch { /* down */ }
-    res.json({ ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode, version: process.env.APP_VERSION ?? '0.1.0', node: process.version });
+    // `schema` is what the boot-time reconcile did (null until it has run). scripts/update.mjs reads
+    // it: a new release that needs a column the reconciler could not add is a failed update.
+    const m = app.installer.lastMigrate;
+    res.json({
+      ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode,
+      version: process.env.APP_VERSION ?? '0.1.0', node: process.version,
+      schema: m ? { added: m.added, mismatched: m.mismatched.slice(0, 50), mismatchedCount: m.mismatched.length, failed: m.failed } : null,
+    });
   });
   server.all('/cron/tick', async (req, res) => {
     const key = String(req.query.key ?? req.headers['x-cron-key'] ?? '');
