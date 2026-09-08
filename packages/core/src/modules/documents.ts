@@ -254,14 +254,6 @@ export class DocumentService {
     await this.adapters.queue.push({ name: 'documents.print_job', queue: 'batch', schoolId, payload: { printJobId }, triggeredBy: 'documents.reissue_id_card' });
     return { cardId: newId, cardNo, revokedCardNo: String(old.card_no), revokedTag, printJobId };
   }
-  async idCards(schoolId: string, f: { personType?: 'student' | 'staff'; status?: string; personId?: string } = {}) {
-    const where = ['c.school_id = ?']; const params: unknown[] = [schoolId];
-    if (f.personType) { where.push('c.person_type = ?'); params.push(f.personType); }
-    if (f.status) { where.push('c.status = ?'); params.push(f.status); }
-    if (f.personId) { where.push('(c.student_id = ? OR c.staff_id = ?)'); params.push(f.personId, f.personId); }
-    return this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, st.first_name AS t_first, st.last_name AS t_last, st.employee_no
-      FROM id_cards c LEFT JOIN students s ON s.id = c.student_id LEFT JOIN staff st ON st.id = c.staff_id WHERE ${where.join(' AND ')} ORDER BY c.created_at DESC LIMIT 500`, params);
-  }
   /** Chunked: cards are laid out 8 to a page, 200 cards per pass. */
   async runPrintJob(payload: Record<string, unknown>, ctx: JobContext) {
     const printJobId = String(payload.printJobId);
@@ -296,10 +288,11 @@ export class DocumentService {
   }
   async printJobs(schoolId: string) { return this.db.findMany<Row>('print_jobs', { school_id: schoolId }, { orderBy: 'created_at DESC', limit: 50 }); }
   /** The card register: who holds one, until when, and which sheet it was printed on. */
-  async idCards(schoolId: string, f: { status?: string; personType?: 'student' | 'staff' } = {}) {
+  async idCards(schoolId: string, f: { status?: string; personType?: 'student' | 'staff'; personId?: string } = {}) {
     const where = ['c.school_id = ?']; const params: unknown[] = [schoolId];
     if (f.status) { where.push('c.status = ?'); params.push(f.status); }
     if (f.personType) { where.push('c.person_type = ?'); params.push(f.personType); }
+    if (f.personId) { where.push('(c.student_id = ? OR c.staff_id = ?)'); params.push(f.personId, f.personId); }
     return this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, cl.name AS class_name, st.first_name AS t_first, st.last_name AS t_last, st.employee_no
       FROM id_cards c LEFT JOIN students s ON s.id = c.student_id LEFT JOIN classes cl ON cl.id = s.current_class_id LEFT JOIN staff st ON st.id = c.staff_id
       WHERE ${where.join(' AND ')} ORDER BY c.card_no DESC LIMIT 500`, params);
