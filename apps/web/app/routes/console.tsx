@@ -1,14 +1,28 @@
 import { Form, NavLink, Outlet, useLoaderData } from 'react-router';
 import type { Route } from './+types/console';
-import { t, type Locale } from '@pathshala/ui';
+import { Greeting, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
 import { useTenantPath } from '~/tenant';
+import { TopBar } from '~/topbar';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request);
-  const school = await context.app.db.findOne<{ name: string; name_bn: string | null }>('schools', { id: user.school_id });
-  const access = await context.app.rbac.accessFor(user.id);
-  return { locale: (user.locale as Locale) || context.locale, user: { name: user.display_name, type: user.user_type }, school, roles: access.roles, canAutomation: access.roles.includes('super_admin') || access.permissions.has('platform.view'), mode: context.app.adapters.mode, engine: context.app.db.engine };
+  const school = await context.app.db.findOne<{ name: string; name_bn: string | null; timezone: string | null }>('schools', { id: user.school_id });
+  const [access, year, unread] = await Promise.all([
+    context.app.rbac.accessFor(user.id),
+    context.app.academic.currentYear(user.school_id).catch(() => null),
+    context.app.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM notifications WHERE recipient_user_id = ? AND channel = 'in_app' AND status <> 'read'`, [user.id]).then(r => Number(r[0]?.n ?? 0)).catch(() => 0),
+  ]);
+  return {
+    locale: (user.locale as Locale) || context.locale,
+    user: { name: user.display_name, type: user.user_type },
+    school, roles: access.roles,
+    canAutomation: access.roles.includes('super_admin') || access.permissions.has('platform.view'),
+    mode: context.app.adapters.mode, engine: context.app.db.engine,
+    timeZone: String(school?.timezone ?? 'Asia/Dhaka'),
+    year: year ? String(year.name) : null,
+    unread,
+  };
 }
 
 export default function Console() {
@@ -62,7 +76,10 @@ export default function Console() {
         </div>
         <Form method="post" action={tp('/logout')} className="sm:hidden"><button className="btn btn-ghost btn-sm">{tr('nav.logout')}</button></Form>
       </aside>
-      <main className="flex-1 p-4 sm:p-6"><Outlet /></main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar locale={d.locale} timeZone={d.timeZone} year={d.year} notifications={d.unread} />
+        <main className="flex-1 p-4 sm:p-6"><Outlet /></main>
+      </div>
     </div>
   );
 }

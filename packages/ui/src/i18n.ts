@@ -4,6 +4,7 @@ const dict = {
   en: {
     'app.name': 'Pathshala',
     'nav.dashboard': 'Dashboard', 'nav.automation': 'Automation', 'nav.settings': 'Settings', 'nav.logout': 'Sign out',
+    'top.search': 'Search students, staff, guardians, invoices, books…  ( / )', 'top.year': 'Academic year', 'top.notifications': 'What has arrived', 'top.noNotifications': 'Nothing new', 'top.theme': 'Light or dark', 'top.kind.student': 'Student', 'top.kind.staff': 'Staff', 'top.kind.guardian': 'Guardian', 'top.kind.invoice': 'Invoice', 'top.kind.book': 'Book',
     'login.otherSchool': 'You are signed in to another school. Sign in again to use this one.',
     'login.title': 'Sign in', 'login.identifier': 'Phone, email or username', 'login.password': 'Password', 'login.submit': 'Sign in', 'login.otp': 'Sign in with a code instead', 'login.totp': 'Authenticator code', 'login.failed': 'Wrong phone/email or password',
     'install.title': 'Set up Pathshala', 'install.subtitle': 'One form. Everything else is automatic.', 'install.preparing': 'Preparing the database…', 'install.schema': 'Database schema', 'install.seeds': 'Default data', 'install.school': 'School & admin', 'install.selftest': 'Self-test', 'install.done': 'Finish',
@@ -59,6 +60,7 @@ const dict = {
   bn: {
     'app.name': 'পাঠশালা',
     'nav.dashboard': 'ড্যাশবোর্ড', 'nav.automation': 'অটোমেশন', 'nav.settings': 'সেটিংস', 'nav.logout': 'সাইন আউট',
+    'top.search': 'শিক্ষার্থী, কর্মী, অভিভাবক, ইনভয়েস, বই খুঁজুন…  ( / )', 'top.year': 'শিক্ষাবর্ষ', 'top.notifications': 'যা এসেছে', 'top.noNotifications': 'নতুন কিছু নেই', 'top.theme': 'আলো বা অন্ধকার', 'top.kind.student': 'শিক্ষার্থী', 'top.kind.staff': 'কর্মী', 'top.kind.guardian': 'অভিভাবক', 'top.kind.invoice': 'ইনভয়েস', 'top.kind.book': 'বই',
     'login.otherSchool': 'আপনি অন্য একটি স্কুলে সাইন ইন করা আছেন। এই স্কুলে প্রবেশ করতে আবার সাইন ইন করুন।',
     'login.title': 'সাইন ইন', 'login.identifier': 'মোবাইল, ইমেইল বা ইউজারনেম', 'login.password': 'পাসওয়ার্ড', 'login.submit': 'সাইন ইন', 'login.otp': 'কোড দিয়ে সাইন ইন করুন', 'login.totp': 'অথেনটিকেটর কোড', 'login.failed': 'মোবাইল/ইমেইল বা পাসওয়ার্ড ভুল',
     'install.title': 'পাঠশালা সেটআপ', 'install.subtitle': 'একটি ফর্ম। বাকি সব স্বয়ংক্রিয়।', 'install.preparing': 'ডেটাবেজ তৈরি হচ্ছে…', 'install.schema': 'ডেটাবেজ স্কিমা', 'install.seeds': 'ডিফল্ট ডেটা', 'install.school': 'স্কুল ও অ্যাডমিন', 'install.selftest': 'সেলফ-টেস্ট', 'install.done': 'শেষ',

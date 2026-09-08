@@ -13,6 +13,16 @@ export function mountPhase1(api: Router, app: App, wrap: Wrap, requirePerm: (req
    * from the office computer to the phone they mark attendance on. The cookie the console also sets
    * covers the pages seen before signing in; this is the half that lasts.
    */
+  /**
+   * The one box at the top of the console. Behind the same permissions as the pages it finds things
+   * on, so it can never be a way around them.
+   */
+  api.get('/search', wrap(async req => {
+    const u = requireUser(req);
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    return app.search.find(u.school_id, u.id, q);
+  }));
+
   api.post('/auth/locale', wrap(async req => {
     const u = requireUser(req);
     const { locale } = z.object({ locale: z.enum(['bn', 'en']) }).parse(req.body ?? {});
