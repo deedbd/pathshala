@@ -3,6 +3,7 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/students';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, api, formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request);
@@ -19,7 +20,7 @@ export function meta() { return [{ title: 'Pathshala — Students' }]; }
 type StudentRow = { id: string; admission_no: string; first_name: string; last_name: string | null; name_bn: string | null; gender: string; class_name: string | null; section_name: string | null; current_roll_no: string | null; guardian_phone: string | null; status: string; current_class_id: string | null };
 
 export default function Students() {
-  const d = useLoaderData<typeof loader>();
+  const d = useLoaderData<typeof loader>(); const tp = useTenantPath();
   const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [open, setOpen] = useState(false); const [profile, setProfile] = useState<Record<string, unknown> | null>(null);
@@ -39,9 +40,9 @@ export default function Students() {
     <div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div><h1 className="text-2xl">{tr('stu.title')}</h1><p className="text-sm" style={{ color: 'var(--muted)' }}>{formatNumber(d.list.total, d.locale)} {tr('stu.title').toLowerCase()}</p></div>
-        <div className="flex items-center gap-2"><a className="btn btn-secondary btn-sm" href="/import">{tr('nav.import')}</a><Button size="sm" onClick={() => setOpen(true)} disabled={!d.hasYear}>{tr('stu.new')}</Button></div>
+        <div className="flex items-center gap-2"><a className="btn btn-secondary btn-sm" href={tp('/import')}>{tr('nav.import')}</a><Button size="sm" onClick={() => setOpen(true)} disabled={!d.hasYear}>{tr('stu.new')}</Button></div>
       </div>
-      {!d.hasYear && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href="/academic">{tr('nav.academic')}</a></Banner></div>}
+      {!d.hasYear && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href={tp('/academic')}>{tr('nav.academic')}</a></Banner></div>}
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
       <form className="mt-4 flex flex-wrap gap-2" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const next = new URLSearchParams(); for (const [k, v] of f.entries()) if (v) next.set(k, String(v)); setSp(next); }}>
         <Input name="q" placeholder={tr('common.search')} defaultValue={d.filters.q ?? ''} className="max-w-xs" />

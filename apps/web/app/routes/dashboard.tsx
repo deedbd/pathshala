@@ -2,6 +2,7 @@ import { useLoaderData } from 'react-router';
 import type { Route } from './+types/dashboard';
 import { chipClass, feedClass, formatDateTime, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request);
@@ -23,7 +24,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 export function meta() { return [{ title: 'Pathshala — Dashboard' }]; }
 
 export default function Dashboard() {
-  const d = useLoaderData<typeof loader>();
+  const d = useLoaderData<typeof loader>(); const tp = useTenantPath();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const feed = [
     ...d.recent.map(r => ({ id: r.id, kind: 'rule' as const, at: r.started_at, title: `${r.code} · ${r.name}`, status: r.status, error: r.error })),
@@ -45,7 +46,7 @@ export default function Dashboard() {
             {d.onboarding.steps.map(step => (
               <li key={step.key} className="flex items-center gap-2 text-sm">
                 <span aria-hidden>{step.done ? '\u2713' : '\u25cb'}</span>
-                {step.done ? <span style={{ color: 'var(--muted)' }}>{step.label}</span> : <a href={step.href} className="underline">{step.label}</a>}
+                {step.done ? <span style={{ color: 'var(--muted)' }}>{step.label}</span> : <a href={tp(step.href)} className="underline">{step.label}</a>}
               </li>
             ))}
           </ul>

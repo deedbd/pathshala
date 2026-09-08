@@ -2,11 +2,16 @@ import { Form, useActionData, useLoaderData, useNavigation } from 'react-router'
 import type { Route } from './+types/site';
 import { formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
 import { assertSameOrigin, formString } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 type Block = { type: string; title?: string; titleBn?: string; body?: string; bodyBn?: string; cta?: { label: string; labelBn?: string; href: string } | null; limit?: number };
 
 export async function loader({ context, request, params }: Route.LoaderArgs) {
-  const school = await context.app.cms.resolveSchool(request.headers.get('host'));
+  // The school in the URL wins: the path named it, or the host did. resolveSchool(host) is the
+  // fallback for the vendor's own root, where it answers with the installation's founder school.
+  const school = context.tenant
+    ? await context.app.db.findOne<Record<string, unknown>>('schools', { id: context.tenant.schoolId })
+    : await context.app.cms.resolveSchool(request.headers.get('host'));
   if (!school) throw new Response('No school configured yet', { status: 404 });
   const sid = String(school.id);
   const url = new URL(request.url);
@@ -19,7 +24,9 @@ export async function loader({ context, request, params }: Route.LoaderArgs) {
 
 export async function action({ context, request }: Route.ActionArgs) {
   assertSameOrigin(request, context.app.config.appUrl);
-  const school = await context.app.cms.resolveSchool(request.headers.get('host'));
+  const school = context.tenant
+    ? await context.app.db.findOne<Record<string, unknown>>('schools', { id: context.tenant.schoolId })
+    : await context.app.cms.resolveSchool(request.headers.get('host'));
   if (!school) throw new Response('No school', { status: 404 });
   const fd = await request.formData(); const intent = formString(fd, 'intent');
   try {
@@ -33,7 +40,7 @@ export function meta({ data }: Route.MetaArgs) { return [{ title: data ? `${data
 
 export default function Site() {
   const d = useLoaderData<typeof loader>(); const result = useActionData<typeof action>() as { ok?: string; error?: string } | undefined; const nav = useNavigation();
-  const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L);
+  const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L); const tp = useTenantPath();
   const pick = (en?: string, bn?: string) => (L === 'bn' && bn ? bn : en ?? bn ?? '');
   const name = pick(d.school.name, d.school.nameBn ?? undefined);
   const accent = d.school.theme?.accent;
@@ -41,8 +48,8 @@ export default function Site() {
     <div lang={L} style={accent ? ({ '--accent': accent } as React.CSSProperties) : undefined}>
       <header className="sticky top-0 z-10 border-b" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}>
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3">
-          <a href="/site" className="display text-lg" style={{ color: 'var(--accent)' }}>{name}</a>
-          <nav className="flex items-center gap-1 overflow-x-auto text-sm">{d.menu.map(m => <a key={m.href} href={m.href} className="whitespace-nowrap px-2 py-1">{pick(m.label, m.labelBn)}</a>)}<a href={`?locale=${L === 'bn' ? 'en' : 'bn'}`} className="px-2 py-1" style={{ color: 'var(--muted)' }}>{tr('lang.switch')}</a></nav>
+          <a href={tp('/site')} className="display text-lg" style={{ color: 'var(--accent)' }}>{name}</a>
+          <nav className="flex items-center gap-1 overflow-x-auto text-sm">{d.menu.map(m => <a key={m.href} href={tp(m.href)} className="whitespace-nowrap px-2 py-1">{pick(m.label, m.labelBn)}</a>)}<a href={`?locale=${L === 'bn' ? 'en' : 'bn'}`} className="px-2 py-1" style={{ color: 'var(--muted)' }}>{tr('lang.switch')}</a></nav>
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-6">
@@ -50,7 +57,7 @@ export default function Site() {
         {result?.ok && <div className="banner banner-ok mb-4">{tr('site.sent')}</div>}
         {d.page.blocks.map((b, i) => {
           switch (b.type) {
-            case 'hero': return <section key={i} className="card p-8 sm:p-12" style={{ background: 'var(--accent-soft)' }}><h1 className="text-3xl sm:text-4xl">{pick(b.title, b.titleBn) || name}</h1><p className="mt-2 max-w-xl text-base" style={{ color: 'var(--muted)' }}>{pick(b.body, b.bodyBn)}</p>{b.cta && <a href={b.cta.href} className="btn btn-primary mt-6">{pick(b.cta.label, b.cta.labelBn)}</a>}</section>;
+            case 'hero': return <section key={i} className="card p-8 sm:p-12" style={{ background: 'var(--accent-soft)' }}><h1 className="text-3xl sm:text-4xl">{pick(b.title, b.titleBn) || name}</h1><p className="mt-2 max-w-xl text-base" style={{ color: 'var(--muted)' }}>{pick(b.body, b.bodyBn)}</p>{b.cta && <a href={tp(b.cta.href)} className="btn btn-primary mt-6">{pick(b.cta.label, b.cta.labelBn)}</a>}</section>;
             case 'stats': return <section key={i} className="mt-6 grid grid-cols-3 gap-3">{([['dash.students', d.stats.students], ['staff.title', d.stats.teachers], ['acad.classes', d.stats.classes]] as const).map(([k, v]) => <div key={k} className="kpi"><div className="kpi-label">{tr(k)}</div><div className="kpi-value num">{formatNumber(v, L)}</div></div>)}</section>;
             case 'text': return <section key={i} className="card mt-6 p-6"><h2 className="text-xl">{pick(b.title, b.titleBn)}</h2><div className="prose mt-2 whitespace-pre-wrap text-sm">{pick(b.body, b.bodyBn)}</div></section>;
             case 'notices': return <section key={i} id="notices" className="card mt-6 p-6"><h2 className="text-xl">{pick(b.title, b.titleBn) || tr('web.notices')}</h2><ul className="mt-3 divide-y" style={{ borderColor: 'var(--line)' }}>{d.notices.slice(0, b.limit ?? 5).map(n => <li key={String(n.id)} className="py-3"><div className="flex items-center gap-2">{Number(n.is_pinned) ? <span className="chip chip-accent">pin</span> : null}<span className="font-medium">{String(n.title)}</span><span className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>{formatDate(String(n.publish_at), L)}</span></div><p className="mt-1 whitespace-pre-wrap text-sm" style={{ color: 'var(--muted)' }}>{String(n.body).slice(0, 300)}</p></li>)}{d.notices.length === 0 && <li className="py-3 text-sm" style={{ color: 'var(--muted)' }}>—</li>}</ul></section>;
@@ -76,7 +83,7 @@ export default function Site() {
         })}
         {d.turnstileSiteKey && <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />}
       </main>
-      <footer className="mx-auto max-w-5xl px-4 py-8 text-xs" style={{ color: 'var(--muted)' }}>© {name} · <a href="/login">{tr('login.title')}</a> · <a href="/portal">{tr('portal.children')}</a></footer>
+      <footer className="mx-auto max-w-5xl px-4 py-8 text-xs" style={{ color: 'var(--muted)' }}>© {name} · <a href={tp('/login')}>{tr('login.title')}</a> · <a href={tp('/portal')}>{tr('portal.children')}</a></footer>
     </div>
   );
 }

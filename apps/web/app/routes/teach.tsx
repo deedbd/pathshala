@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { redirect, useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/teach';
 import { Banner, Button, Chip, api, formatDate, t, type Locale } from '@pathshala/ui';
+import { ctxPath, requireTenantUser, useTenantPath } from '~/tenant';
 
 type Status = 'present' | 'absent' | 'late' | 'excused';
 
 /** Teacher PWA v0: today's periods, one-tap attendance, homework, and substitutions assigned to me. */
 export async function loader({ context, request }: Route.LoaderArgs) {
-  if (!context.user) throw redirect(`/login?next=${encodeURIComponent('/teach')}`);
-  const u = context.user; const url = new URL(request.url);
+  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  const u = requireTenantUser(context, context.user, request); const url = new URL(request.url);
   const date = url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10);
   const staff = await context.app.db.findOne<{ id: string; first_name: string }>('staff', { school_id: u.school_id, user_id: u.id });
   if (!staff) return { locale: (u.locale as Locale) || context.locale, staff: null, date, today: [], sections: [], subs: [], register: null, sectionId: null, school: null };
@@ -28,7 +29,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 export function meta() { return [{ title: 'Pathshala — My classes' }]; }
 
 export default function Teach() {
-  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
+  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams(); const tp = useTenantPath();
   const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L);
   const [marks, setMarks] = useState<Record<string, Status>>({});
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [saved, setSaved] = useState(false);
@@ -45,7 +46,7 @@ export default function Teach() {
     <div lang={L} className="mx-auto max-w-md pb-20">
       <header className="sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}>
         <div><div className="text-xs" style={{ color: 'var(--accent)' }}>{tr('app.name')}</div><div className="display text-base">{tr('teach.title')}</div></div>
-        <a href="/logout" className="btn btn-ghost btn-sm">{tr('nav.logout')}</a>
+        <a href={tp('/logout')} className="btn btn-ghost btn-sm">{tr('nav.logout')}</a>
       </header>
       <main className="px-4">
         {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
@@ -93,7 +94,7 @@ export default function Teach() {
         </section>}
       </main>
       <nav className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md justify-around border-t py-2 text-xs" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}>
-        <a href="/teach" style={{ color: 'var(--accent)' }}>{tr('teach.title')}</a><a href="/chat">{tr('chat.title')}</a><a href="/dashboard">{tr('nav.dashboard')}</a>
+        <a href={tp('/teach')} style={{ color: 'var(--accent)' }}>{tr('teach.title')}</a><a href={tp('/chat')}>{tr('chat.title')}</a><a href={tp('/dashboard')}>{tr('nav.dashboard')}</a>
       </nav>
       <script dangerouslySetInnerHTML={{ __html: `if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}` }} />
     </div>

@@ -1,4 +1,5 @@
 import { redirect, type AppLoadContext } from 'react-router';
+import { ctxPath, requireTenantUser } from './tenant';
 
 export const SESSION_COOKIE = 'ps_session';
 
@@ -7,9 +8,18 @@ export function sessionCookie(token: string, expiresAt: string, secure: boolean)
 }
 export const clearSessionCookie = `${SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age=0`;
 
+/**
+  * The signed-in user of the school whose address this page is being served at.
+  *
+  * Two things send the browser to a sign-in form, and both land on *this* school's: no session at
+  * all, and a session belonging to another school on the installation. The second is the one that
+  * matters — every console loader goes through here, so a stranger's console can never be drawn
+  * under a school's own address. The sign-in redirect keeps the prefix, and `next` is the pathname
+  * as it was asked for, which already carries it.
+  */
 export function requireUser(context: AppLoadContext, request: Request) {
-  if (!context.user) throw redirect(`/login?next=${encodeURIComponent(new URL(request.url).pathname)}`);
-  return context.user;
+  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  return requireTenantUser(context, context.user, request);
 }
 
 /** Same-origin check for form posts (cookie sessions): Origin/Referer must match the app host when present. */

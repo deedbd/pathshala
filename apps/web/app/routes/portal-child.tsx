@@ -1,10 +1,11 @@
 import { redirect, useLoaderData } from 'react-router';
 import type { Route } from './+types/portal-child';
 import { formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
+import { ctxPath, requireTenantUser, useTenantPath } from '~/tenant';
 
 export async function loader({ context, request, params }: Route.LoaderArgs) {
-  if (!context.user) throw redirect(`/login?next=${encodeURIComponent(new URL(request.url).pathname)}`);
-  const u = context.user;
+  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  const u = requireTenantUser(context, context.user, request);
   const [data, summary, offs] = await Promise.all([
     context.app.portal.child(u.school_id, u.id, params.id),
     context.app.portal.childSummary(u.school_id, u.id, params.id),
@@ -15,13 +16,13 @@ export async function loader({ context, request, params }: Route.LoaderArgs) {
 export function meta() { return [{ title: 'Pathshala — Child' }]; }
 
 export default function PortalChild() {
-  const d = useLoaderData<typeof loader>(); const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L);
+  const d = useLoaderData<typeof loader>(); const L = d.locale; const tr = (k: Parameters<typeof t>[0]) => t(k, L); const tp = useTenantPath();
   const c = d.child;
   const byDay = new Map<number, typeof d.timetable>(); for (const s of d.timetable) byDay.set(Number(s.day_of_week), [...(byDay.get(Number(s.day_of_week)) ?? []), s]);
   const subj = (g: Record<string, unknown>) => L === 'bn' && g.subject_name_bn ? String(g.subject_name_bn) : String(g.subject_name ?? '—');
   return (
     <div lang={L} className="mx-auto max-w-md pb-20">
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b px-4 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href="/portal" className="btn btn-ghost btn-sm">‹</a><div><div className="display text-base">{L === 'bn' && c.name_bn ? String(c.name_bn) : `${c.first_name} ${c.last_name ?? ''}`}</div><div className="text-xs" style={{ color: 'var(--muted)' }}>{String(c.class_name ?? '')} {String(c.section_name ?? '')} · {tr('stu.roll')} <span className="num">{String(c.current_roll_no ?? '—')}</span> · <span className="num">{String(c.admission_no)}</span></div></div></header>
+      <header className="sticky top-0 z-10 flex items-center gap-3 border-b px-4 py-3" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href={tp('/portal')} className="btn btn-ghost btn-sm">‹</a><div><div className="display text-base">{L === 'bn' && c.name_bn ? String(c.name_bn) : `${c.first_name} ${c.last_name ?? ''}`}</div><div className="text-xs" style={{ color: 'var(--muted)' }}>{String(c.class_name ?? '')} {String(c.section_name ?? '')} · {tr('stu.roll')} <span className="num">{String(c.current_roll_no ?? '—')}</span> · <span className="num">{String(c.admission_no)}</span></div></div></header>
       <main className="px-4">
         {d.classTeacher && <div className="card mt-4 p-3 text-sm"><span style={{ color: 'var(--muted)' }}>{tr('portal.classTeacher')}: </span>{String(d.classTeacher.first_name)} {String(d.classTeacher.last_name ?? '')}{d.classTeacher.phone ? <> · <a className="num" href={`tel:${d.classTeacher.phone}`}>{String(d.classTeacher.phone)}</a></> : null}</div>}
         {d.substitutions.length > 0 && <div className="banner banner-warn mt-4 text-sm">{d.substitutions.map((s, i) => <div key={i}>{formatDate(String(s.on_date), L)} · {String(s.period_name)}: {s.sub_first ? `${s.sub_first} ${s.sub_last ?? ''}` : '—'}</div>)}</div>}
@@ -78,7 +79,7 @@ export default function PortalChild() {
         <h2 className="mt-6 text-base">{tr('portal.notices')}</h2>
         <ul className="card mt-2 divide-y text-sm" style={{ borderColor: 'var(--line)' }}>{d.notices.slice(0, 5).map(n => <li key={String(n.id)} className="p-3"><div className="font-medium">{String(n.title)}</div><div className="text-xs" style={{ color: 'var(--muted)' }}>{formatDate(String(n.publish_at), L)}</div></li>)}</ul>
       </main>
-      <nav className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md justify-around border-t py-2 text-xs" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href="/portal">{tr('portal.children')}</a><a href="/portal#notices">{tr('portal.notices')}</a><a href="/site">{tr('web.title')}</a></nav>
+      <nav className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md justify-around border-t py-2 text-xs" style={{ background: 'var(--surface)', borderColor: 'var(--line)' }}><a href={tp('/portal')}>{tr('portal.children')}</a><a href={tp('/portal#notices')}>{tr('portal.notices')}</a><a href={tp('/site')}>{tr('web.title')}</a></nav>
     </div>
   );
 }

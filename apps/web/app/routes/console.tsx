@@ -2,6 +2,7 @@ import { Form, NavLink, Outlet, useLoaderData } from 'react-router';
 import type { Route } from './+types/console';
 import { t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request);
@@ -12,6 +13,9 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
 export default function Console() {
   const d = useLoaderData<typeof loader>();
+  // Every link below is this school's: under /saranjai it stays under /saranjai, and under the
+  // school's own domain it is the plain path. A missed one silently leaves the school's address.
+  const tp = useTenantPath();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const schoolName = d.locale === 'bn' && d.school?.name_bn ? d.school.name_bn : d.school?.name;
   const link = ({ isActive }: { isActive: boolean }) => `block rounded-[var(--radius-ctl)] px-3 py-2 text-sm ${isActive ? 'font-medium' : ''}`;
@@ -24,39 +28,39 @@ export default function Console() {
           <div className="display truncate text-base">{schoolName}</div>
         </div>
         <nav className="flex gap-1 overflow-x-auto sm:flex-col">
-          <NavLink to="/dashboard" className={link} style={style}>{tr('nav.dashboard')}</NavLink>
-          <NavLink to="/academic" className={link} style={style}>{tr('nav.academic')}</NavLink>
-          <NavLink to="/students" className={link} style={style}>{tr('nav.students')}</NavLink>
-          <NavLink to="/staff" className={link} style={style}>{tr('nav.staff')}</NavLink>
-          <NavLink to="/attendance" className={link} style={style}>{tr('nav.attendance')}</NavLink>
-          <NavLink to="/timetable" className={link} style={style}>{tr('nav.timetable')}</NavLink>
-          <NavLink to="/exams" className={link} style={style}>{tr('nav.exams')}</NavLink>
-          <NavLink to="/fees" className={link} style={style}>{tr('nav.fees')}</NavLink>
-          <NavLink to="/accounts" className={link} style={style}>{tr('nav.accounts')}</NavLink>
-          <NavLink to="/hr" className={link} style={style}>{tr('nav.hr')}</NavLink>
-          <NavLink to="/admissions" className={link} style={style}>{tr('nav.admissions')}</NavLink>
-          <NavLink to="/operations" className={link} style={style}>{tr('nav.operations')}</NavLink>
-          <NavLink to="/learning" className={link} style={style}>{tr('nav.learning')}</NavLink>
-          <NavLink to="/community" className={link} style={style}>{tr('nav.community')}</NavLink>
-          <NavLink to="/institution" className={link} style={style}>{tr('nav.institution')}</NavLink>
-          <NavLink to="/insights" className={link} style={style}>{tr('nav.insights')}</NavLink>
-          <NavLink to="/college" className={link} style={style}>{tr('nav.college')}</NavLink>
-          <NavLink to="/group" className={link} style={style}>{tr('nav.group')}</NavLink>
-          <NavLink to="/platform" className={link} style={style}>{tr('nav.platform')}</NavLink>
-          <NavLink to="/diary" className={link} style={style}>{tr('nav.diary')}</NavLink>
-          <NavLink to="/chat" className={link} style={style}>{tr('nav.chat')}</NavLink>
-          <NavLink to="/syllabus" className={link} style={style}>{tr('nav.syllabus')}</NavLink>
-          <NavLink to="/calendar" className={link} style={style}>{tr('nav.calendar')}</NavLink>
-          <NavLink to="/import" className={link} style={style}>{tr('nav.import')}</NavLink>
-          <NavLink to="/website" className={link} style={style}>{tr('nav.website')}</NavLink>
-          {d.canAutomation && <NavLink to="/automation" className={link} style={style}>{tr('nav.automation')}</NavLink>}
+          <NavLink to={tp('/dashboard')} className={link} style={style}>{tr('nav.dashboard')}</NavLink>
+          <NavLink to={tp('/academic')} className={link} style={style}>{tr('nav.academic')}</NavLink>
+          <NavLink to={tp('/students')} className={link} style={style}>{tr('nav.students')}</NavLink>
+          <NavLink to={tp('/staff')} className={link} style={style}>{tr('nav.staff')}</NavLink>
+          <NavLink to={tp('/attendance')} className={link} style={style}>{tr('nav.attendance')}</NavLink>
+          <NavLink to={tp('/timetable')} className={link} style={style}>{tr('nav.timetable')}</NavLink>
+          <NavLink to={tp('/exams')} className={link} style={style}>{tr('nav.exams')}</NavLink>
+          <NavLink to={tp('/fees')} className={link} style={style}>{tr('nav.fees')}</NavLink>
+          <NavLink to={tp('/accounts')} className={link} style={style}>{tr('nav.accounts')}</NavLink>
+          <NavLink to={tp('/hr')} className={link} style={style}>{tr('nav.hr')}</NavLink>
+          <NavLink to={tp('/admissions')} className={link} style={style}>{tr('nav.admissions')}</NavLink>
+          <NavLink to={tp('/operations')} className={link} style={style}>{tr('nav.operations')}</NavLink>
+          <NavLink to={tp('/learning')} className={link} style={style}>{tr('nav.learning')}</NavLink>
+          <NavLink to={tp('/community')} className={link} style={style}>{tr('nav.community')}</NavLink>
+          <NavLink to={tp('/institution')} className={link} style={style}>{tr('nav.institution')}</NavLink>
+          <NavLink to={tp('/insights')} className={link} style={style}>{tr('nav.insights')}</NavLink>
+          <NavLink to={tp('/college')} className={link} style={style}>{tr('nav.college')}</NavLink>
+          <NavLink to={tp('/group')} className={link} style={style}>{tr('nav.group')}</NavLink>
+          <NavLink to={tp('/platform')} className={link} style={style}>{tr('nav.platform')}</NavLink>
+          <NavLink to={tp('/diary')} className={link} style={style}>{tr('nav.diary')}</NavLink>
+          <NavLink to={tp('/chat')} className={link} style={style}>{tr('nav.chat')}</NavLink>
+          <NavLink to={tp('/syllabus')} className={link} style={style}>{tr('nav.syllabus')}</NavLink>
+          <NavLink to={tp('/calendar')} className={link} style={style}>{tr('nav.calendar')}</NavLink>
+          <NavLink to={tp('/import')} className={link} style={style}>{tr('nav.import')}</NavLink>
+          <NavLink to={tp('/website')} className={link} style={style}>{tr('nav.website')}</NavLink>
+          {d.canAutomation && <NavLink to={tp('/automation')} className={link} style={style}>{tr('nav.automation')}</NavLink>}
         </nav>
         <div className="hidden sm:mt-auto sm:block">
           <div className="text-xs" style={{ color: 'var(--muted)' }}>{d.user.name} · {d.roles[0] ?? d.user.type}</div>
           <div className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{d.engine} · {d.mode}</div>
-          <Form method="post" action="/logout"><button className="btn btn-ghost btn-sm mt-2 px-0">{tr('nav.logout')}</button></Form>
+          <Form method="post" action={tp('/logout')}><button className="btn btn-ghost btn-sm mt-2 px-0">{tr('nav.logout')}</button></Form>
         </div>
-        <Form method="post" action="/logout" className="sm:hidden"><button className="btn btn-ghost btn-sm">{tr('nav.logout')}</button></Form>
+        <Form method="post" action={tp('/logout')} className="sm:hidden"><button className="btn btn-ghost btn-sm">{tr('nav.logout')}</button></Form>
       </aside>
       <main className="flex-1 p-4 sm:p-6"><Outlet /></main>
     </div>

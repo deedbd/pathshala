@@ -3,6 +3,7 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/timetable';
 import { Banner, Button, Chip, Field, Input, Select, api, formatDateTime, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request); const sid = user.school_id; const url = new URL(request.url);
@@ -26,7 +27,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 export function meta() { return [{ title: 'Pathshala — Timetable' }]; }
 
 export default function Timetable() {
-  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
+  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams(); const tp = useTenantPath();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [last, setLast] = useState<{ placed: number; unplaced: number; clashes: number; score: number; sections: number } | null>(null);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
@@ -54,7 +55,7 @@ export default function Timetable() {
       {d.year && <p className="mt-4 text-sm" style={{ color: 'var(--muted)' }}>{tr('tt.autoNote')}</p>}
       {last && <div className="mt-4"><Banner kind={last.clashes ? 'bad' : 'ok'}>{formatNumber(last.placed, d.locale)} {tr('tt.placed')} · {formatNumber(last.unplaced, d.locale)} {tr('tt.unplaced')} · {formatNumber(last.clashes, d.locale)} {tr('tt.clashes')} · {formatNumber(last.sections, d.locale)} {tr('acad.sections').toLowerCase()} · score {formatNumber(last.score, d.locale)}</Banner></div>}
       {d.clashes.length > 0 && <div className="mt-4"><Banner kind="bad">{tr('tt.clashes')}: {d.clashes.length}</Banner></div>}
-      {!d.year && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href="/academic">{tr('nav.academic')}</a></Banner></div>}
+      {!d.year && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href={tp('/academic')}>{tr('nav.academic')}</a></Banner></div>}
 
       {d.version && <div className="mt-6">
         <div className="flex items-center gap-2"><Select value={d.sectionId ?? ''} onChange={e => { const n = new URLSearchParams(sp); n.set('sectionId', e.target.value); setSp(n); }} options={d.sections.map(s => ({ value: String(s.id), label: `${s.class_name} ${s.name}` }))} className="max-w-xs" /><span className="text-xs" style={{ color: 'var(--muted)' }}>{formatDateTime(String(d.version.created_at), d.locale)} · {String(d.version.generated_by)}</span></div>

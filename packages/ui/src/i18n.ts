@@ -4,6 +4,7 @@ const dict = {
   en: {
     'app.name': 'Pathshala',
     'nav.dashboard': 'Dashboard', 'nav.automation': 'Automation', 'nav.settings': 'Settings', 'nav.logout': 'Sign out',
+    'login.otherSchool': 'You are signed in to another school. Sign in again to use this one.',
     'login.title': 'Sign in', 'login.identifier': 'Phone, email or username', 'login.password': 'Password', 'login.submit': 'Sign in', 'login.otp': 'Sign in with a code instead', 'login.totp': 'Authenticator code', 'login.failed': 'Wrong phone/email or password',
     'install.title': 'Set up Pathshala', 'install.subtitle': 'One form. Everything else is automatic.', 'install.preparing': 'Preparing the database…', 'install.schema': 'Database schema', 'install.seeds': 'Default data', 'install.school': 'School & admin', 'install.selftest': 'Self-test', 'install.done': 'Finish',
     'install.schoolName': 'School name', 'install.schoolNameBn': 'School name (Bangla)', 'install.type': 'Institution type', 'install.adminName': 'Your name', 'install.adminPhone': 'Your mobile', 'install.adminEmail': 'Email (optional)', 'install.adminPassword': 'Password', 'install.create': 'Create school', 'install.runSelfTest': 'Run self-test', 'install.finish': 'Open dashboard', 'install.locale': 'Default language',
@@ -57,6 +58,7 @@ const dict = {
   bn: {
     'app.name': 'পাঠশালা',
     'nav.dashboard': 'ড্যাশবোর্ড', 'nav.automation': 'অটোমেশন', 'nav.settings': 'সেটিংস', 'nav.logout': 'সাইন আউট',
+    'login.otherSchool': 'আপনি অন্য একটি স্কুলে সাইন ইন করা আছেন। এই স্কুলে প্রবেশ করতে আবার সাইন ইন করুন।',
     'login.title': 'সাইন ইন', 'login.identifier': 'মোবাইল, ইমেইল বা ইউজারনেম', 'login.password': 'পাসওয়ার্ড', 'login.submit': 'সাইন ইন', 'login.otp': 'কোড দিয়ে সাইন ইন করুন', 'login.totp': 'অথেনটিকেটর কোড', 'login.failed': 'মোবাইল/ইমেইল বা পাসওয়ার্ড ভুল',
     'install.title': 'পাঠশালা সেটআপ', 'install.subtitle': 'একটি ফর্ম। বাকি সব স্বয়ংক্রিয়।', 'install.preparing': 'ডেটাবেজ তৈরি হচ্ছে…', 'install.schema': 'ডেটাবেজ স্কিমা', 'install.seeds': 'ডিফল্ট ডেটা', 'install.school': 'স্কুল ও অ্যাডমিন', 'install.selftest': 'সেলফ-টেস্ট', 'install.done': 'শেষ',
     'install.schoolName': 'স্কুলের নাম', 'install.schoolNameBn': 'স্কুলের নাম (বাংলা)', 'install.type': 'প্রতিষ্ঠানের ধরন', 'install.adminName': 'আপনার নাম', 'install.adminPhone': 'আপনার মোবাইল', 'install.adminEmail': 'ইমেইল (ঐচ্ছিক)', 'install.adminPassword': 'পাসওয়ার্ড', 'install.create': 'স্কুল তৈরি করুন', 'install.runSelfTest': 'সেলফ-টেস্ট চালান', 'install.finish': 'ড্যাশবোর্ড খুলুন', 'install.locale': 'ডিফল্ট ভাষা',
