@@ -3,7 +3,10 @@ import type { Route } from './+types/root';
 import './app.css';
 
 export async function loader({ context }: Route.LoaderArgs) {
-  return { locale: context.locale, appName: 'Pathshala' };
+  // Every in-app link is built from tenantPrefix: '' under a custom domain (or on the vendor's own
+  // host) and '/<slug>' when the path named the school. useTenantPath() reads it back from here.
+  const tenant = context.tenant ?? null;
+  return { locale: context.locale, appName: 'Pathshala', tenantPrefix: tenant?.prefix ?? '', tenant };
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

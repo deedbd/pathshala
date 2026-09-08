@@ -3,6 +3,7 @@ import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/insights';
 import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Kpi, Select, Tabs, api, formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
+import { useTenantPath } from '~/tenant';
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request); const sid = user.school_id;
@@ -33,7 +34,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 export function meta() { return [{ title: 'Pathshala — Insights' }]; }
 
 export default function Insights() {
-  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
+  const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams(); const tp = useTenantPath();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [tab, setTab] = useState<'dashboard' | 'watch' | 'broadcast' | 'forecast'>('dashboard');
   const [drawer, setDrawer] = useState(false);
@@ -49,7 +50,7 @@ export default function Insights() {
     <div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div><h1 className="text-2xl">{tr('ins.title')}</h1><p className="text-sm" style={{ color: 'var(--muted)' }}>{tr('ins.purpose')}</p></div>
-        <a className="btn btn-secondary btn-sm" href={`/insights?role=${d.role === 'admin' ? 'accountant' : d.role === 'accountant' ? 'teacher' : 'admin'}`}>{tr('ins.asRole')}: {d.role}</a>
+        <a className="btn btn-secondary btn-sm" href={`${tp('/insights')}?role=${d.role === 'admin' ? 'accountant' : d.role === 'accountant' ? 'teacher' : 'admin'}`}>{tr('ins.asRole')}: {d.role}</a>
       </div>
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
       {msg && <div className="mt-4"><Banner kind="ok">{msg}</Banner></div>}
