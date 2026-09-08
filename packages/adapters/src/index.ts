@@ -11,6 +11,7 @@ import { LogMail, SmtpMail } from './mail.js';
 import { HttpSms, LogSms } from './sms.js';
 import { HttpVoice, LogVoice, LogWhatsApp, MetaWhatsApp } from './voice.js';
 import { HttpAi, NoAi } from './ai.js';
+import { createCPanel } from './cpanel.js';
 import { LogPush, WebPush } from './push.js';
 import { BullmqQueue, ChromiumPdf, FcmPush, S3Storage, WebsocketRealtime } from './stubs.js';
 
@@ -26,6 +27,8 @@ export { HttpSms, LogSms } from './sms.js';
 export { HttpVoice, LogVoice, LogWhatsApp, MetaWhatsApp } from './voice.js';
 export { HttpAi, NoAi } from './ai.js';
 export type { AiAdapter, AiMessage, AiReply, AiRequest } from './ai.js';
+export { CPanelApi, NoCPanel, createCPanel } from './cpanel.js';
+export type { CPanelAdapter, CPanelAliasList, CPanelAliasResult, CPanelOptions } from './cpanel.js';
 export type { VoiceAdapter, VoiceCall, WhatsAppAdapter, WhatsAppMessage } from './voice.js';
 export { LogPush, WebPush } from './push.js';
 export * from './stubs.js';
@@ -38,6 +41,7 @@ export interface AdapterEnv {
   SMS_PROVIDER?: string; SMS_HTTP_URL?: string; SMS_HTTP_METHOD?: string; SMS_SENDER_ID?: string; SMS_HTTP_BODY?: string; SMS_BALANCE_URL?: string; SMS_COST?: string;
   VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string;
   REDIS_URL?: string; QUEUE_CONCURRENCY?: string; JOB_BUDGET_MS?: string;
+  CPANEL_URL?: string; CPANEL_USER?: string; CPANEL_API_TOKEN?: string;
   [k: string]: string | undefined;
 }
 
@@ -66,7 +70,11 @@ export function createAdapters(env: AdapterEnv, deps: { db: Db; rootDir: string;
   const ai = env.AI_URL ? new HttpAi({ url: env.AI_URL, apiKey: env.AI_KEY, model: env.AI_MODEL, costPer1kIn: Number(env.AI_COST_IN) || undefined, costPer1kOut: Number(env.AI_COST_OUT) || undefined }) : new NoAi(log);
   const push = env.PUSH_PROVIDER === 'fcm' ? new FcmPush() : env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY ? new WebPush({ publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject: env.VAPID_SUBJECT }) : new LogPush();
 
-  return { queue, scheduler, storage, pdf, realtime, mail, sms, push, whatsapp, voice, ai, mode };
+  // the hosting panel, only where a token says there is one: adding a domain to the account is the
+  // half of a custom domain that DNS cannot do, and every other host answers `configured: false`
+  const cpanel = createCPanel(env, log);
+
+  return { queue, scheduler, storage, pdf, realtime, mail, sms, push, whatsapp, voice, ai, cpanel, mode };
 }
 
 function hostOf(url?: string) { try { return new URL(url || 'http://localhost').hostname; } catch { return 'localhost'; } }

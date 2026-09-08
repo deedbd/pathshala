@@ -1,6 +1,6 @@
 # Pathshala schema reference
 
-Generated from `db/schema/*.def.mjs` · 357 tables · 4124 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
+Generated from `db/schema/*.def.mjs` · 357 tables · 4125 columns · MySQL 8 / MariaDB 10.6+ (primary) and SQLite (fallback).
 
 ## Core · tenancy, identity, access
 
@@ -13,6 +13,7 @@ One row per school (tenant). Settings JSON holds feature flags and policies.
 |---|---|---|
 | id | ulid | required · ULID primary key |
 | code | str(32) | required · unique · short slug, prefix for numbering |
+| slug | str(60) | unique · the school's name in a URL: /saranjai. Backfilled at boot; code never moves. |
 | name | str(160) | required |
 | name_bn | str(160) |  |
 | institution_type | enum(school|college|school_college|madrasa|kindergarten|coaching|university) | required · default school |

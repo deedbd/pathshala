@@ -9,6 +9,7 @@ import type { InstallerService } from '../installer.js';
 import type { NotificationService } from '../notifications.js';
 import type { SaasService } from './saas.js';
 import type { PlatformService } from './platform.js';
+import type { TenantService, WebAddress } from '../tenant.js';
 import { HttpError, badRequest, forbidden, notFound } from '../context.js';
 import { round } from './accounting.js';
 
@@ -81,6 +82,7 @@ export class OwnerService {
     private notifications: NotificationService,
     private saas: SaasService,
     private platform: PlatformService,
+    private tenant: TenantService,
   ) {}
 
   // ---------------------------------------------------------------- the gate
@@ -227,7 +229,7 @@ export class OwnerService {
 
     const counted = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM schools s ${OwnerService.LIVE_SUB} WHERE ${clause}`, params);
     const rows = await this.db.query<Row>(
-      `SELECT s.id, s.name, s.name_bn, s.code, s.institution_type, s.locale, s.currency, s.status AS school_status, s.created_at, s.onboarded_at,
+      `SELECT s.id, s.name, s.name_bn, s.code, s.slug, s.custom_domain, s.institution_type, s.locale, s.currency, s.status AS school_status, s.created_at, s.onboarded_at,
         ${OwnerService.STATUS} AS effective_status,
         sub.id AS subscription_id, sub.status AS subscription_status, sub.billing_cycle, sub.price, sub.starts_at, sub.ends_at,
         p.id AS plan_id, p.name AS plan_name, p.currency AS plan_currency, p.student_limit,
@@ -252,6 +254,10 @@ export class OwnerService {
     const at = login && audited ? (login > audited ? login : audited) : (login ?? audited);
     return {
       id: String(r.id), name: String(r.name), nameBn: r.name_bn ? String(r.name_bn) : null, code: String(r.code),
+      // the address a person types to reach this school, so the console can show and link it
+      slug: r.slug ? String(r.slug) : null,
+      customDomain: r.custom_domain ? String(r.custom_domain) : null,
+      url: r.custom_domain ? `https://${String(r.custom_domain)}` : `${this.config.appUrl.replace(/\/$/, '')}${r.slug ? `/${String(r.slug)}` : ''}`,
       institutionType: String(r.institution_type), locale: String(r.locale), currency: String(r.currency),
       status: String(r.effective_status) as OwnerSchoolStatus, schoolStatus: String(r.school_status),
       createdAt: String(r.created_at), onboardedAt: r.onboarded_at ? String(r.onboarded_at) : null,
@@ -274,7 +280,7 @@ export class OwnerService {
   async school(user: OwnerUser, id: string) {
     await this.requireOwner(user);
     const rows = await this.db.query<Row>(
-      `SELECT s.id, s.name, s.name_bn, s.code, s.institution_type, s.locale, s.currency, s.timezone, s.board, s.eiin,
+      `SELECT s.id, s.name, s.name_bn, s.code, s.slug, s.custom_domain, s.institution_type, s.locale, s.currency, s.timezone, s.board, s.eiin,
         s.phone, s.email, s.website, s.status AS school_status, s.created_at, s.onboarded_at, s.trial_ends_at,
         ${OwnerService.STATUS} AS effective_status,
         sub.id AS subscription_id, sub.status AS subscription_status, sub.billing_cycle, sub.price, sub.discount_pct, sub.starts_at, sub.ends_at, sub.auto_renew,
@@ -408,7 +414,9 @@ export class OwnerService {
       adminEmail: (input.adminEmail || null) as string | null, adminPhone: String(input.adminPhone ?? '').trim(),
       /** Shown once. Nothing stores it in the clear, so it cannot be read back from anywhere. */
       password, passwordGenerated: generated,
-      url: `${this.config.appUrl.replace(/\/$/, '')}/login`,
+      /** The school's own address, not the installation's: /<slug>/login from the moment it exists. */
+      url: await this.loginUrl(created.schoolId),
+      slug: (await this.tenant.school(created.schoolId).catch(() => null))?.slug ?? null,
       subscription,
     };
   }
@@ -459,6 +467,63 @@ export class OwnerService {
     return { allowed: true, status, reason: 'active' };
   }
 
+  // ---------------------------------------------------------------- the school's own web address
+  /**
+   * Where a school opens, and what to do about it.
+   *
+   * Until a school has an address of its own, which school a visitor belongs to is decided by who is
+   * already signed in — which is no answer at all for somebody arriving at a login page. Two forms,
+   * and the vendor sets both from here: a slug on the installation's own host, which works the
+   * moment it is saved, and the school's own domain, which needs DNS the vendor reads down a
+   * telephone. The instructions carry this server's actual address rather than a placeholder, and
+   * say plainly that `www.` is covered by the second record.
+   */
+  async webAddress(user: OwnerUser, id: string): Promise<WebAddress> {
+    await this.requireOwner(user);
+    return this.tenant.webAddress(id);
+  }
+
+  /**
+   * Names a school. `customDomain: null` removes it. Both keys are unique across the installation
+   * and a collision is refused rather than resolved — routing one school's guardians at another
+   * school's console is the failure this whole feature exists to prevent.
+   *
+   * Where a cPanel token is configured the alias is made here too, because DNS alone does not make a
+   * hostname reach our folder on shared hosting. Where it is not, `alias.manual` is the sentence the
+   * vendor follows in the panel by hand, and it is present either way.
+   */
+  async setWebAddress(user: OwnerUser, id: string, input: { slug?: string | null; customDomain?: string | null }) {
+    const { founderId } = await this.requireOwner(user);
+    const before = await this.tenant.school(id);
+    const after = await this.tenant.setWebAddress(id, input);
+
+    // the alias is attempted only for a domain that is actually new: re-saving the same one must not
+    // ask the panel again, and removing one never touches the account
+    const alias = after.customDomain && after.customDomain !== before.customDomain
+      ? await this.tenant.ensureAlias(after.customDomain).catch(e => ({ configured: false, created: false, alreadyThere: false, error: (e as Error).message.slice(0, 200), manual: `Add ${after.customDomain} as a domain in cPanel, pointed at the folder Pathshala is installed in.` }))
+      : null;
+
+    await this.audit.log({
+      schoolId: founderId, actorUserId: user.id, action: 'web_address', entityType: 'owner.school', entityId: id,
+      before: { slug: before.slug, customDomain: before.customDomain },
+      after: { slug: after.slug, customDomain: after.customDomain, aliasCreated: alias?.created ?? false },
+    });
+    // the school's own trail: the address people type to reach it changed, which is its business
+    await this.audit.log({
+      schoolId: id, actorUserId: user.id, action: 'web_address', entityType: 'owner.school', entityId: id,
+      before: { slug: before.slug, customDomain: before.customDomain },
+      after: { slug: after.slug, customDomain: after.customDomain, by: 'owner console' },
+    });
+    return { ...(await this.tenant.webAddress(id)), alias };
+  }
+
+  /** The address to read out to a school's administrator: their own domain, or /<slug>/login. */
+  private async loginUrl(schoolId: string) {
+    const school = await this.tenant.school(schoolId).catch(() => null);
+    const base = school ? this.tenant.urlFor(school) : this.config.appUrl.replace(/\/$/, '');
+    return `${base.replace(/\/$/, '')}/login`;
+  }
+
   // ---------------------------------------------------------------- plan
   /** Moves a client onto a plan (or a new price): SaasService writes it, this only decides who may. */
   async setPlan(user: OwnerUser, id: string, p: { planId: string; billingCycle?: 'monthly' | 'yearly'; trialDays?: number; discountPct?: number; referralCode?: string | null }) {
@@ -494,12 +559,12 @@ export class OwnerService {
       await this.rbac.assignRole(existing.id, 'super_admin', id);
       await this.audit.log({ schoolId: founderId, actorUserId: user.id, action: 'reset_password', entityType: 'owner.admin', entityId: existing.id, after: { schoolId: id, userId: existing.id, reset: true, passwordGenerated: generated } });
       await this.audit.log({ schoolId: id, actorUserId: user.id, action: 'reset_password', entityType: 'owner.admin', entityId: existing.id, after: { by: 'owner console', reset: true } });
-      return { userId: existing.id, schoolId: id, name: String(existing.display_name), email: existing.email ?? null, phone: existing.phone ?? null, password, passwordGenerated: generated, created: false, reset: true, url: `${this.config.appUrl.replace(/\/$/, '')}/login` };
+      return { userId: existing.id, schoolId: id, name: String(existing.display_name), email: existing.email ?? null, phone: existing.phone ?? null, password, passwordGenerated: generated, created: false, reset: true, url: await this.loginUrl(id) };
     }
     const userId = await this.auth.createUser({ schoolId: id, userType: 'admin', displayName: a.name, phone: a.phone, email: a.email || null, password, roles: ['super_admin'] });
     await this.audit.log({ schoolId: founderId, actorUserId: user.id, action: 'create', entityType: 'owner.admin', entityId: userId, after: { schoolId: id, userId, name: a.name, phone: a.phone, email: a.email ?? null, passwordGenerated: generated } });
     await this.audit.log({ schoolId: id, actorUserId: user.id, action: 'create', entityType: 'owner.admin', entityId: userId, after: { by: 'owner console', name: a.name } });
-    return { userId, schoolId: id, name: a.name, email: a.email ?? null, phone: a.phone, password, passwordGenerated: generated, created: true, reset: false, url: `${this.config.appUrl.replace(/\/$/, '')}/login` };
+    return { userId, schoolId: id, name: a.name, email: a.email ?? null, phone: a.phone, password, passwordGenerated: generated, created: true, reset: false, url: await this.loginUrl(id) };
   }
 
   // ---------------------------------------------------------------- billing

@@ -8,6 +8,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 CREATE TABLE `schools` (
   `id` CHAR(26) NOT NULL COMMENT 'ULID primary key',
   `code` VARCHAR(32) NOT NULL COMMENT 'short slug, prefix for numbering',
+  `slug` VARCHAR(60) NULL COMMENT 'the school''s name in a URL: /saranjai. Backfilled at boot; code never moves.',
   `name` VARCHAR(160) NOT NULL,
   `name_bn` VARCHAR(160) NULL,
   `institution_type` VARCHAR(40) NOT NULL DEFAULT 'school',
@@ -34,6 +35,7 @@ CREATE TABLE `schools` (
   `deleted_at` DATETIME NULL COMMENT 'Soft delete',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_schools_code` (`code`),
+  UNIQUE KEY `uq_schools_slug` (`slug`),
   KEY `ix_schools_plan_id` (`plan_id`),
   UNIQUE KEY `uq_schools_custom_domain` (`custom_domain`),
   CHECK (`institution_type` IN ('school', 'college', 'school_college', 'madrasa', 'kindergarten', 'coaching', 'university')),

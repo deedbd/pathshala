@@ -6,6 +6,11 @@ export { AuditService, type AuditEntry } from './audit.js';
 export { SettingsService } from './settings.js';
 export { RbacService, type UserAccess } from './rbac.js';
 export { OwnerAccessService, ownerDeviceCookie, readOwnerDeviceCookie, randomDeviceLabel, normalizeIp, normalizeMac, ipMatches, isLanIp, OWNER_DEVICE_COOKIE, type OwnerDevice, type OwnerAccessResult } from './owner-access.js';
+export {
+  TenantService, RESERVED_SLUGS, DOMAIN_WATCH_KEY, ensureSchoolSlugs, claimSlug, slugifySchoolName,
+  transliterateBangla, normalizeSlug, normalizeDomain, normalizeHost, firstSegment, createInstallationId,
+  type TenantSource, type TenantSchool, type ResolvedTenant, type RequestTenant, type DomainCheck, type DnsInstruction, type WebAddress,
+} from './tenant.js';
 export { FileService, type StoreFileInput } from './files.js';
 export { CustomFieldService, type CustomFieldDef } from './customFields.js';
 export { TaskService, type CreateTaskInput } from './tasks.js';
