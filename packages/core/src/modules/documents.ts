@@ -215,6 +215,53 @@ export class DocumentService {
     await this.adapters.queue.push({ name: 'documents.print_job', queue: 'batch', schoolId, payload: { printJobId }, triggeredBy: 'documents.id_cards' });
     return { cards: made.length, printJobId };
   }
+  /**
+   * A lost card, replaced (N6). Three things happen and none of them used to:
+   *
+   * - the old card is cancelled **and its RFID tag revoked**, which is the only part that matters at
+   *   the gate: a card marked `lost` whose tag still opens the door is a lost card that still works,
+   *   and whoever picked it up is inside the school. The revoking itself belongs to `people` — the
+   *   tag lives on the student, not on the card — so the event carries it and that module clears it;
+   * - a replacement is issued and queued for printing with the rest of the batch;
+   * - the school's replacement fee goes onto the family's next invoice, because a school that eats
+   *   the cost of every lost card teaches its pupils that losing one is free.
+   *
+   * Calling it twice on the same card is refused rather than absorbed: the second call would be a
+   * second fee, and the office would have no way of knowing it had happened.
+   */
+  async reissueIdCard(schoolId: string, cardId: string, opts: { reason?: string; validTo?: string; createdBy?: string | null } = {}) {
+    const old = await this.db.findOne<Row>('id_cards', { id: cardId, school_id: schoolId });
+    if (!old) throw notFound('ID card');
+    if (old.status === 'cancelled' || old.status === 'lost') throw new HttpError(409, `that card is already ${old.status} — the replacement was issued when it was reported`, 'already_reissued');
+    const personType = String(old.person_type) as 'student' | 'staff' | 'guardian' | 'visitor';
+    if (personType !== 'student' && personType !== 'staff') throw badRequest('only student and staff cards are reissued here');
+    const personId = String(personType === 'student' ? old.student_id : old.staff_id);
+    const revokedTag = (old.rfid_tag as string) ?? null;
+    const reason = (opts.reason ?? 'reported lost').slice(0, 60);
+    const validTo = opts.validTo ?? String(old.valid_to).slice(0, 10);
+    const newId = ulid();
+    const cardNo = await this.numbering.next(schoolId, 'id_card_no', { prefix: personType === 'student' ? 'STU-' : 'EMP-', padding: 6 });
+    await this.db.transaction(async t => {
+      await t.update('id_cards', { status: 'lost', rfid_tag: null, updated_at: nowSql() }, { id: cardId });
+      await t.insert('id_cards', {
+        id: newId, school_id: schoolId, person_type: personType, student_id: personType === 'student' ? personId : null, staff_id: personType === 'staff' ? personId : null,
+        guardian_id: null, card_no: cardNo, template_id: (old.template_id as string) ?? null, valid_from: nowSql().slice(0, 10), valid_to: validTo, rfid_tag: null, file_id: null, status: 'pending_print', printed_at: null,
+      });
+      await this.outbox.emit(t, { type: 'id_card.reissued', schoolId, aggregateType: 'documents.id_card', aggregateId: newId, payload: { cardId, newCardId: newId, personType, personId, cardNo, oldCardNo: String(old.card_no), revokedTag, reason } });
+    });
+    const printJobId = ulid();
+    await this.db.insert('print_jobs', { id: printJobId, school_id: schoolId, kind: 'id_cards', items: { ids: [newId] } as never, file_id: null, status: 'queued', created_by: opts.createdBy ?? null });
+    await this.adapters.queue.push({ name: 'documents.print_job', queue: 'batch', schoolId, payload: { printJobId }, triggeredBy: 'documents.reissue_id_card' });
+    return { cardId: newId, cardNo, revokedCardNo: String(old.card_no), revokedTag, printJobId };
+  }
+  async idCards(schoolId: string, f: { personType?: 'student' | 'staff'; status?: string; personId?: string } = {}) {
+    const where = ['c.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.personType) { where.push('c.person_type = ?'); params.push(f.personType); }
+    if (f.status) { where.push('c.status = ?'); params.push(f.status); }
+    if (f.personId) { where.push('(c.student_id = ? OR c.staff_id = ?)'); params.push(f.personId, f.personId); }
+    return this.db.query<Row>(`SELECT c.*, s.first_name AS s_first, s.last_name AS s_last, s.admission_no, st.first_name AS t_first, st.last_name AS t_last, st.employee_no
+      FROM id_cards c LEFT JOIN students s ON s.id = c.student_id LEFT JOIN staff st ON st.id = c.staff_id WHERE ${where.join(' AND ')} ORDER BY c.created_at DESC LIMIT 500`, params);
+  }
   /** Chunked: cards are laid out 8 to a page, 200 cards per pass. */
   async runPrintJob(payload: Record<string, unknown>, ctx: JobContext) {
     const printJobId = String(payload.printJobId);

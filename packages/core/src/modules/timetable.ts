@@ -39,6 +39,33 @@ export class TimetableService {
   }
   async publishedVersion(schoolId: string, yearId: string) { return this.db.findOne<Row>('timetable_versions', { school_id: schoolId, academic_year_id: yearId, status: 'published' }); }
 
+  /**
+   * Who is in front of a class on this date between these two times, out of the published timetable.
+   *
+   * Exposed because other modules need to know before they put a member of staff somewhere else — an
+   * invigilator roster is the first of them, and a teacher rostered into an exam hall during the
+   * period they teach means one room unwatched and one class unattended. Reading `timetable_slots`
+   * from the module that needs the answer would be two copies of the same join; asking here is one.
+   * A missing time means the whole day, which is what an exam with no clock on it amounts to.
+   */
+  async teachingBetween(schoolId: string, onDate: string, startTime?: string | null, endTime?: string | null): Promise<Map<string, string>> {
+    const busy = new Map<string, string>();
+    const year = await this.academic.currentYear(schoolId); if (!year) return busy;
+    const version = await this.publishedVersion(schoolId, String(year.id)); if (!version) return busy;
+    const dow = new Date(onDate + 'T00:00:00Z').getUTCDay();
+    const rows = await this.db.query<Row>(`SELECT s.teacher_id, p.name AS period_name, p.start_time, p.end_time, sec.name AS section_name, sub.name AS subject_name
+      FROM timetable_slots s JOIN periods p ON p.id = s.period_id JOIN sections sec ON sec.id = s.section_id
+      LEFT JOIN class_subjects cs ON cs.id = s.class_subject_id LEFT JOIN subjects sub ON sub.id = cs.subject_id
+      WHERE s.version_id = ? AND s.day_of_week = ? AND s.teacher_id IS NOT NULL AND p.is_break = FALSE`, [String(version.id), dow]);
+    const hhmm = (v: unknown) => String(v ?? '').slice(0, 5);
+    for (const r of rows) {
+      const from = hhmm(r.start_time), to = hhmm(r.end_time);
+      if (startTime && endTime && !(from < hhmm(endTime) && to > hhmm(startTime))) continue;
+      busy.set(String(r.teacher_id), `${r.subject_name ?? 'a class'} · ${r.section_name} · ${r.period_name} (${from}–${to})`);
+    }
+    return busy;
+  }
+
   /** Inserts or replaces one slot after checking the three clash rules. */
   async setSlot(schoolId: string, versionId: string, s: SlotInput) {
     const clash = await this.findClash(versionId, s);

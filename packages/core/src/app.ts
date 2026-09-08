@@ -18,6 +18,7 @@ import { HandlerRegistry } from './automation/handlers.js';
 import { RuleEngine } from './automation/rules.js';
 import { Relay } from './automation/relay.js';
 import { registerPlatformJobs } from './automation/jobs.js';
+import { AutomationService } from './automation/console.js';
 import { NumberingService } from './modules/numbering.js';
 import { AcademicService } from './modules/academic.js';
 import { PeopleService } from './modules/people.js';
@@ -68,6 +69,7 @@ export interface App {
   config: AppConfig; db: Db; log: Logger; adapters: Adapters & { mode: SchedulerMode };
   audit: AuditService; settings: SettingsService; rbac: RbacService; files: FileService; customFields: CustomFieldService;
   tasks: TaskService; approvals: ApprovalService; notifications: NotificationService; auth: AuthService; installer: InstallerService;
+  automation: AutomationService;
   outbox: OutboxService; handlers: HandlerRegistry; rules: RuleEngine; relay: Relay;
   numbering: NumberingService; academic: AcademicService; people: PeopleService; importer: ImportService; timetable: TimetableService; curriculum: CurriculumService; cms: CmsService; portal: PortalService;
   attendance: AttendanceService; communication: CommunicationService; accounting: AccountingService; fees: FeesService; assessment: AssessmentService; hr: HrService; documents: DocumentService; admissions: AdmissionsService; library: LibraryService; transport: TransportService; hostel: HostelService; inventory: InventoryService; frontOffice: FrontOfficeService; welfare: WelfareService; lms: LmsService; engagement: EngagementService; commerce: CommerceService; giving: GivingService; alumni: AlumniService; facilities: FacilitiesService; governance: GovernanceService; compliance: ComplianceService; analytics: AnalyticsService; saas: SaasService; marketplace: MarketplaceService; ai: AiService; groups: GroupsService; forecast: ForecastService; ivr: IvrService; college: CollegeService; adaptive: AdaptiveService; platform: PlatformService; overview: OverviewService; owner: OwnerService; search: SearchService; ownerAccess: OwnerAccessService; tenant: TenantService;
@@ -121,7 +123,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
   const accounting = new AccountingService(db, outbox, notifications, tasks, numbering, approvals);
   const documents = new DocumentService(db, outbox, notifications, numbering, files, approvals, adapters);
   const fees = new FeesService(db, outbox, notifications, tasks, numbering, academic, accounting, documents, adapters, config.appKey);
-  const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters, documents, tasks, fees);
+  const assessment = new AssessmentService(db, outbox, notifications, academic, files, adapters, documents, tasks, fees, timetable);
   const hr = new HrService(db, outbox, notifications, academic, accounting, approvals, tasks, files, people, settings, adapters);
   const importer = new ImportService(db, adapters, outbox, files, people, attendance, hr);
   const admissions = new AdmissionsService(db, outbox, notifications, numbering, academic, people, fees, documents, files, settings, adapters);
@@ -169,6 +171,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
       await accounting.ensureBankAccounts(schoolId);
       await accounting.ensureExpenseCategories(schoolId);
       await fees.ensureFineRule(schoolId);
+      await fees.ensureEarlyPaymentDiscount(schoolId);
       await fees.ensureDefaultStructures(schoolId, yearId);
       await assessment.ensureExamTypes(schoolId);
       await hr.ensureSalaryComponents(schoolId);
@@ -241,11 +244,14 @@ export function createApp(opts: CreateAppOptions = {}): App {
   for (const [key, fn] of Object.entries(groups.jobs())) adapters.scheduler.register(key, fn);
   // a plugin's webhook is somebody else's server: the relay posts to it and gives up quickly
   marketplace.registerHooks(handlers, ['student.enrolled', 'payment.received', 'attendance.absent', 'result.published', 'invoice.created', 'staff.joined']);
-  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, accounting, hr, auth, admissions, inventory, welfare, commerce, college, attendance });
+  registerSystemHandlers(handlers, { notifications, tasks, log, db, timetable, communication, academic, fees, accounting, hr, auth, admissions, inventory, welfare, commerce, college, attendance, people, settings });
+
+  // the console's half of the automation engine: the inbox, the tasks, the rules and their preview
+  const automation = new AutomationService(db, approvals, tasks, o => app.tick(o));
 
   let lastBeat = 0; let beating = false;
   const app: App = {
-    config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay,
+    config, db, log, adapters, audit, settings, rbac, files, customFields, tasks, approvals, notifications, auth, installer, outbox, handlers, rules, relay, automation,
     numbering, academic, people, importer, timetable, curriculum, cms, portal, attendance, communication, accounting, fees, assessment, hr, documents, admissions, library, transport, hostel, inventory, frontOffice, welfare, lms, engagement, commerce, giving, alumni, facilities, governance, compliance, analytics, saas, marketplace, ai, groups, forecast, ivr, college, adaptive, platform, overview, owner, search, ownerAccess, tenant,
     async start() {
       // background loops need the schema; before the installer has applied it they wait (fresh zip on cPanel)
@@ -281,7 +287,7 @@ export function createApp(opts: CreateAppOptions = {}): App {
 }
 
 /** 🔒 system handlers that belong to the platform itself (docs/AUTOMATION.md §14 N-rows) plus phase-1 reactions. */
-function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; accounting: AccountingService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService; attendance: AttendanceService }) {
+function registerSystemHandlers(h: HandlerRegistry, d: { notifications: NotificationService; tasks: TaskService; log: Logger; db: Db; timetable: TimetableService; communication: CommunicationService; academic: AcademicService; fees: FeesService; accounting: AccountingService; hr: HrService; auth: AuthService; admissions: AdmissionsService; inventory: InventoryService; welfare: WelfareService; commerce: CommerceService; college: CollegeService; attendance: AttendanceService; people: PeopleService; settings: SettingsService }) {
   // B5: a holiday declared after the register was already marked. Only the rows the system wrote
   // itself become `holiday` — a mark a teacher made by hand stands, because they saw the children.
   h.on('calendar.holiday_added', 'clear-attendance', async e => {
@@ -325,6 +331,23 @@ function registerSystemHandlers(h: HandlerRegistry, d: { notifications: Notifica
   h.on('student.enrolled', 'propose-sibling-discount', async e => {
     const id = await d.fees.proposeSiblingDiscount(e.schoolId, e.payload.studentId, e.payload.academicYearId);
     if (id) await d.notifications.notifyRole(e.schoolId, 'accountant', { channels: ['in_app'], eventKey: 'fees.discount_proposed', title: 'Sibling discount proposed', body: 'A newly enrolled student has a sibling already in school. Approve or reject the discount.', entityType: 'fees.discount', entityId: id });
+  });
+  /**
+   * N6: a lost card was replaced. Two modules own the consequences and neither is `documents`.
+   *
+   * `people` owns the tag on the person, which is what the gate actually reads — a cancelled card
+   * whose tag still opens the door has cancelled nothing. `fees` owns the money: the replacement
+   * costs what `documents.id_card_replacement_fee` says it costs (Tk 200 unless the school has said
+   * otherwise), and a school that sets it to 0 is choosing to absorb it and gets no invoice.
+   */
+  h.on('id_card.reissued', 'revoke-tag-and-charge', async e => {
+    if (e.payload.revokedTag) await d.people.revokeRfid(e.schoolId, e.payload.personType, e.payload.personId, e.payload.revokedTag);
+    if (e.payload.personType !== 'student') return;
+    const fee = Number((await d.settings.get<number>(e.schoolId, 'documents.id_card_replacement_fee')) ?? 200);
+    if (!(fee > 0)) return;
+    const headId = await d.fees.ensureHead(e.schoolId, { name: 'ID card replacement', code: 'ID_CARD', kind: 'misc', glCode: '4900' });
+    await d.fees.createInvoice(e.schoolId, { studentId: e.payload.personId, items: [{ feeHeadId: headId, description: `Replacement ID card ${e.payload.cardNo} (${e.payload.oldCardNo} ${e.payload.reason})`, amount: fee }], notes: `id_card:${e.payload.newCardId}` });
+    await d.notifications.notifyRoleOnce(e.schoolId, 'accountant', 24 * 30, { channels: ['in_app'], eventKey: 'documents.card_reissued', title: 'ID card replaced', body: `${e.payload.oldCardNo} was ${e.payload.reason}; ${e.payload.cardNo} is queued for printing and Tk ${fee} has been invoiced.`, entityType: 'documents.id_card', entityId: e.payload.newCardId });
   });
   // H2: an approved payroll (or loan) request carries out what was approved
   h.on('approval.decided', 'hr-approvals', async e => {

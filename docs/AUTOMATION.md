@@ -67,6 +67,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | D1 | 🔒 exam → `scheduled` | — | Generate routine PDF per class; calendar events; notify students/guardians/teachers | `calendar_events`, `issued_documents`, `notifications` |
 | D2 | ⚙️ 7 days before exam | — | Seat plan (room capacity, alternate sections), invigilator roster (load-balanced), admit cards **only if** fees clear & attendance OK; list ineligible to accounts | `exam_seat_plans`, `exam_invigilators`, `issued_documents`, `tasks` |
 | D2b | ⏰ the night before | seat plan exists; the roll has changed or a blocked candidate has cleared their reason | Top the plan up rather than rebuild it: new students seated, cleared candidates made eligible and their cards issued. Nothing already eligible is withdrawn — turning a child away at the hall door is the office’s decision, with a name on it | `exam_seat_plans`, `issued_documents` |
+| D2c | 🔒 invigilator roster requested for an exam | seat plan built | Staff to rooms per paper, spread by duty count, and **three refusals**: never a teacher who has a period in the published timetable at that time, never the same person in two halls at once, and a room nobody can be found for is named in a task rather than left blank. Each of them is told their own duties once | `exam_invigilators`, `notifications`, `tasks` |
 | D3 | ⚙️ marks entry deadline −2d | schedules with missing marks | Reminder to subject teachers; escalation to exam controller at deadline | `notifications`, `tasks` |
 | D3b | ⏰ at `marks_entry_deadline` | every mark of a paper is in | Lock that paper; papers still short go to the office once as a task naming class, subject and the count — not the same message every morning | `marks`, `exam_schedules.marks_entry_locked`, `tasks` |
 | D4 | 🔒 marks `submitted` | — | Validate ranges vs `full_marks`; compute total, grade, GP from `grading_bands`; flag anomalies (e.g. 0 with not absent) | `marks` |
@@ -101,7 +102,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 |---|---|---|---|---|
 | F1 | ⏰ `fees.invoice_generation_day` monthly | active enrolment | **Invoice batch**: structure items for month + transport (`student_transport.monthly_fee`) + hostel (`hostel_allocations.monthly_fee`) + pending fines/previous due − approved discounts − overrides; PDF; SMS/push with pay link; batch summary to accountant | `invoice_batches`, `invoices`, `invoice_items`, `notifications` |
 | F2 | 🔒 `student.enrolled` mid-month | — | Pro-rata first invoice; admission/one-time heads | `invoices` |
-| F3 | ⏰ daily 08:00 | due in 3 days / today / overdue 7, 15, 30 | Escalating reminders per `fees.reminder_stages`; at 30 days create call task for accounts + class teacher note | `fee_reminders`, `tasks` |
+| F3 | ⏰ daily 08:00 | due in 3 days / today / overdue 3, 7, 15, 30 — and **not on a holiday**: the run holds and says why, because a school does not chase money on Eid morning and the ladder is keyed on how late the invoice is, not on how many times the job has run | Escalating reminders to the guardian for the first five rungs. At +30 the ladder stops texting and raises **one call task** for accounts carrying the name, the amount, the date and the number — a family that has ignored five messages will not read a sixth | `fee_reminders`, `tasks` |
 | F4 | ⏰ daily 00:30 | past due + grace | Status → `overdue`; apply `late_fine_rules` as fine item (idempotent via `fine_applied_at`); block per policy | `invoices`, `invoice_items` |
 | F5 | 🔒 gateway IPN / counter payment | — | Verify; allocate oldest-first; ledger entry; receipt PDF; thank-you SMS; journal (Dr bank/MFS, Cr income heads, Cr fine, Dr gateway fee expense) | `payments`, `payment_allocations`, `student_ledger_entries`, `journal_entries` |
 | F6 | ⚙️ `payment.received` | no overdue remains | Lift admit-card / document blocks | `exam_seat_plans`, `document_requests` |
@@ -116,6 +117,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | F15 | ⏰ monthly 1st 07:00 | — | Receivables ageing (not due / 30 / 60 / 90 / older) to accounts and the head — once a month, whatever the scheduler does | `notifications` |
 | F16 | 🔒 cash session closed | `variance ≠ 0` | Say so at the counter, to accounts and the head, the moment it is counted | `notifications` |
 | F17 | 🔒 invoice batch finished | — | `invoice.batch_finished`; accounts is told how many invoices and how much, so nobody opens the page to check | `invoice_batches`, `notifications` |
+| F18 | 🔒 `payment.received` | the payment lands before the invoice's due date, nothing has been paid on it yet, and the money covers the discounted balance — otherwise Tk 1 the day before would take 2% off the term | The school's early-payment discount (2% unless it has set its own) comes off **before** a taka is allocated, once per invoice, written as an adjustment line carrying its reason — how many days early and against which date — with the ledger credit and the journal that gives the income back. A fine is never discounted: it is what lateness cost | `invoice_items`, `invoices`, `student_ledger_entries`, `journal_entries` |
 
 ## 7. Accounting
 
@@ -241,6 +243,8 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | N17 | ⏰ hourly | uploads over the warning size, or under 200 MB free on the host | One warning before the disk fills — on shared hosting a full disk takes the whole site down | `system_health`, `notifications` |
 | N18 | ⏰ nightly 02:00 | the backup ran | Read the file back before trusting it (gunzip, header, row count); a backup that fails is told to the office, and a school with no good backup for 48 h is told again | `backups`, `system_health` |
 | N19 | ⏰ daily | a plugin webhook failed 10 times in a row, or a school webhook 20 | Switch it off and say so — never retry somebody else's dead server for ever | `plugin_installs`, `webhooks` |
+| N20 | 🔒 a rule is switched on | — | It runs in **preview** for 48 hours: it listens, its conditions are evaluated, and every run records what it would have done in the words the person would have read — and does none of it. `automation_rules.preview_until` was a column nobody wrote, so until now a rule a school turned on went live on the spot and the first anybody saw of it was a thousand guardians being texted. A person reads the list and sends it live | `automation_rules.preview_until`, `automation_runs (preview)` |
+| N21 | 🔒 ID card reissued | card reported lost or damaged | Cancel the old card **and revoke its RFID tag on the person**, which is the only half the gate reads — a card marked lost whose tag still opens the door has been cancelled on paper only; issue the replacement into the print batch; invoice the school's replacement fee (`documents.id_card_replacement_fee`, Tk 200 by default, and 0 means the school absorbs it) | `id_cards`, `students.rfid_tag`, `staff.rfid_tag`, `invoices`, `print_jobs` |
 
 ---
 
@@ -295,7 +299,7 @@ Legend: 🔒 system handler · ⚙️ rule (editable) · ⏰ scheduled job
 | `comms.publish_scheduled_notices` | `*/10 * * * *` | M2 |
 | `comms.provider_balance` | `0 * * * *` | M3 |
 | `comms.weekly_digest` | `0 18 * * 6` | M5 |
-| `welfare.behaviour_rules` | `0 2 * * *` | N2 |
+| `welfare.behaviour_rules` | `0 2 * * *` | N2, N3 |
 | `platform.kpi_snapshot` | `0 0 * * *` | N9 |
 | `platform.housekeeping` | `0 3 * * *` | N10 |
 | `platform.backup` | `0 2 * * *` | N10 |

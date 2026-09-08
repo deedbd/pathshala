@@ -202,6 +202,20 @@ export class PeopleService {
     if (f.q) { where.push('(st.first_name LIKE ? OR st.last_name LIKE ? OR st.employee_no LIKE ?)'); const like = `%${f.q}%`; params.push(like, like, like); }
     return this.db.query<Row>(`SELECT st.*, d.name AS designation, dep.name AS department FROM staff st LEFT JOIN designations d ON d.id = st.designation_id LEFT JOIN departments dep ON dep.id = st.department_id WHERE ${where.join(' AND ')} ORDER BY st.first_name LIMIT 500`, params);
   }
+  /**
+   * Takes a lost card's tag off the person it belonged to, so the gate stops opening for it.
+   *
+   * `students.rfid_tag` / `staff.rfid_tag` are what the reader matches a tap against — the card row
+   * itself is never consulted at the gate — so cancelling the card and leaving the tag on the person
+   * cancels nothing at all: whoever found the card still walks in. The tag is only cleared when it is
+   * still the one being revoked, because by then the replacement may already have been issued and
+   * clearing that would lock the child out instead.
+   */
+  async revokeRfid(schoolId: string, personType: 'student' | 'staff', personId: string, tag: string) {
+    if (!tag) return 0;
+    const table = personType === 'student' ? 'students' : 'staff';
+    return this.db.execute(`UPDATE ${table} SET rfid_tag = NULL, updated_at = ? WHERE school_id = ? AND id = ? AND rfid_tag = ?`, [nowSql(), schoolId, personId, tag]).then(r => r.affectedRows);
+  }
   async staffSubjects(schoolId: string): Promise<Map<string, Set<string>>> {
     const rows = await this.db.findMany<{ staff_id: string; subject_id: string }>('staff_subjects', { school_id: schoolId });
     const m = new Map<string, Set<string>>();

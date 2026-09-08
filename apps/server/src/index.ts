@@ -25,6 +25,7 @@ import { mountPhase17 } from './routes/phase17.js';
 import { mountPhase18 } from './routes/phase18.js';
 import { mountPhase14 } from './routes/phase14.js';
 import { mountPhase15 } from './routes/phase15.js';
+import { mountAutomation } from './routes/automation.js';
 import { mountOwner, suspendedSchoolGuard } from './routes/owner.js';
 import { mountSettings } from './routes/settings.js';
 
@@ -245,17 +246,9 @@ export async function createServer(app: App = createApp()) {
     ]);
     return { runs, jobs, scheduled, mode: app.adapters.mode };
   }));
-  api.get('/automation/rules', wrap(async req => { const u = requirePerm(req, 'platform.view'); return app.db.findMany('automation_rules', { school_id: u.school_id }, { orderBy: 'module ASC, code ASC' }); }));
-  api.patch('/automation/rules/:id', wrap(async req => {
-    const u = requirePerm(req, 'platform.automation');
-    const body = z.object({ isActive: z.boolean().optional(), previewHours: z.number().optional() }).parse(req.body);
-    const set: Record<string, unknown> = {};
-    if (body.isActive !== undefined) set.is_active = body.isActive;
-    if (body.previewHours !== undefined) set.preview_until = new Date(Date.now() + body.previewHours * 3600_000);
-    const n = await app.db.update('automation_rules', set as never, { id: req.params.id as string, school_id: u.school_id });
-    await app.audit.log({ action: 'update', entityType: 'automation_rule', entityId: req.params.id as string, after: body });
-    return { updated: n };
-  }));
+  // the rules themselves, their preview window and everything else the console reads live in
+  // routes/automation.ts — a raw row listing and a PATCH that set `preview_until` to whatever the
+  // caller asked for were the whole of it before, and nothing in the console called either
   api.post('/automation/tick', wrap(async req => { requirePerm(req, 'platform.automation'); return app.tick(); }));
   api.get('/notifications', wrap(async req => { const u = requireUser(req); return app.notifications.recentFor(u.id); }));
   api.post('/notifications/:id/read', wrap(async req => { const u = requireUser(req); return { updated: await app.notifications.markRead(req.params.id as string, u.id) }; }));
@@ -289,6 +282,9 @@ export async function createServer(app: App = createApp()) {
   mountPhase14(api, app, wrap, requirePerm);
   mountPhase15(api, app, wrap, requirePerm, requireUser);
   mountSettings(api, app, wrap, requirePerm);
+  // the automation console (approvals, tasks, rules, jobs, activity, webhooks) and the rules the
+  // prototype promised: the invigilator roster, a reissued ID card, the reminder ladder
+  mountAutomation(api, app, wrap, requirePerm);
   // the vendor's console: gated in OwnerService, not by a permission any school can hold. Every
   // refusal leaves as a 404 — a school's administrator who pokes at /api/owner learns that the path
   // does not exist here, rather than that it exists and they are not allowed
