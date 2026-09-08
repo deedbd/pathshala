@@ -155,8 +155,8 @@ describe('phase 3', () => {
 
   test('the ladder can be read back as it actually ran', async () => {
     const r = await api('/fees/reminders');
-    assert.ok(r.ladder.length >= 5, 'every stage of the ladder is named');
-    assert.deepEqual(r.ladder.map(s => s.stage), ['due_in_3', 'due_today', 'overdue_3', 'overdue_7', 'overdue_15']);
+    assert.ok(r.ladder.length >= 6, 'every stage of the ladder is named, including the call at thirty days');
+    assert.deepEqual(r.ladder.map(s => s.stage), ['due_in_3', 'due_today', 'overdue_3', 'overdue_7', 'overdue_15', 'overdue_30']);
     assert.equal(r.stages.length, r.ladder.length, 'a stage with nothing to show is still listed');
     const fired = r.stages.filter(s => s.reminders > 0);
     assert.ok(fired.length >= 1, JSON.stringify(r.stages));

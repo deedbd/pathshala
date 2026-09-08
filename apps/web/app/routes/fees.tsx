@@ -28,7 +28,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const outstanding = dues.reduce((a, d) => a + Number(d.due), 0);
   const collected = collection.reduce((a, c) => a + Number(c.amount), 0);
   const overdue = Number(ageing.days1to30) + Number(ageing.days31to60) + Number(ageing.days61to90) + Number(ageing.over90);
-  return { locale: (user.locale as Locale) || context.locale, period, yearId, invoiceStatus: invoiceStatus ?? '', payMethod: payMethod ?? '', heads, structures, batches, dues, collection, invoices, payments, discounts, schemes, classes, students: students.rows, outstanding, collected, overdue, cash, cheques, plans, ageing, ladder: context.app.fees.reminderLadder(), reminderStages, reminders, cashSessions, till };
+  return { locale: (user.locale as Locale) || context.locale, period, yearId, invoiceStatus: invoiceStatus ?? '', payMethod: payMethod ?? '', heads, structures, batches, dues, collection, invoices, payments, discounts, schemes, classes, students: students.rows, outstanding, collected, overdue, cash, cheques, plans, ageing, ladder: context.app.fees.ladderStages(), reminderStages, reminders, cashSessions, till };
 }
 export function meta() { return [{ title: 'Pathshala — Fees' }]; }
 

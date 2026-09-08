@@ -61,8 +61,14 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
   // the ladder as it actually ran: which stage reached which invoice, on what channel, and what came back
   api.get('/fees/reminders', wrap(async req => {
     const u = requirePerm(req, 'fees.view');
-    const [stages, rows] = await Promise.all([app.fees.reminderStages(u.school_id), app.fees.reminders(u.school_id, { stage: q(req, 'stage'), invoiceId: q(req, 'invoiceId'), limit: Number(q(req, 'limit') ?? 200) })]);
-    return { ladder: app.fees.reminderLadder(), stages, rows };
+    const [ladder, stages, rows] = await Promise.all([
+      app.fees.reminderLadder(u.school_id),
+      app.fees.reminderStages(u.school_id),
+      app.fees.reminders(u.school_id, { stage: q(req, 'stage'), invoiceId: q(req, 'invoiceId'), limit: Number(q(req, 'limit') ?? 200) }),
+    ]);
+    // one answer for both consoles: the ladder with what each rung has done, the per-stage counts the
+    // fees page tabulates, and the rows themselves
+    return { ...ladder, stages, rows };
   }));
   api.post('/fees/reminders/run', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.runReminders(u.school_id, q(req, 'date') ?? today()); }));
   api.get('/fees/ageing', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.ageing(u.school_id, q(req, 'asOf') ?? today()); }));

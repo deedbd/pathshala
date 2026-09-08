@@ -135,5 +135,6 @@ export function mountAutomation(api: Router, app: App, wrap: Wrap, requirePerm: 
   }));
 
   /** The reminder ladder as the console shows it: every stage, when it fired, and the delivery log. */
-  api.get('/fees/reminders', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.reminderLadder(u.school_id); }));
+  // `/fees/reminders` lives in phase3.ts, where the fees module's own routes are; it answers both consoles
+
 }

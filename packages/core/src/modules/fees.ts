@@ -998,7 +998,7 @@ export class FeesService {
    * The ladder as it is configured, read-only. The rule itself is `REMINDER_LADDER` and only
    * `runReminders` acts on it; this exists so the console can name the stages without inventing them.
    */
-  reminderLadder() { return REMINDER_LADDER.map(s => ({ stage: s.stage, offsetDays: s.offsetDays })); }
+  ladderStages() { return REMINDER_LADDER.map(s => ({ stage: s.stage, offsetDays: s.offsetDays })); }
 
   /**
    * The ladder as it actually ran: one `fee_reminders` row per invoice per stage, and beside it the
@@ -1086,7 +1086,7 @@ export class FeesService {
   async reminderStages(schoolId: string) {
     const counts = await this.db.query<Row>(`SELECT stage, COUNT(*) AS n, MAX(sent_at) AS last_sent FROM fee_reminders WHERE school_id = ? GROUP BY stage`, [schoolId]);
     const by = new Map(counts.map(c => [String(c.stage), c]));
-    return this.reminderLadder().map(s => {
+    return this.ladderStages().map(s => {
       const c = by.get(s.stage);
       return { stage: s.stage, offsetDays: s.offsetDays, reminders: Number(c?.n ?? 0), lastSent: (c?.last_sent as string) ?? null };
     });
