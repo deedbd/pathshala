@@ -81,7 +81,8 @@ export async function action({ context, request, params }: Route.ActionArgs) {
     if ('totpRequired' in r) return { totpRequired: true, identifier };
     const user = r.user as { id: string; school_id: string; user_type: string };
     // the account signed in, but it is not the vendor's: the session is dropped and the page is gone
-    try { await context.app.owner.requireOwner(user); } catch { await context.app.auth.logout(r.token).catch(() => undefined); noteAttempt(key); notFound(); }
+    // the first person through the door becomes the vendor; everybody after it must already be
+    try { await context.app.owner.claimOwnership(user); } catch { await context.app.auth.logout(r.token).catch(() => undefined); noteAttempt(key); notFound(); }
 
     const headers = new Headers();
     headers.append('Set-Cookie', sessionCookie(r.token, r.expiresAt, secure));

@@ -108,7 +108,8 @@ if (!school) {
 
   // let the automations that run on a tick actually run once, so the dashboard's feed is not empty
   for (let i = 0; i < 3; i++) await app.tick({ budgetMs: 4000, maxJobs: 20 }).catch(() => undefined);
-  await app.analytics.computeDay(sid, day(0)).catch(() => undefined);
+  // and count each of those days, so the dashboard's trend has a line to draw rather than an apology
+  for (let back = 20; back >= 0; back--) await app.analytics.computeDay(sid, day(-back)).catch(() => undefined);
 }
 
 const { server } = await serverMod.createServer(app);

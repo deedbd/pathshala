@@ -15,6 +15,15 @@ export const MODULES = ['core', 'platform', 'saas', 'cms', 'academic', 'people',
 const ACTIONS = ['view', 'create', 'edit', 'delete', 'approve', 'export'] as const;
 
 export const SYSTEM_ROLES: Record<string, { name: string; level: number; perms: (p: string) => boolean }> = {
+  /**
+   * The company that sells the software, not the school that runs it.
+   *
+   * Every single-school customer has a `super_admin` — their own head teacher — so that role cannot
+   * be what opens the vendor's console: it would lock a customer's own administrator out of their own
+   * sign-in page. This role is held by nobody until an installation is deliberately made a vendor's,
+   * which happens the first time somebody comes through the owner door.
+   */
+  platform_owner: { name: 'Pathshala owner', level: 100, perms: () => true },
   super_admin: { name: 'Super Admin', level: 100, perms: () => true },
   admin: { name: 'Administrator', level: 90, perms: p => !p.startsWith('saas.') },
   principal: { name: 'Principal', level: 80, perms: p => !/^(saas|marketplace|platform\.hosting)/.test(p) && !p.endsWith('.delete') },

@@ -71,6 +71,9 @@ export function generatePassword(length = 14) {
  * through `AuthService`. The only table this service writes is `schools.status`, which no module owns
  * and which is the vendor's own switch.
  */
+/** The role that says "this account belongs to the company that sells the software". */
+export const OWNER_ROLE = 'platform_owner';
+
 export class OwnerService {
   constructor(
     private db: Db,
@@ -104,8 +107,42 @@ export class OwnerService {
     const founder = await this.founderSchool();
     if (String(founder.id) !== String(user.school_id)) throw forbidden('the owner console belongs to the school this installation was created with');
     const access = await this.rbac.accessFor(user.id);
-    if (!access.roles.includes('super_admin')) throw forbidden('the owner console needs the super_admin role');
+    if (!access.roles.includes(OWNER_ROLE)) throw forbidden('the owner console belongs to the Pathshala team');
     return { founder, founderId: String(founder.id), access };
+  }
+
+  /** Whether anybody on this installation is the vendor yet. A school-only install: nobody, for ever. */
+  async hasOwner(): Promise<boolean> {
+    const founder = await this.founderSchool().catch(() => null);
+    if (!founder) return false;
+    // `user_roles` carries no school of its own — the role row does, and the user belongs to a school
+    const rows = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM user_roles ur JOIN roles r ON r.id = ur.role_id JOIN users u ON u.id = ur.user_id
+       WHERE u.school_id = ? AND r.slug = ?`,
+      [String(founder.id), OWNER_ROLE]);
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
+  /**
+   * The first person through the owner door becomes the vendor, and only the first.
+   *
+   * There is no earlier moment to do this in: the console cannot be opened to grant the role, and a
+   * role granted to everybody who happens to be a super admin would lock every single-school customer
+   * out of their own sign-in page. So the door is the ceremony — it is behind a path written into
+   * `.env` at install, a machine the owner has trusted, a password and a second factor — and it
+   * happens once. Afterwards `requireOwner` asks only for the role.
+   */
+  async claimOwnership(user: OwnerUser | null | undefined) {
+    if (!user?.id || !user.school_id) throw forbidden('the owner console needs a signed-in account');
+    const founder = await this.founderSchool();
+    if (String(founder.id) !== String(user.school_id)) throw forbidden('the owner console belongs to the school this installation was created with');
+    if (await this.hasOwner()) return this.requireOwner(user);
+    const access = await this.rbac.accessFor(user.id);
+    if (!access.roles.includes('super_admin')) throw forbidden('the first owner must already be a super admin of this school');
+    await this.rbac.assignRole(user.id, OWNER_ROLE, String(founder.id));
+    await this.audit.log({ action: 'create', entityType: 'owner.claim', entityId: user.id, after: { role: OWNER_ROLE, school: String(founder.id) } });
+    this.rbac.invalidate?.(user.id);
+    return this.requireOwner(user);
   }
 
   // ---------------------------------------------------------------- shared SQL

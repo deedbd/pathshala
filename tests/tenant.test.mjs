@@ -51,6 +51,9 @@ describe('one installation, a school at each address', () => {
     port = listener.address().port;
     baseUrl = `http://127.0.0.1:${port}`;
     for (const [who, email, pass] of [[hq, 'owner@vendor.test', 'owner-pass-1'], [saranjai, 'head@saranjai.test', 'saranjai-pass-1'], [shapla, 'head@shapla.test', 'shapla-pass-1']]) who.cookie = await login(email, pass);
+    // this installation is a vendor's, which on a real one happens the first time somebody comes
+    // through the owner door; a school-only installation never has an owner at all
+    await app.owner.claimOwnership(await app.db.findOne('users', { email: 'owner@vendor.test' }));
   });
   after(async () => { listener?.close(); await app?.stop(); console.log(`tenant finished in ${Date.now() - t0} ms on ${app?.db.engine}`); });
 

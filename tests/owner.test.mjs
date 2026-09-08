@@ -97,15 +97,13 @@ describe('the owner console: one vendor, many client schools', () => {
   test('the vendor signs in at its own door, and nowhere else', async () => {
     const DOOR = '/x/test-door-9x7k2p';
 
-    // a school's own login page never signs the vendor in, and does not admit the account exists
-    const refused = await postForm('/login', { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
-    assert.equal(refused.status, 200, 'the school login answers with its own page, not a redirect');
-    assert.equal(refused.setCookie.some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'no session was handed out');
-    assert.match(refused.text, /login\.failed|match/i, 'and the answer is the one a wrong password gets');
-    // the same page still works for a school's own head teacher
-    const school = await postForm('/login', { intent: 'password', identifier: 'head@shapla.test', password: 'shapla-pass-1', next: '/dashboard' });
-    assert.equal(school.status, 302);
-    assert.ok(school.setCookie.some(c => c.startsWith('ps_session=')), 'a school signs in exactly as before');
+    // Until somebody comes through the door this installation belongs to nobody but the school that
+    // installed it, and its own administrator signs in on its own page like anybody else. That is the
+    // whole point: a single-school customer's head teacher is a super admin of the founder school, and
+    // making *that* the vendor would lock every customer out of their own console.
+    assert.equal(await app.owner.hasOwner(), false, 'a fresh installation has no vendor');
+    const beforeClaim = await postForm('/login', { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
+    assert.equal(beforeClaim.status, 302, 'the founder school signs in on its own page while nobody is the vendor');
 
     // a wrong path is a 404 like any other address on the site
     assert.equal((await page('/x/not-the-door')).status, 404);
@@ -119,6 +117,18 @@ describe('the owner console: one vendor, many client schools', () => {
     assert.ok(inside.setCookie.some(c => c.startsWith('ps_session=')), 'a session');
     assert.ok(inside.setCookie.some(c => c.startsWith('ps_owner_device=') && c.includes('HttpOnly')), 'and a device key the browser cannot read');
     const ownerCookie = inside.setCookie.find(c => c.startsWith('ps_session=')).split(';')[0];
+
+    // now this account is the vendor, and a school's own sign-in page stops answering it — with the
+    // answer a wrong password gets, so the page never admits such an account exists
+    assert.equal(await app.owner.hasOwner(), true, 'the first arrival through the door claimed it');
+    const refused = await postForm('/login', { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
+    assert.equal(refused.status, 200, 'the school login answers with its own page, not a redirect');
+    assert.equal(refused.setCookie.some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'no session was handed out');
+    assert.match(refused.text, /login\.failed|match/i, 'and the answer is the one a wrong password gets');
+    // and it still works for a school's own head teacher
+    const school = await postForm('/login', { intent: 'password', identifier: 'head@shapla.test', password: 'shapla-pass-1', next: '/dashboard' });
+    assert.equal(school.status, 302);
+    assert.ok(school.setCookie.some(c => c.startsWith('ps_session=')), 'a school signs in exactly as before');
 
     // a school's head teacher who somehow finds the door gets nothing from it
     const wrongPerson = await postForm(DOOR, { identifier: 'head@shapla.test', password: 'shapla-pass-1' });
