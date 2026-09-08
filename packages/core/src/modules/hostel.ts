@@ -22,10 +22,11 @@ export class HostelService {
 
   // ---------- buildings ----------
   async hostels(schoolId: string) {
-    return this.db.query<Row>(`SELECT h.*, (SELECT COUNT(*) FROM hostel_rooms r WHERE r.hostel_id = h.id) AS rooms,
+    return this.db.query<Row>(`SELECT h.*, w.first_name AS warden_first, w.last_name AS warden_last,
+      (SELECT COUNT(*) FROM hostel_rooms r WHERE r.hostel_id = h.id) AS rooms,
       (SELECT COUNT(*) FROM hostel_beds b JOIN hostel_rooms r ON r.id = b.room_id WHERE r.hostel_id = h.id) AS beds,
       (SELECT COUNT(*) FROM hostel_beds b JOIN hostel_rooms r ON r.id = b.room_id WHERE r.hostel_id = h.id AND b.status = 'occupied') AS occupied
-      FROM hostels h WHERE h.school_id = ? ORDER BY h.name`, [schoolId]);
+      FROM hostels h LEFT JOIN staff w ON w.id = h.warden_id WHERE h.school_id = ? ORDER BY h.name`, [schoolId]);
   }
   async createHostel(schoolId: string, h: { name: string; hostelType: 'boys' | 'girls' | 'staff'; wardenId?: string | null; curfewTime?: string | null; rooms?: { roomNo: string; capacity: number; monthlyFee?: number; roomType?: 'single' | 'double' | 'shared' | 'dorm'; floor?: string | null }[] }) {
     const id = ulid();
@@ -165,6 +166,29 @@ export class HostelService {
       }
     }
     return { saved };
+  }
+  /**
+   * The sheet the warden marks. Every resident of the hostel is listed with whatever was already
+   * marked for that call, and with the out-pass that explains an absence before anybody is chased
+   * for it — the same pass `rollCall` checks before it alerts a guardian, so the screen never shows
+   * a child as unexplained when the save would not have treated them that way.
+   */
+  async rollCallSheet(schoolId: string, hostelId: string, onDate = nowSql().slice(0, 10), call: 'morning' | 'night' = 'night') {
+    const residents = await this.residents(schoolId, hostelId);
+    const marks = await this.db.query<Row>(`SELECT * FROM hostel_attendance WHERE school_id = ? AND hostel_id = ? AND on_date = ? AND roll_call = ?`, [schoolId, hostelId, onDate, call]);
+    const marked = new Map(marks.map(m => [String(m.student_id), String(m.status)]));
+    const passes = await this.db.query<Row>(`SELECT student_id, status, leave_from, expected_return FROM hostel_outpasses WHERE school_id = ? AND status IN ('approved','out') AND leave_from <= ? AND expected_return >= ?`, [schoolId, `${onDate} 23:59:59`, `${onDate} 00:00:00`]);
+    const onPass = new Map(passes.map(p => [String(p.student_id), p]));
+    return {
+      hostelId, date: onDate, call,
+      taken: marks.length > 0,
+      rows: residents.map(r => ({
+        studentId: String(r.student_id), name: `${r.first_name} ${r.last_name ?? ''}`.trim(), admissionNo: String(r.admission_no ?? ''),
+        roomNo: String(r.room_no ?? ''), bedNo: String(r.bed_no ?? ''),
+        status: marked.get(String(r.student_id)) ?? (onPass.has(String(r.student_id)) ? 'on_outpass' : 'present'),
+        onOutpass: onPass.has(String(r.student_id)),
+      })),
+    };
   }
   async setMenu(schoolId: string, hostelId: string, rows: { dayOfWeek: number; meal: 'breakfast' | 'lunch' | 'snack' | 'dinner'; items: string }[]) {
     for (const r of rows) {

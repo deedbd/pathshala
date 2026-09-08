@@ -23,7 +23,13 @@ export class TransportService {
   constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private tasks: TaskService, private attendance: AttendanceService) {}
 
   // ---------- fleet ----------
-  async vehicles(schoolId: string) { return this.db.findMany<Row>('vehicles', { school_id: schoolId }, { orderBy: 'registration_no ASC' }); }
+  /** The fleet with the two people on it and the route it runs: a registration number alone tells the office nothing. */
+  async vehicles(schoolId: string) {
+    return this.db.query<Row>(`SELECT v.*, d.first_name AS driver_first, d.last_name AS driver_last, h.first_name AS helper_first, h.last_name AS helper_last,
+        (SELECT r.name FROM transport_routes r WHERE r.vehicle_id = v.id ORDER BY r.name LIMIT 1) AS route_name
+      FROM vehicles v LEFT JOIN staff d ON d.id = v.driver_id LEFT JOIN staff h ON h.id = v.helper_id
+      WHERE v.school_id = ? ORDER BY v.registration_no ASC`, [schoolId]);
+  }
   async addVehicle(schoolId: string, v: { registrationNo: string; vehicleType?: 'bus' | 'microbus' | 'van' | 'car'; makeModel?: string | null; capacity: number; driverId?: string | null; helperId?: string | null; gpsDeviceId?: string | null; insuranceExpiry?: string | null; fitnessExpiry?: string | null; taxTokenExpiry?: string | null; routePermitExpiry?: string | null }) {
     if (await this.db.findOne('vehicles', { school_id: schoolId, registration_no: v.registrationNo })) throw new HttpError(409, `${v.registrationNo} is already on the fleet`, 'conflict');
     const id = ulid();
@@ -149,6 +155,50 @@ export class TransportService {
     // the morning bus is also the register: a child on board is a child at school
     if (!alight && trip.trip_type === 'pickup') await this.attendance.mark(schoolId, input.studentId, String(trip.trip_date).slice(0, 10), 'present', { source: 'bus', notify: false }).catch(() => undefined);
     return { id, direction: alight ? 'alight' : 'board' };
+  }
+
+  /** Every tap of the day: who got on where, and who has not been marked off yet. */
+  async boardings(schoolId: string, onDate = nowSql().slice(0, 10), f: { tripId?: string } = {}) {
+    const where = ['t.school_id = ?', 't.trip_date = ?']; const params: unknown[] = [schoolId, onDate];
+    if (f.tripId) { where.push('b.trip_id = ?'); params.push(f.tripId); }
+    return this.db.query<Row>(`SELECT b.*, s.first_name, s.last_name, s.admission_no, c.name AS class_name, r.name AS route_name, t.trip_type, v.registration_no, st.name AS stop_name
+      FROM transport_boardings b JOIN vehicle_trips t ON t.id = b.trip_id JOIN students s ON s.id = b.student_id
+      JOIN transport_routes r ON r.id = t.route_id JOIN vehicles v ON v.id = t.vehicle_id
+      LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN route_stops st ON st.id = b.stop_id
+      WHERE ${where.join(' AND ')} ORDER BY b.boarded_at DESC LIMIT 500`, params);
+  }
+  /**
+   * Where each bus was, and when.
+   *
+   * A map is not what the office needs at ten past seven; the last fix and its age are. Every trip
+   * that is not finished is listed, whether or not a fix ever arrived — a bus with no GPS at all is
+   * exactly the bus somebody should be asking about — and the lateness is the one the delay watch
+   * already computes from `scheduled_start`, not a second opinion invented here.
+   */
+  async live(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    const trips = await this.db.query<Row>(`SELECT t.*, r.name AS route_name, v.registration_no, v.id AS vehicle_id,
+        (SELECT COUNT(*) FROM transport_boardings b WHERE b.trip_id = t.id AND b.boarded_at IS NOT NULL) AS boarded,
+        (SELECT COUNT(*) FROM transport_boardings b WHERE b.trip_id = t.id AND b.boarded_at IS NOT NULL AND b.alighted_at IS NULL) AS on_board
+      FROM vehicle_trips t JOIN transport_routes r ON r.id = t.route_id JOIN vehicles v ON v.id = t.vehicle_id
+      WHERE t.school_id = ? AND t.trip_date = ? AND t.status <> 'cancelled' ORDER BY t.trip_type, r.name`, [schoolId, onDate]);
+    const now = Date.parse(`${nowSql().replace(' ', 'T')}Z`);
+    const out = [];
+    for (const t of trips) {
+      // the fix belongs to the trip when the packet named one, and otherwise to the vehicle that day
+      const fix = (await this.db.query<Row>(`SELECT * FROM vehicle_gps_logs WHERE school_id = ? AND vehicle_id = ? AND recorded_at >= ? AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1`,
+        [schoolId, String(t.vehicle_id), `${onDate} 00:00:00`, `${onDate} 23:59:59`]))[0] ?? null;
+      const scheduled = t.scheduled_start ? `${onDate} ${String(t.scheduled_start).slice(0, 8)}` : null;
+      const startedOrNow = t.started_at ? Date.parse(`${String(t.started_at).replace(' ', 'T')}Z`) : now;
+      const delayMin = scheduled ? Math.max(0, Math.round((startedOrNow - Date.parse(`${scheduled.replace(' ', 'T')}Z`)) / 60_000)) : null;
+      out.push({
+        tripId: String(t.id), route: String(t.route_name), vehicle: String(t.registration_no), tripType: String(t.trip_type), status: String(t.status),
+        scheduledStart: t.scheduled_start ? String(t.scheduled_start).slice(0, 5) : null, startedAt: t.started_at ? String(t.started_at) : null, endedAt: t.ended_at ? String(t.ended_at) : null,
+        delayMin: t.status === 'completed' ? null : delayMin, delayReported: !!t.delay_alert_sent_at,
+        boarded: Number(t.boarded), onBoard: Number(t.on_board),
+        lastFix: fix ? { at: String(fix.recorded_at), latitude: Number(fix.latitude), longitude: Number(fix.longitude), speedKmh: fix.speed_kmh == null ? null : Number(fix.speed_kmh), ageMin: Math.max(0, Math.round((now - Date.parse(`${String(fix.recorded_at).replace(' ', 'T')}Z`)) / 60_000)) } : null,
+      });
+    }
+    return { date: onDate, trips: out, tracked: out.filter(t => t.lastFix).length };
   }
 
   // ---------- gps ----------

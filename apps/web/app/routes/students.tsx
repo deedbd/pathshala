@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/students';
-import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, api, formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
+import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, Tabs, api, formatDate, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
 import { useTenantPath } from '~/tenant';
 
@@ -12,12 +12,19 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const yid = year ? String(year.id) : undefined;
   const page = Number(url.searchParams.get('page') ?? 0);
   const f = { yearId: yid, classId: url.searchParams.get('classId') ?? undefined, sectionId: url.searchParams.get('sectionId') ?? undefined, q: url.searchParams.get('q') ?? undefined, limit: 50, offset: page * 50 };
-  const [list, classes, sections] = await Promise.all([context.app.people.students(sid, f), context.app.academic.classes(sid), yid ? context.app.academic.sections(sid, yid) : []]);
-  return { locale: (user.locale as Locale) || context.locale, list, classes, sections, page, filters: f, hasYear: !!year };
+  // the guardian directory pages on its own search param, so switching tabs does not reset the roll
+  const gPage = Number(url.searchParams.get('gpage') ?? 0);
+  const [list, classes, sections, guardians] = await Promise.all([
+    context.app.people.students(sid, f), context.app.academic.classes(sid), yid ? context.app.academic.sections(sid, yid) : [],
+    context.app.people.guardians(sid, { q: url.searchParams.get('gq') ?? undefined, limit: 50, offset: gPage * 50 }),
+  ]);
+  return { locale: (user.locale as Locale) || context.locale, list, classes, sections, page, filters: f, hasYear: !!year, guardians, gPage };
 }
 export function meta() { return [{ title: 'Pathshala — Students' }]; }
 
 type StudentRow = { id: string; admission_no: string; first_name: string; last_name: string | null; name_bn: string | null; gender: string; class_name: string | null; section_name: string | null; current_roll_no: string | null; guardian_phone: string | null; status: string; current_class_id: string | null };
+type GuardianChild = { id: string; first_name: string; last_name: string | null; admission_no: string; class_name: string | null; section_name: string | null; relation: string };
+type GuardianRow = { id: string; full_name: string; phone: string; alt_phone: string | null; email: string | null; occupation: string | null; children: number; hasAccount: boolean; lastLoginAt: string | null; is_active: unknown; childRows: GuardianChild[] };
 
 export default function Students() {
   const d = useLoaderData<typeof loader>(); const tp = useTenantPath();
@@ -25,6 +32,7 @@ export default function Students() {
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [open, setOpen] = useState(false); const [profile, setProfile] = useState<Record<string, unknown> | null>(null);
   const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [classId, setClassId] = useState('');
+  const [tab, setTab] = useState<'roll' | 'guardians'>('roll');
   useEffect(() => { setClassId(d.filters.classId ?? ''); }, [d.filters.classId]);
   const nameOf = (r: StudentRow) => d.locale === 'bn' && r.name_bn ? r.name_bn : `${r.first_name} ${r.last_name ?? ''}`.trim();
   const openProfile = async (id: string) => { try { setProfile(await api(`/api/people/students/${id}`)); } catch (e) { setErr((e as Error).message); } };
@@ -44,6 +52,35 @@ export default function Students() {
       </div>
       {!d.hasYear && <div className="mt-4"><Banner kind="warn">{tr('acad.newYear')} → <a href={tp('/academic')}>{tr('nav.academic')}</a></Banner></div>}
       {err && <div className="mt-4"><Banner kind="bad">{err}</Banner></div>}
+
+      <div className="mt-4"><Tabs value={tab} onChange={setTab} tabs={[
+        { key: 'roll', label: tr('stu.roll_'), count: d.list.total },
+        { key: 'guardians', label: tr('stu.guardians'), count: d.guardians.total },
+      ]} /></div>
+
+      {tab === 'guardians' && <div className="mt-4">
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('stu.guardiansNote')}</p>
+        <form className="mt-3 flex flex-wrap gap-2" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const next = new URLSearchParams(sp); next.set('gq', String(f.get('gq') ?? '')); next.set('gpage', '0'); setSp(next); }}>
+          <Input name="gq" placeholder={tr('stu.guardianSearch')} defaultValue={sp.get('gq') ?? ''} className="max-w-xs" />
+          <Button variant="secondary" size="sm">{tr('common.search')}</Button>
+        </form>
+        <div className="mt-3"><DataTable<GuardianRow> locale={d.locale} searchable={false} rows={d.guardians.rows as GuardianRow[]} total={d.guardians.total} page={d.gPage} pageSize={50} onPage={pg => { const next = new URLSearchParams(sp); next.set('gpage', String(pg)); setSp(next); }}
+          columns={[
+            { key: 'full_name', label: tr('common.name') },
+            { key: 'phone', label: tr('common.phone'), className: 'num' },
+            { key: 'occupation', label: tr('stu.occupation'), render: r => r.occupation || '—' },
+            { key: 'children', label: tr('stu.children'), className: 'num' },
+            { key: 'childRows', label: tr('stu.theirChildren'), render: r => r.childRows.length
+              ? <span className="flex flex-wrap gap-1">{r.childRows.map(c => <button key={c.id} type="button" className="chip" onClick={() => openProfile(c.id)}>{`${c.first_name} ${c.last_name ?? ''}`.trim()} · {c.class_name ?? ''} {c.section_name ?? ''}</button>)}</span>
+              : '—' },
+            { key: 'hasAccount', label: tr('stu.portalAccount'), render: r => r.hasAccount
+              ? <Chip status="active">{tr('stu.hasAccount')}</Chip>
+              : <Button size="sm" variant="secondary" disabled={busy} onClick={async () => { setBusy(true); setErr(null); try { await api(`/api/people/guardians/${r.id}/account`, { method: 'POST', json: {} }); rv.revalidate(); } catch (e2) { setErr((e2 as Error).message); } finally { setBusy(false); } }}>{tr('stu.giveAccess')}</Button> },
+            { key: 'lastLoginAt', label: tr('stu.lastSignIn'), render: r => !r.hasAccount ? '—' : r.lastLoginAt ? String(r.lastLoginAt).slice(0, 16) : <Chip status="pending">{tr('stu.neverSignedIn')}</Chip> },
+          ]} /></div>
+      </div>}
+
+      {tab === 'roll' && <>
       <form className="mt-4 flex flex-wrap gap-2" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); const next = new URLSearchParams(); for (const [k, v] of f.entries()) if (v) next.set(k, String(v)); setSp(next); }}>
         <Input name="q" placeholder={tr('common.search')} defaultValue={d.filters.q ?? ''} className="max-w-xs" />
         <Select name="classId" value={classId} onChange={e => setClassId(e.target.value)} placeholder={tr('common.class')} options={d.classes.map(c => ({ value: String(c.id), label: String(d.locale === 'bn' && c.name_bn ? c.name_bn : c.name) }))} className="max-w-[180px]" />
@@ -54,6 +91,7 @@ export default function Students() {
         <DataTable<StudentRow> locale={d.locale} searchable={false} rows={d.list.rows as StudentRow[]} total={d.list.total} page={d.page} pageSize={50} onPage={pg => { const next = new URLSearchParams(sp); next.set('page', String(pg)); setSp(next); }} onRowClick={r => openProfile(r.id)}
           columns={[{ key: 'admission_no', label: tr('stu.admissionNo'), className: 'num' }, { key: 'first_name', label: tr('common.name'), render: r => nameOf(r) }, { key: 'class_name', label: tr('common.class'), render: r => `${r.class_name ?? ''} ${r.section_name ?? ''}` }, { key: 'current_roll_no', label: tr('stu.roll'), className: 'num' }, { key: 'gender', label: tr('stu.gender') }, { key: 'guardian_phone', label: tr('stu.guardianPhone'), className: 'num' }, { key: 'status', label: tr('common.status'), render: r => <Chip status={r.status} /> }]} />
       </div>
+      </>}
 
       <Drawer open={open} onClose={() => setOpen(false)} title={tr('stu.new')}>
         <form className="grid gap-3" onSubmit={create}>

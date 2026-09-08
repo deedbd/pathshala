@@ -131,6 +131,40 @@ export class PeopleService {
     return { phone: normalised, guardianId: String(guardian.id), guardianName: String(guardian.full_name ?? ''), children };
   }
 
+  /**
+   * The guardian directory: one row per guardian, their children, whether they can sign in, and when
+   * they last did.
+   *
+   * A guardian row is already unique per (school, phone), so the phone is the key the office thinks
+   * in — two children on the same number are one family here, exactly as they are siblings on the
+   * student page. The children are fetched for the page of guardians actually being shown rather
+   * than concatenated in SQL, because string aggregation is spelled differently on all three engines
+   * and the join would multiply the page out anyway.
+   */
+  async guardians(schoolId: string, f: { q?: string; hasAccount?: boolean; limit?: number; offset?: number } = {}) {
+    const where = ['g.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.q) { where.push('(g.full_name LIKE ? OR g.phone LIKE ? OR g.email LIKE ?)'); const like = `%${f.q}%`; params.push(like, like, like); }
+    if (f.hasAccount === true) where.push('g.user_id IS NOT NULL');
+    if (f.hasAccount === false) where.push('g.user_id IS NULL');
+    const limit = Math.min(200, Math.max(1, Math.floor(f.limit ?? 50))); const offset = Math.max(0, Math.floor(f.offset ?? 0));
+    const rows = await this.db.query<Row>(`SELECT g.id, g.full_name, g.phone, g.alt_phone, g.email, g.occupation, g.user_id, u.last_login_at, u.is_active,
+        (SELECT COUNT(*) FROM student_guardians sg JOIN students s ON s.id = sg.student_id WHERE sg.guardian_id = g.id AND s.status = 'active') AS children
+      FROM guardians g LEFT JOIN users u ON u.id = g.user_id WHERE ${where.join(' AND ')} ORDER BY g.full_name, g.id LIMIT ${limit} OFFSET ${offset}`, params);
+    const total = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM guardians g WHERE ${where.join(' AND ')}`, params);
+    const ids = rows.map(r => String(r.id));
+    const kids = ids.length
+      ? await this.db.query<Row>(`SELECT sg.guardian_id, sg.relation, sg.is_primary, s.id, s.first_name, s.last_name, s.name_bn, s.admission_no, c.name AS class_name, sec.name AS section_name
+          FROM student_guardians sg JOIN students s ON s.id = sg.student_id LEFT JOIN classes c ON c.id = s.current_class_id LEFT JOIN sections sec ON sec.id = s.current_section_id
+          WHERE sg.guardian_id IN (${ids.map(() => '?').join(',')}) AND s.status = 'active' ORDER BY c.numeric_level, s.first_name`, ids)
+      : [];
+    const byGuardian = new Map<string, Row[]>();
+    for (const k of kids) { const key = String(k.guardian_id); if (!byGuardian.has(key)) byGuardian.set(key, []); byGuardian.get(key)!.push(k); }
+    return {
+      rows: rows.map(r => ({ ...r, hasAccount: !!r.user_id, lastLoginAt: r.last_login_at ? String(r.last_login_at) : null, childRows: byGuardian.get(String(r.id)) ?? [] })),
+      total: Number(total[0]?.n ?? 0), limit, offset,
+    };
+  }
+
   async students(schoolId: string, f: { yearId?: string; classId?: string; sectionId?: string; q?: string; status?: string; limit?: number; offset?: number } = {}) {
     const where: string[] = ['s.school_id = ?']; const params: unknown[] = [schoolId];
     if (f.status) { where.push('s.status = ?'); params.push(f.status); } else where.push(`s.status = 'active'`);

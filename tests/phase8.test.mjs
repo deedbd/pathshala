@@ -154,6 +154,39 @@ describe('phase 8', () => {
     assert.equal(cases[0].details_encrypted, undefined);
   });
 
+  test('the counselling register the console reads names the child and carries no word of the notes', async () => {
+    const list = await api('/welfare/counselling');
+    assert.ok(list.length >= 1);
+    const row = list[0];
+    assert.ok(row.first_name, 'the register names the child rather than showing an id');
+    assert.ok(row.counsellor_first, 'and who held the session');
+    assert.equal(row.has_notes, true);
+    // nothing on any row, under any key, is the note or its ciphertext
+    const session = await app.db.findOne('counselling_sessions', { id: String(row.id) });
+    const serialised = JSON.stringify(list);
+    assert.ok(!serialised.includes('check-in next week'), 'the words never leave the service');
+    assert.ok(!serialised.includes(String(session.notes_encrypted)), 'and neither does the ciphertext');
+    assert.ok(!Object.keys(row).includes('notes_encrypted'));
+  });
+
+  test('the clinic day book is a list the nurse can read, and the behaviour thresholds are the school’s own', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const book = await api(`/welfare/clinic?date=${today}`);
+    assert.ok(book.length >= 1);
+    const visit = book.find(v => String(v.student_id) === students[2].id);
+    assert.ok(visit, 'the child sent home this morning is on the day book');
+    assert.equal(String(visit.complaint), 'Fever 101F');
+    assert.ok(visit.first_name, 'named, not numbered');
+    assert.equal(Number(visit.sent_home), 1);
+    assert.ok(visit.guardian_notified_at, 'and the call home is on the row');
+    assert.equal((await api('/welfare/clinic?date=2019-01-01')).length, 0, 'a day with no visits is empty, not everything');
+
+    const rules = await api('/welfare/rules');
+    assert.equal(rules.length, 2, 'the two seeded thresholds');
+    assert.ok(rules.every(r => r.window_days && r.threshold_points && r.action_type), 'each says what it measures and what it proposes');
+    assert.ok(rules.some(r => String(r.action_type) === 'detention'));
+  });
+
   // ---------------- lms ----------------
   test('publishing a class-subject course enrols that class by itself', async () => {
     const c = await api('/lms/courses', { title: 'Algebra foundations', classSubjectId, teacherId });
@@ -262,6 +295,22 @@ describe('phase 8', () => {
     // a marked submission cannot be quietly replaced
     await assert.rejects(() => app.lms.submit(schoolId, { assignmentId, studentId: students[1].id, textAnswer: 'again' }), /already been marked/);
     assert.ok(await told('lms.assignment_graded') >= 1);
+  });
+
+  test('the teacher can open the submissions drawer and the material shelf from the console', async () => {
+    const subs = await api(`/lms/assignments/${assignmentId}/submissions`);
+    assert.equal(subs.length, 2, 'both hand-ins');
+    assert.ok(subs.every(s => s.first_name), 'each names the child');
+    const late = subs.find(s => Number(s.is_late));
+    assert.ok(late, 'and says which arrived late');
+    assert.equal(Number(late.marks), 15, 'with the mark that was actually saved');
+
+    await api('/lms/materials', { sectionId, classSubjectId, title: 'Chapter 3 notes', materialType: 'note', externalUrl: 'https://example.test/ch3.pdf' });
+    const materials = await api('/lms/materials');
+    assert.ok(materials.length >= 1);
+    assert.equal(String(materials[0].title), 'Chapter 3 notes');
+    assert.ok(await told('lms.material_added') >= 1, 'the section was told there is something new to read');
+    assert.equal((await api(`/lms/materials?sectionId=${sectionId}`)).length, materials.filter(m => String(m.section_id) === sectionId).length);
   });
 
   test('an assignment due tomorrow reminds only those who have not handed it in', async () => {
