@@ -153,6 +153,50 @@ describe('phase 3', () => {
     assert.equal(Number((await api(`/fees/invoices?studentId=${students[1].id}`))[0].fine_total), before);
   });
 
+  test('the ladder can be read back as it actually ran', async () => {
+    const r = await api('/fees/reminders');
+    assert.ok(r.ladder.length >= 5, 'every stage of the ladder is named');
+    assert.deepEqual(r.ladder.map(s => s.stage), ['due_in_3', 'due_today', 'overdue_3', 'overdue_7', 'overdue_15']);
+    assert.equal(r.stages.length, r.ladder.length, 'a stage with nothing to show is still listed');
+    const fired = r.stages.filter(s => s.reminders > 0);
+    assert.ok(fired.length >= 1, JSON.stringify(r.stages));
+    assert.ok(fired.every(s => s.lastSent), 'a stage that has run says when');
+    assert.ok(r.rows.length >= 1, 'one row per invoice per stage');
+    const row = r.rows[0];
+    assert.ok(row.invoice_no && row.first_name, 'the row names the invoice and the child');
+    assert.ok(row.told >= 1, 'it says how many people were written to');
+    assert.ok(row.messages.every(m => m.channel && m.status), 'each message carries its channel and what came back');
+    assert.ok(row.messages.some(m => m.channel === 'sms'), 'the SMS the guardian was sent is on the row');
+    // filtering by a stage that fired returns only that stage
+    const one = await api(`/fees/reminders?stage=${row.stage}`);
+    assert.ok(one.rows.length >= 1 && one.rows.every(x => x.stage === row.stage));
+    // and a stage nothing reached comes back empty rather than wrong
+    assert.equal((await api('/fees/reminders?stage=nothing_like_this')).rows.length, 0);
+  });
+
+  test('chasing one family by hand never silences the stage the ladder owes them', async () => {
+    const before = await api('/fees/reminders');
+    const stagesBefore = JSON.stringify(before.stages);
+    const smsBefore = app.adapters.sms.sent.length;
+    const chased = await api(`/fees/students/${students[1].id}/remind`, {});
+    assert.ok(chased.told >= 1 && chased.owed > 0, JSON.stringify(chased));
+    await app.adapters.queue.drain(20);
+    assert.ok(app.adapters.sms.sent.length > smsBefore, 'the guardian is actually written to');
+    // it is recorded as its own stage, so nothing the ladder still owes has been marked as done
+    const after = await api('/fees/reminders');
+    assert.equal(JSON.stringify(after.stages), stagesBefore, 'not one ladder stage moved');
+    assert.ok(after.rows.some(r => r.stage === 'manual' && r.student_id === students[1].id), 'and the chase is on the log');
+    // a family that owes nothing is told so rather than sent a demand for zero
+    const settled = await app.people.createStudent(schoolId, { firstName: 'Settled', gender: 'male', dateOfBirth: '2015-04-04', classId: String(classes[5].id), admissionDate: '2020-01-05', guardians: [{ fullName: 'Payer S', phone: '01830000090', relation: 'father', isPrimary: true }] });
+    await assert.rejects(() => api(`/fees/students/${settled.id}/remind`, {}), /owes nothing/);
+    // a call task is raised once per child, not once per press
+    const t1 = await api(`/fees/students/${students[1].id}/call-task`, {});
+    assert.ok(t1.taskId && t1.already === false, JSON.stringify(t1));
+    const t2 = await api(`/fees/students/${students[1].id}/call-task`, {});
+    assert.equal(t2.already, true);
+    assert.equal(await app.db.count('tasks', { school_id: schoolId, entity_type: 'fees.student', entity_id: students[1].id, status: 'open' }), 1);
+  });
+
   test('gateway IPN: signed, idempotent, credits the invoice', async () => {
     const gw = await api('/fees/gateways', { provider: 'bkash', displayName: 'bKash merchant', credentials: { appKey: 'k', appSecret: 's' }, isSandbox: true });
     const invoice = (await api(`/fees/invoices?studentId=${students[2].id}`))[0];
@@ -171,14 +215,38 @@ describe('phase 3', () => {
     assert.equal(await app.db.count('payments', { gateway_txn_id: 'TXN-1' }), 1);
   });
 
-  test('counter cash session reconciles what the cashier collected', async () => {
+  test('counter cash session reconciles what the cashier collected, and names the variance the moment it is counted', async () => {
     const s = await api('/fees/cash/open', { openingCash: 500 });
     assert.equal(s.already, false);
     await api('/fees/payments', { studentId: students[3].id, amount: 300, method: 'cash' });
     await api('/fees/payments', { studentId: students[4].id, amount: 200, method: 'cash' });
+    // a bKash payment taken at the same counter is in the takings and never in the drawer
+    await api('/fees/payments', { studentId: students[6].id, amount: 150, method: 'bkash', reference: 'TRX-COUNTER' });
+    // the till as the cashier sees it, before anybody counts anything
+    const till = await api(`/fees/cash/${s.id}`);
+    assert.equal(till.closed, false);
+    assert.equal(money(till.openingCash), 500);
+    assert.equal(money(till.cashTaken), 500, 'only cash lands in the drawer');
+    assert.equal(money(till.expected), 1000, 'opening 500 + 500 collected');
+    assert.equal(money(till.takings), 650, 'everything taken at this counter, whatever the method');
+    assert.equal(till.counted, null, 'nothing is counted until somebody counts it');
+    assert.equal(till.receipts.length, 3, 'every receipt taken at this counter belongs to the session');
+    const cashLine = till.byMethod.find(m => m.method === 'cash');
+    assert.equal(money(cashLine.total), 500);
+    assert.ok(till.byMethod.some(m => m.method === 'bkash' && money(m.total) === 150));
     const closed = await api('/fees/cash/close', { sessionId: s.id, countedCash: 990 });
     assert.equal(money(closed.expected), 1000, 'opening 500 + 500 collected');
     assert.equal(money(closed.variance), -10, 'a ten-taka shortfall is reported, not hidden');
+    // and it is said out loud the moment it is counted, not found in a report tomorrow
+    const told = await app.db.query(`SELECT * FROM notifications WHERE school_id = ? AND event_key = 'fees.cash_variance' AND entity_id = ?`, [schoolId, s.id]);
+    assert.ok(told.length >= 1, 'the accountant and the head are told about the shortfall');
+    assert.ok(told.some(n => String(n.body).includes('990') && String(n.body).includes('1000')), JSON.stringify(told[0]?.body));
+    const after = await api(`/fees/cash/${s.id}`);
+    assert.equal(after.closed, true);
+    assert.equal(money(after.counted), 990);
+    assert.equal(money(after.variance), -10);
+    const list = await api('/fees/cash/sessions');
+    assert.ok(list.some(x => x.id === s.id && money(x.variance) === -10 && x.cashier_name));
   });
 
   test('refund reverses the allocation and posts its own journal', async () => {
@@ -214,6 +282,75 @@ describe('phase 3', () => {
     assert.equal(money(summary.outstanding - summary.advances), money(summary.net));
   });
 
+  test('the chart of accounts reads its balances off the journal, and a group is only what sits under it', async () => {
+    const chart = await api('/accounting/chart');
+    assert.ok(chart.accounts.length >= 20);
+    const cash = chart.accounts.find(a => a.code === '1100');
+    assert.equal(cash.is_group, false);
+    assert.ok(cash.depth >= 1, 'a leaf sits under its group');
+    // the leaf agrees with the ledger it was read from
+    const tb = await api(`/accounting/trial-balance?from=1900-01-01&to=${monthEnd}`);
+    const tbCash = tb.accounts.find(a => a.code === '1100');
+    assert.equal(money(cash.balance), money(tbCash.debit - tbCash.credit));
+    // a group carries nothing of its own: its figure is the sum of the leaves beneath it
+    const assets = chart.accounts.find(a => a.code === '1000');
+    assert.equal(assets.is_group, true);
+    const byId = new Map(chart.accounts.map(a => [a.id, a]));
+    const under = a => { let p = a.parent_id; while (p) { if (p === assets.id) return true; p = byId.get(p)?.parent_id ?? null; } return false; };
+    const sum = chart.accounts.filter(a => !a.is_group && under(a)).reduce((a, l) => a + l.own, 0);
+    assert.equal(money(assets.balance), money(sum), 'the group total is its children');
+    assert.equal(money(assets.own), 0, 'and nothing was posted to the group itself');
+  });
+
+  test('an approved expense waits for one click, and pressing it twice does not spend twice', async () => {
+    // a school that asks for a signature before money leaves: one step, the principal
+    await app.db.execute(`UPDATE approval_workflows SET steps = ? WHERE school_id = ? AND entity_type = 'expense'`, [JSON.stringify([{ role: 'principal' }]), schoolId]);
+    const cats = await api('/accounting/expense-categories');
+    const e = await api('/accounting/expenses', { categoryId: cats.find(c => c.name.includes('Stationery')).id, amount: 2700, description: 'Whiteboard markers' });
+    assert.equal(e.status, 'pending', 'the workflow holds it');
+    const before = (await api('/accounting/expenses?status=pending')).find(x => x.id === e.id);
+    assert.equal(before.journal_entry_id, null, 'nothing has been posted, so no money has moved');
+    // everything but the click is already done — the number, the category, the two accounts it will hit
+    const paid = await api(`/accounting/expenses/${e.id}/pay`, {});
+    assert.ok(paid.entryNo, JSON.stringify(paid));
+    const after = (await api('/accounting/expenses?status=paid')).find(x => x.id === e.id);
+    assert.equal(after.status, 'paid');
+    assert.ok(after.journal_entry_id);
+    const entry = await api(`/accounting/entries/${paid.journalEntryId}`);
+    assert.equal(entry.lines.length, 2);
+    assert.equal(money(entry.lines.reduce((a, l) => a + Number(l.debit), 0)), 2700);
+    // a second press posts nothing: the expense already carries its journal
+    const again = await api(`/accounting/expenses/${e.id}/pay`, {});
+    assert.equal(again.alreadyPosted, true);
+    assert.equal(await app.db.count('journal_entries', { school_id: schoolId, source_type: 'expense', source_id: e.id }), 1);
+    await app.db.execute(`UPDATE approval_workflows SET steps = ? WHERE school_id = ? AND entity_type = 'expense'`, [JSON.stringify([]), schoolId]);
+  });
+
+  test('a bank statement matches itself to what the modules already wrote, and says what is left', async () => {
+    const banks = await api('/accounting/overview');
+    const bank = banks.banks.find(b => b.account_kind === 'cash_box') ?? banks.banks[0];
+    const on = new Date().toISOString().slice(0, 10);
+    const r = await api('/accounting/bank/import', { bankAccountId: bank.id, lines: [
+      { txnDate: on, description: 'CASH DEPOSIT COUNTER', reference: 'TRX100001', credit: 300 },
+      { txnDate: on, description: 'CHQ 004512 STATIONERS', reference: 'TRX100002', debit: 2700 },
+      { txnDate: on, description: 'BANK CHARGE', reference: 'TRX100003', debit: 41.37 },
+    ] });
+    assert.equal(r.imported, 3);
+    assert.ok(r.matched >= 2, `a deposit of 300 and a payment of 2700 are already in the books: ${JSON.stringify(r)}`);
+    assert.equal(r.unmatched, 3 - r.matched);
+    const lines = await api('/accounting/bank/lines');
+    assert.equal(lines.filter(l => l.reference?.startsWith('TRX1000')).length, 3);
+    const charge = lines.find(l => l.reference === 'TRX100003');
+    assert.equal(charge.matched_id, null, 'nothing in the books is 41.37, so it is left for a person rather than guessed at');
+    assert.ok(lines.find(l => l.reference === 'TRX100002').matched_type, 'the stationery cheque found its expense');
+    assert.equal(lines[0].bank_name, bank.bank_name, 'the line says which account it came off');
+    // only what is still unmatched is looked at again, so a second pass changes nothing
+    const second = await api('/accounting/bank/reconcile', { bankAccountId: bank.id });
+    assert.equal(second.matched, 0, JSON.stringify(second));
+    assert.equal((await api('/accounting/bank/lines?matched=0')).filter(l => l.reference === 'TRX100003').length, 1);
+    assert.equal((await api('/accounting/bank/lines?matched=1')).some(l => l.reference === 'TRX100003'), false);
+  });
+
   test('a manual journal must balance, and can be reversed', async () => {
     const accounts = await api('/accounting/accounts');
     const cash = accounts.find(a => a.code === '1100'), donation = accounts.find(a => a.code === '4300');
@@ -242,7 +379,8 @@ describe('phase 3', () => {
     assert.equal(money((await api(`/portal/fees/${students[5].id}`, undefined, 'GET', { cookie: guardianCookie })).outstanding), 0);
     // another guardian's child is refused
     assert.equal((await fetch(`${baseUrl}/api/portal/fees/${students[0].id}`, { headers: { cookie: guardianCookie } })).status, 403);
-    for (const [p, ck, needle] of [['/fees', cookie, 'Pupil1'], ['/accounts', cookie, 'Electricity']]) {
+    // the reminder ladder, the till and the imported statement all reach the page, not only the API
+    for (const [p, ck, needle] of [['/fees', cookie, 'Pupil1'], ['/fees', cookie, 'overdue_7'], ['/fees', cookie, 'cashier_name'], ['/accounts', cookie, 'Electricity'], ['/accounts', cookie, 'TRX100003']]) {
       const r = await fetch(`${baseUrl}${p}`, { headers: { cookie: ck } });
       const html = await r.text();
       assert.equal(r.status, 200, `${p} → ${r.status}`);

@@ -202,6 +202,98 @@ describe('phase 2', () => {
     assert.equal(other.status, 403);
   });
 
+  test('the office can see the PTM board a guardian booked against', async () => {
+    // `/ptm/bookings` answers as whoever asks, so the office saw nothing; the board is the whole thing
+    const board = await api('/ptm/board');
+    assert.ok(board.slots.length >= 4, JSON.stringify(board.slots.length));
+    assert.ok(board.slots.every(s => s.first_name && s.capacity != null), 'each slot names its teacher and how many it holds');
+    const taken = board.slots.find(s => Number(s.booked) > 0);
+    assert.ok(taken, 'the booked slot shows as booked to the office');
+    assert.equal(board.bookings.length, 1);
+    assert.equal(board.bookings[0].student_first, 'Kid1');
+    assert.ok(board.bookings[0].teacher_first, 'and says which teacher is meeting them');
+    // a guardian is not shown the school's whole diary of meetings
+    assert.equal((await fetch(`${baseUrl}/api/ptm/board`, { headers: { cookie: guardianCookie } })).status, 403);
+  });
+
+  test('the message log, the templates that write it, and the providers that carry it', async () => {
+    // the log is every message the school sent, not the reader's own in-app list
+    const log = await api(`/comms/notifications?from=${today}&to=${today}`);
+    assert.ok(log.total >= 1, JSON.stringify(log.total));
+    assert.ok(log.rows.every(r => r.channel && r.status && r.event_key));
+    assert.ok(log.rows.some(r => r.channel === 'sms'), 'the absent SMS is in it');
+    const sms = await api(`/comms/notifications?channel=sms&from=${today}&to=${today}`);
+    assert.ok(sms.total >= 1 && sms.rows.every(r => r.channel === 'sms'), 'the channel filter filters');
+    assert.ok(sms.total <= log.total);
+    assert.equal((await api(`/comms/notifications?channel=whatsapp&from=${today}&to=${today}`)).rows.length, 0);
+    const stats = await api(`/comms/notifications/stats?from=${today}&to=${today}`);
+    assert.equal(stats.total, log.total);
+    assert.ok(stats.byChannel.some(c => c.channel === 'sms'));
+    assert.ok(stats.sent >= 1);
+
+    // a template edit changes what the next send renders
+    const before = await api('/comms/templates');
+    assert.ok(before.length >= 18, 'the installer seeded templates');
+    const saved = await api('/comms/templates', { eventKey: 'attendance.absent', channel: 'sms', locale: 'bn', body: 'TEST-STAMP {{student}} was not in school on {{date}}.', isActive: true });
+    assert.ok(saved.id);
+    // saving the same event, channel and locale updates the row rather than leaving two for the pipeline to pick between
+    const again = await api('/comms/templates', { eventKey: 'attendance.absent', channel: 'sms', locale: 'bn', body: 'TEST-STAMP {{student}} was not in school on {{date}}.', isActive: true });
+    assert.equal(again.id, saved.id);
+    assert.equal(again.created, false);
+    const preview = await api('/comms/templates/preview', { id: saved.id, sample: { student: 'Kid9', date: today } });
+    assert.equal(preview.body, `TEST-STAMP Kid9 was not in school on ${today}.`);
+    assert.deepEqual(preview.placeholders, ['student', 'date']);
+    assert.deepEqual((await api('/comms/templates/preview', { id: saved.id, sample: {} })).missing, ['student', 'date'], 'it says which placeholders nothing was passed for');
+    // and the next message the school sends reads it
+    const smsBefore = app.adapters.sms.sent.length;
+    await app.notifications.notify({ schoolId, address: '01810000099', channels: ['sms'], eventKey: 'attendance.absent', data: { student: 'Kid9', date: today }, body: 'fallback that must not be used', immediate: true });
+    await app.adapters.queue.drain(20);
+    const sent = app.adapters.sms.sent.slice(smsBefore);
+    assert.ok(sent.some(m => m.text === `TEST-STAMP Kid9 was not in school on ${today}.`), JSON.stringify(sent.map(m => m.text)));
+    // switching it off puts the pipeline back on what the caller passed
+    await api(`/comms/templates/${saved.id}`, { isActive: false }, 'PATCH');
+    assert.equal((await api('/comms/templates?eventKey=attendance.absent&channel=sms&locale=bn'))[0].is_active, false);
+
+    // a provider's key is stored encrypted and never comes back to the browser
+    const p = await api('/comms/providers', { channel: 'sms', provider: 'sslwireless', senderId: 'PATHSHALA', credentials: { apiKey: 'super-secret-key' }, isDefault: true, lowBalanceThreshold: 500, costPerUnit: 0.25 });
+    const providers = await api('/comms/providers');
+    const mine = providers.find(x => x.id === p.id);
+    assert.equal(mine.hasCredentials, true, 'the console says a key is set');
+    assert.equal(mine.credentials, undefined, 'and never sends the key itself');
+    assert.equal(JSON.stringify(providers).includes('super-secret-key'), false);
+    const stored = await app.db.findOne('messaging_providers', { id: p.id });
+    assert.equal(String(JSON.stringify(stored.credentials)).includes('super-secret-key'), false, 'nor is it in the database in the clear');
+    assert.deepEqual(app.communication.providerCredentials(stored), { apiKey: 'super-secret-key' }, 'the server can still read it');
+    // one default per channel: a second default takes the first one's place
+    const p2 = await api('/comms/providers', { channel: 'sms', provider: 'bulksmsbd', isDefault: true });
+    const after = await api('/comms/providers');
+    assert.equal(after.filter(x => x.channel === 'sms' && x.is_default).length, 1);
+    assert.equal(after.find(x => x.id === p2.id).is_default, true);
+    assert.equal(after.find(x => x.id === p.id).is_default, false);
+    // saving without credentials leaves the stored key alone
+    assert.equal((await api('/comms/providers')).find(x => x.id === p.id).hasCredentials, true);
+  });
+
+  test('the notice board says who was told and who opened it', async () => {
+    const notice = await api('/comms/broadcast', { title: 'Sports day moved to Friday', body: 'The sports day is now on Friday. Please send sports kit.', channels: ['in_app', 'push'], audience: { sectionIds: [sectionId] } });
+    assert.ok(notice.recipients >= 11, JSON.stringify(notice));
+    await app.adapters.queue.drain(60);
+    const board = await api('/comms/notices');
+    const row = board.find(n => n.id === notice.id);
+    assert.ok(row, 'a broadcast is on the board like any other notice');
+    assert.equal(row.told >= notice.recipients, true, 'it says how many people it was written to');
+    assert.ok(row.channels.includes('in_app'));
+    assert.equal(row.read, 0, 'nobody has opened it yet');
+    assert.deepEqual(row.audience.sectionIds, [sectionId], 'and who it was for');
+    // a guardian opening it is counted, from the rows the pipeline actually wrote
+    const inApp = await app.db.query(`SELECT id, recipient_user_id FROM notifications WHERE school_id = ? AND entity_id = ? AND channel = 'in_app' LIMIT 1`, [schoolId, notice.id]);
+    await app.notifications.markRead(String(inApp[0].id), String(inApp[0].recipient_user_id));
+    assert.equal((await api('/comms/notices')).find(n => n.id === notice.id).read, 1);
+    // a plain notice for everybody is on the same board
+    await api('/cms/notices', { title: 'Half-yearly results on Sunday', body: 'Report cards go out on Sunday.', noticeType: 'exam' });
+    assert.ok((await api('/comms/notices?status=published')).some(n => n.title === 'Half-yearly results on Sunday'));
+  });
+
   test('diary: homework reaches guardians; KG daily report and remarks', async () => {
     const pushBefore = await app.db.count('notifications', { school_id: schoolId, event_key: 'diary.entry' });
     const entry = await api('/diary', { sectionId, onDate: today, entryType: 'homework', body: 'Maths: exercise 4.2, questions 1–8.' }, 'POST', { cookie: teacherCookie });
@@ -224,7 +316,7 @@ describe('phase 2', () => {
     assert.equal(me.staff.id, teacher.id);
     assert.ok(me.sections.length >= 1);
     assert.equal(me.published, true);
-    for (const [p, ck, needle] of [[`/attendance?sectionId=${sectionId}`, cookie, 'Kid1'], [`/diary?sectionId=${sectionId}`, cookie, 'exercise'], ['/chat', teacherCookie, 'chapter 3'], [`/teach?sectionId=${sectionId}`, teacherCookie, 'Kid1']]) {
+    for (const [p, ck, needle] of [[`/attendance?sectionId=${sectionId}`, cookie, 'Kid1'], [`/diary?sectionId=${sectionId}`, cookie, 'exercise'], ['/chat', teacherCookie, 'chapter 3'], [`/teach?sectionId=${sectionId}`, teacherCookie, 'Kid1'], ['/communication', cookie, 'Sports day moved to Friday']]) {
       const r = await fetch(`${baseUrl}${p}`, { headers: { cookie: ck } });
       const html = await r.text();
       assert.equal(r.status, 200, `${p} → ${r.status}`);

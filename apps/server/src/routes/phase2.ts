@@ -68,6 +68,36 @@ export function mountPhase2(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.get('/chat/:id/messages', wrap(async req => { const u = requireUser(req); return app.communication.messages(u.school_id, req.params.id as string, u.id, q(req, 'before')); }));
   api.post('/chat/:id/messages', wrap(async req => { const u = requireUser(req); const b = z.object({ body: z.string().max(4000).optional(), attachments: z.unknown().optional(), replyToId: z.string().optional().nullable() }).parse(req.body); return app.communication.send(u.school_id, u.id, { conversationId: req.params.id as string, ...b }); }));
 
+  // ---------- notice board, message log, templates, providers ----------
+  // `/api/notifications` is already the signed-in person's own in-app list, so the school-wide log
+  // lives under the module's own namespace beside `/comms/broadcast`
+  api.get('/comms/notices', wrap(async req => { const u = requirePerm(req, 'communication.view'); return app.communication.noticeBoard(u.school_id, { status: q(req, 'status'), limit: Number(q(req, 'limit') ?? 100) }); }));
+  api.get('/comms/notifications', wrap(async req => {
+    const u = requirePerm(req, 'communication.view');
+    return app.communication.notificationLog(u.school_id, { channel: q(req, 'channel'), status: q(req, 'status'), eventKey: q(req, 'eventKey'), from: q(req, 'from'), to: q(req, 'to'), search: q(req, 'q'), limit: Number(q(req, 'limit') ?? 100), offset: Number(q(req, 'offset') ?? 0) });
+  }));
+  api.get('/comms/notifications/stats', wrap(async req => { const u = requirePerm(req, 'communication.view'); return app.communication.notificationStats(u.school_id, q(req, 'from') ?? today(), q(req, 'to') ?? today()); }));
+  api.post('/comms/notifications/:id/retry', wrap(async req => { const u = requirePerm(req, 'communication.edit'); return app.communication.retryNotification(u.school_id, req.params.id as string); }));
+  api.get('/comms/templates', wrap(async req => { const u = requirePerm(req, 'communication.view'); return app.communication.templates(u.school_id, { eventKey: q(req, 'eventKey'), channel: q(req, 'channel'), locale: q(req, 'locale') }); }));
+  api.post('/comms/templates', wrap(async req => {
+    const u = requirePerm(req, 'communication.edit');
+    const b = z.object({ eventKey: z.string().min(2).max(80), channel: z.enum(['sms', 'email', 'push', 'whatsapp', 'in_app', 'voice']), locale: z.string().min(2).max(10), subject: z.string().max(200).optional().nullable(), body: z.string().min(1).max(20000), isActive: z.coerce.boolean().optional() }).parse(req.body);
+    const r = await app.communication.saveTemplate(u.school_id, b);
+    await app.audit.log({ action: r.created ? 'create' : 'update', entityType: 'communication.template', entityId: r.id, after: { eventKey: b.eventKey, channel: b.channel, locale: b.locale } });
+    return r;
+  }));
+  api.patch('/comms/templates/:id', wrap(async req => { const u = requirePerm(req, 'communication.edit'); const b = z.object({ isActive: z.coerce.boolean() }).parse(req.body); return app.communication.setTemplateActive(u.school_id, req.params.id as string, b.isActive); }));
+  api.post('/comms/templates/preview', wrap(async req => { const u = requirePerm(req, 'communication.view'); const b = z.object({ id: z.string().optional(), body: z.string().max(20000).optional(), subject: z.string().max(200).optional().nullable(), sample: z.record(z.string(), z.unknown()).optional() }).parse(req.body); return app.communication.previewTemplate(u.school_id, b, b.sample ?? {}); }));
+  api.get('/comms/providers', wrap(async req => { const u = requirePerm(req, 'communication.view'); return app.communication.providers(u.school_id); }));
+  api.post('/comms/providers', wrap(async req => {
+    const u = requirePerm(req, 'communication.approve');
+    const b = z.object({ id: z.string().optional(), channel: z.enum(['sms', 'email', 'push', 'whatsapp', 'voice']), provider: z.string().min(2).max(60), senderId: z.string().max(80).optional().nullable(), credentials: z.record(z.string(), z.string()).optional().nullable(), isDefault: z.coerce.boolean().optional(), isActive: z.coerce.boolean().optional(), lowBalanceThreshold: z.coerce.number().min(0).optional().nullable(), costPerUnit: z.coerce.number().min(0).optional().nullable() }).parse(req.body);
+    const r = await app.communication.saveProvider(u.school_id, b);
+    // the audit line names the provider and never what was typed into the credential fields
+    await app.audit.log({ action: r.created ? 'create' : 'update', entityType: 'communication.provider', entityId: r.id, after: { channel: b.channel, provider: b.provider, isDefault: !!b.isDefault, credentialsChanged: !!b.credentials } });
+    return r;
+  }));
+
   // ---------- PTM ----------
   api.get('/ptm/slots', wrap(async req => { const u = requireUser(req); return app.communication.ptmSlots(u.school_id, { teacherId: q(req, 'teacherId'), from: q(req, 'from') }); }));
   api.post('/ptm/slots', wrap(async req => { const u = requirePerm(req, 'communication.create'); const b = z.object({ teacherId: z.string(), date: dateSchema, startTime: z.string(), endTime: z.string(), minutes: z.coerce.number().int().min(5).max(120), capacity: z.coerce.number().int().optional(), mode: z.enum(['in_person', 'online']).optional() }).parse(req.body); return app.communication.createPtmSlots(u.school_id, b); }));
@@ -82,6 +112,16 @@ export function mountPhase2(api: Router, app: App, wrap: Wrap, requirePerm: (req
     return r;
   }));
   api.get('/ptm/bookings', wrap(async req => { const u = requireUser(req); const staff = await myStaff(u); const guardian = await app.db.findOne<{ id: string }>('guardians', { school_id: u.school_id, user_id: u.id }); return app.communication.ptmBookings(u.school_id, { teacherId: staff?.id, guardianId: guardian?.id }); }));
+  /**
+   * The office's board. `/ptm/bookings` answers as whoever is asking — a teacher sees their own, a
+   * guardian theirs — which left nobody able to see the meeting a guardian had booked. This is the
+   * whole board, and it is gated on the module's own permission rather than on a staff link.
+   */
+  api.get('/ptm/board', wrap(async req => {
+    const u = requirePerm(req, 'communication.view');
+    const [slots, bookings] = await Promise.all([app.communication.ptmSlots(u.school_id, { teacherId: q(req, 'teacherId'), from: q(req, 'from') ?? `${today()} 00:00:00` }), app.communication.ptmBookings(u.school_id, {})]);
+    return { slots, bookings };
+  }));
 
   // ---------- diary ----------
   api.get('/diary', wrap(async req => { const u = requireUser(req); return app.communication.diary(u.school_id, { sectionId: q(req, 'sectionId'), studentId: q(req, 'studentId'), from: q(req, 'from'), to: q(req, 'to') }); }));
