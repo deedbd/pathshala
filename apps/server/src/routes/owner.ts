@@ -88,6 +88,15 @@ export function mountOwner(api: Router, app: App, wrap: Wrap, requirePerm: (req:
     return app.owner.setWebAddress(u, req.params.id as string, b);
   }));
 
+  /**
+   * The school's own sign-in door. `send` posts the address to the school's registered email again
+   * — the vendor reads it out on the telephone often enough that a button is cheaper — and `rotate`
+   * replaces it, which kills the old address at once and emails the new one in the same call.
+   * Literal paths, and registered before nothing that shares their shape, so neither is read as an id.
+   */
+  api.post('/schools/:id/door/send', wrap(async req => app.owner.sendSignInLink(requirePerm(req, 'saas.edit'), req.params.id as string, { reason: 'resent' })));
+  api.post('/schools/:id/door/rotate', wrap(async req => app.owner.rotateDoor(requirePerm(req, 'saas.edit'), req.params.id as string)));
+
   api.post('/schools/:id/admin', wrap(async req => {
     const u = requirePerm(req, 'saas.create');
     const b = z.object({ name: z.string().trim().min(2).max(160), phone: bdPhoneSchema, email: emailSchema.or(z.literal('')).optional().nullable(), password: passwordSchema.or(z.literal('')).optional().nullable() }).parse(req.body);

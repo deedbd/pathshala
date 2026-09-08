@@ -14,7 +14,12 @@ import { type RouteConfig, type RouteConfigEntry, index, layout, prefix, route }
 function schoolApp(id: (name: string) => string): RouteConfigEntry[] {
   return [
     index('routes/index.tsx', { id: id('index') }),
-    route('login', 'routes/login.tsx', { id: id('login') }),
+    // The school's own sign-in, behind an address generated when the school was created and emailed
+    // to it. There is no `/login` here any more: a generic sign-in page is the one address every
+    // scanner already tries, and the owner wants a client's console to be unfindable. The vendor's
+    // own door has exactly the same shape at the installation's root, and `routes/door.tsx` tells
+    // them apart by whether a school owns the address.
+    route('x/:door', 'routes/door.tsx', { id: id('door') }),
     route('logout', 'routes/logout.tsx', { id: id('logout') }),
     layout('routes/console.tsx', { id: id('console') }, [
       route('dashboard', 'routes/dashboard.tsx', { id: id('dashboard') }),
@@ -52,6 +57,11 @@ function schoolApp(id: (name: string) => string): RouteConfigEntry[] {
     ]),
     ...prefix('portal', [
       index('routes/portal.tsx', { id: id('portal') }),
+      // Families keep a sign-in page they can find. A link printed on a card and sent home to five
+      // hundred households is not a secret, and a guardian who cannot sign in is a school that stops
+      // using the software — so only the console, where the whole register lives, moved behind a
+      // door. This page refuses staff and admin accounts, which is what keeps that door meaningful.
+      route('login', 'routes/portal-login.tsx', { id: id('portal-login') }),
       route('child/:id', 'routes/portal-child.tsx', { id: id('portal-child') }),
     ]),
   ];
@@ -66,9 +76,6 @@ export default [
   ...prefix(':school', schoolApp(name => `tenant-${name}`)),
 
   route('install', 'routes/install.tsx'),
-  // the door: Pathshala's own sign-in, behind a path from .env that nothing links to. A wrong
-  // path is a 404 like any other, so a school's site says nothing about a vendor console
-  route('x/:door', 'routes/owner-door.tsx'),
   // Pathshala's own console: its own layout, outside the school console, gated by the owner service.
   // It is deliberately absent from schoolApp — the vendor's console never appears under a school's address.
   route('owner', 'routes/owner.tsx', [

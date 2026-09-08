@@ -74,9 +74,19 @@ try {
   if (tpl.status !== 200 || buf.subarray(0, 2).toString() !== 'PK' || buf.length < 4000) fail(`import template is not an xlsx (${tpl.status}, ${buf.length} bytes)`);
   log(`Excel template rendered (${buf.length} bytes)`);
 
-  // the public website and the SSR console must render from web-build/
-  for (const p of ['/site', '/login']) { const r = await fetch(base + p); const html = await r.text(); if (r.status !== 200 || !html.includes('<!DOCTYPE html>')) fail(`${p} → ${r.status} (${html.slice(0, 120)})`); }
-  log('SSR pages render (/site, /login)');
+  // the public website, the portal's sign-in and the school's own door must render from web-build/.
+  // The door is the school's alone: there is no /login any more, so the address is read out of the
+  // row the installer just wrote — which also proves the column and its back-fill shipped.
+  const web = await api(`/api/owner/schools/${school.j.schoolId}/web`, undefined, 'GET', cookie);
+  if (!web.j.doorUrl) fail(`the school came up without a sign-in door: ${JSON.stringify(web.j)}`);
+  const doorPath = new URL(web.j.doorUrl).pathname;
+  for (const p of ['/site', '/portal/login', doorPath]) {
+    const r = await fetch(base + p); const html = await r.text();
+    if (r.status !== 200 || !html.includes('<!DOCTYPE html>')) fail(`${p} → ${r.status} (${html.slice(0, 120)})`);
+  }
+  // …and /login is gone everywhere, which is the whole point of the door
+  { const r = await fetch(base + '/login'); if (r.status !== 404) fail(`/login should be a 404, not ${r.status}`); }
+  log(`SSR pages render (/site, /portal/login, the school's own door) and /login is a 404`);
 
   await api('/api/install/finish', {}, 'POST', cookie);
   log('installer finished · the zip is deployable');

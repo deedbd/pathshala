@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Db, Row } from '@pathshala/db';
 import { nowSql } from '@pathshala/db';
 import type { Adapters, ScheduledFn } from '@pathshala/adapters';
@@ -30,6 +31,12 @@ import { hmac } from './util.js';
  * `schools.code` is untouched by any of this. It prefixes every document number a school has ever
  * issued — receipts, admission numbers, payslips — so it can never move. `slug` is a second, purely
  * cosmetic name that may be changed at will.
+ *
+ * On top of the address sits `schools.login_door`: the school's console sign-in is served only at
+ * `<address>/x/<door>` and there is no `/login` anywhere any more. The door is **not** a security
+ * boundary — the password, the second factor, the session and the roles decide, as they always did —
+ * it exists so that a school's sign-in form is not something a stranger can find and hammer. It is
+ * linked from nowhere, marked noindex, throttled, and replaceable in one click. See `randomDoor`.
  */
 export type TenantSource = 'domain' | 'slug' | 'none';
 
@@ -39,6 +46,8 @@ export interface TenantSchool {
   code: string;
   slug: string | null;
   customDomain: string | null;
+  /** The unguessable segment this school's console sign-in lives behind. Never rendered in a link. */
+  loginDoor: string | null;
   status: string;
 }
 
@@ -84,6 +93,9 @@ export interface WebAddress {
   customDomain: string | null;
   domain: DomainCheck | null;
   instructions: DnsInstruction[];
+  /** The school's own sign-in door, and the whole address to read out or copy. */
+  loginDoor: string | null;
+  doorUrl: string | null;
 }
 
 /**
@@ -271,6 +283,90 @@ export async function claimSlug(db: Db, base: string, schoolId: string): Promise
   return null;
 }
 
+// ---------------------------------------------------------------- the door
+/**
+ * A school's own sign-in address.
+ *
+ * The door is **not** the security boundary and nothing here should be written as if it were: the
+ * password, the second factor, the session and the roles decide who gets in, exactly as they did
+ * before. What the door buys is that a school's sign-in page is not something a stranger can find —
+ * there is no `/login` to discover, so a scanner walking the installation's addresses has nothing to
+ * hammer, and a school's own people reach their form by the link that was emailed to them and by
+ * nothing else. Treat a leaked door as an inconvenience (rotate it) and never as a breach.
+ *
+ * Twelve characters of an alphabet with no `l`, `1`, `o` or `0` in it — the same one the vendor's
+ * own door uses — so it survives being read down a telephone and is still 31^12 wide.
+ */
+export const DOOR_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';   // no l/1, no o/0
+export const DOOR_LENGTH = 12;
+
+/** A door nobody can guess and a person can still read out. `randomInt` rather than a byte modulo,
+ *  so every character of the alphabet is equally likely. */
+export function randomDoor(length = DOOR_LENGTH): string {
+  let out = '';
+  for (let i = 0; i < length; i++) out += DOOR_ALPHABET[randomInt(0, DOOR_ALPHABET.length)];
+  return out;
+}
+
+/** Only the shape this module ever writes: nothing else can be a door, so nothing else is compared. */
+export function isDoorShaped(raw: string | null | undefined): boolean {
+  const d = String(raw ?? '');
+  return d.length === DOOR_LENGTH && [...d].every(c => DOOR_ALPHABET.includes(c));
+}
+
+/**
+ * Whether two doors are the same, in time that does not depend on how many characters matched.
+ *
+ * A wrong door is a 404 and the throttle in front of it is what actually stops a search, but a
+ * comparison that returns early still leaks the prefix to anybody patient enough to measure it —
+ * and this one costs nothing.
+ */
+export function doorMatches(expected: string | null | undefined, given: string | null | undefined): boolean {
+  if (!expected || !given) return false;
+  const a = Buffer.from(String(expected).toLowerCase(), 'utf8');
+  const b = Buffer.from(String(given).toLowerCase(), 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * Gives a door to every school that has none, at boot, without anybody typing one.
+ *
+ * Beside `ensureSchoolSlugs` and for the same reason: a school installed before this column existed
+ * must come up with a sign-in address of its own, and an update reaches a school already in the
+ * field only if boot repairs it. It only ever fills a blank — a door somebody rotated is never
+ * rewritten, because the address on the school's noticeboard would stop working.
+ */
+export async function ensureSchoolDoors(db: Db, schoolId?: string): Promise<{ schools: number; doors: Array<{ schoolId: string; door: string }> }> {
+  const rows = await db.query<Row>(
+    `SELECT id FROM schools WHERE (login_door IS NULL OR login_door = '') AND deleted_at IS NULL${schoolId ? ' AND id = ?' : ''} ORDER BY created_at ASC, id ASC`,
+    schoolId ? [schoolId] : []);
+  const doors: Array<{ schoolId: string; door: string }> = [];
+  for (const r of rows) {
+    const door = await claimDoor(db, String(r.id));
+    if (door) doors.push({ schoolId: String(r.id), door });
+  }
+  return { schools: doors.length, doors };
+}
+
+/**
+ * Writes a fresh door onto a school. The unique key is the arbiter: two boots racing each other, or
+ * the vanishingly unlikely collision, lose the write and try again with another value.
+ */
+export async function claimDoor(db: Db, schoolId: string): Promise<string | null> {
+  for (let n = 0; n < 10; n++) {
+    const candidate = randomDoor();
+    if (await db.findOne('schools', { login_door: candidate })) continue;
+    try {
+      // fenced: Postgres aborts the surrounding transaction on a unique violation, and losing this
+      // race means somebody else took the value, not that anything is broken
+      await db.attempt(() => db.update('schools', { login_door: candidate, updated_at: nowSql() }, { id: schoolId }));
+      return candidate;
+    } catch { /* taken between the read and the write; draw another */ }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- the service
 export class TenantService {
   /** host/slug → the school it belongs to. A hit lives 60 s; a miss lives one, so a domain added a
@@ -315,13 +411,14 @@ export class TenantService {
     return school;
   }
 
-  private static readonly COLUMNS = 'id, name, code, slug, custom_domain, status';
+  private static readonly COLUMNS = 'id, name, code, slug, custom_domain, login_door, status';
   private row(r: Row | undefined): TenantSchool | null {
     if (!r) return null;
     return {
       id: String(r.id), name: String(r.name), code: String(r.code),
       slug: r.slug ? String(r.slug) : null,
       customDomain: r.custom_domain ? String(r.custom_domain) : null,
+      loginDoor: r.login_door ? String(r.login_door) : null,
       status: String(r.status),
     };
   }
@@ -405,6 +502,8 @@ export class TenantService {
       customDomain: school.customDomain,
       domain,
       instructions: await this.dnsInstructions(school.customDomain),
+      loginDoor: school.loginDoor,
+      doorUrl: this.doorUrlFor(school),
     };
   }
 
@@ -412,6 +511,52 @@ export class TenantService {
     if (school.customDomain) return `https://${school.customDomain}`;
     const base = this.config.appUrl.replace(/\/$/, '');
     return school.slug ? `${base}/${school.slug}` : base;
+  }
+
+  /** The whole sign-in address: `https://school.edu.bd/x/<door>`, or `…/<slug>/x/<door>`. */
+  doorUrlFor(school: TenantSchool): string | null {
+    return school.loginDoor ? `${this.urlFor(school)}/x/${school.loginDoor}` : null;
+  }
+
+  /** The same, by id — what the owner console copies and what the provisioning email carries. */
+  async doorUrl(schoolId: string): Promise<string | null> {
+    return this.doorUrlFor(await this.school(schoolId));
+  }
+
+  // ---------------------------------------------------------------- the door
+  /**
+   * Is `door` this school's door? Constant-time, and only ever asked about one school — the school
+   * is already decided by the address (host or slug), so a door cannot be used to *find* a school,
+   * only to open the one whose address the visitor is already standing at.
+   *
+   * The answer is read through the same cache the address resolution uses, so a door that was just
+   * rotated stops working on the next request rather than a minute later: `rotateDoor` drops it.
+   */
+  async resolveDoor(schoolId: string, door: string | null | undefined): Promise<boolean> {
+    if (!isDoorShaped(door)) return false;
+    const school = await this.cached(`i:${schoolId}`, async () => {
+      const rows = await this.db.query<Row>(`SELECT ${TenantService.COLUMNS} FROM schools WHERE id = ? AND deleted_at IS NULL`, [schoolId]);
+      return this.row(rows[0]);
+    });
+    return doorMatches(school?.loginDoor, door);
+  }
+
+  /**
+   * A new door for a school, and the old address dead from this moment.
+   *
+   * That is the whole point of the button: an address that has been forwarded to somebody who should
+   * not have it is replaced, not asked to be forgotten. Everyone signed in stays signed in — the
+   * door was never the session — and everyone who has to sign in again needs the new link, which is
+   * why the caller emails it.
+   */
+  async rotateDoor(schoolId: string): Promise<{ door: string; url: string }> {
+    const before = await this.school(schoolId);
+    const door = await claimDoor(this.db, schoolId);
+    if (!door) throw new HttpError(409, 'could not write a new sign-in address; try again', 'conflict');
+    // the cached row still carries the old door, and it is the row `resolveDoor` reads
+    this.forget();
+    const after = await this.school(schoolId);
+    return { door, url: this.doorUrlFor(after) ?? `${this.urlFor(before)}/x/${door}` };
   }
 
   private neverChecked(hostname: string): DomainCheck {

@@ -83,7 +83,7 @@ export default function Site() {
         })}
         {d.turnstileSiteKey && <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />}
       </main>
-      <footer className="mx-auto max-w-5xl px-4 py-8 text-xs" style={{ color: 'var(--muted)' }}>© {name} · <a href={tp('/login')}>{tr('login.title')}</a> · <a href={tp('/portal')}>{tr('portal.children')}</a></footer>
+      <footer className="mx-auto max-w-5xl px-4 py-8 text-xs" style={{ color: 'var(--muted)' }}>© {name} · <a href={tp('/portal/login')}>{tr('login.title')}</a> · <a href={tp('/portal')}>{tr('portal.children')}</a></footer>
     </div>
   );
 }

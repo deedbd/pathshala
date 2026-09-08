@@ -6,6 +6,7 @@ export default [
   schools:{ tenant:false, soft:true, desc:'One row per school (tenant). Settings JSON holds feature flags and policies.', cols:`
     code            str(32)   ! u                 # short slug, prefix for numbering
     slug            str(60)   u                  # the school's name in a URL: /saranjai. Backfilled at boot; code never moves.
+    login_door      str(40)   u                  # the school's own sign-in address: /<slug>/x/<door>. Generated, emailed, never linked.
     name            str(160)  !
     name_bn         str(160)
     institution_type enum(school|college|school_college|madrasa|kindergarten|coaching|university) ! =school

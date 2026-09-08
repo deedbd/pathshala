@@ -206,7 +206,7 @@ export default function OwnerSchools() {
                 <div className="text-sm num break-all">{admin.email}</div>
                 <div className="text-sm num">{tr('own.password')}: {admin.password}</div>
                 <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={() => copy('admin', `${tr('own.signInAt')}: ${window.location.origin}/login\n${admin.email}\n${tr('own.password')}: ${admin.password}`)}>{tr('own.copy')}</Button>
+                  <Button size="sm" onClick={() => copy('admin', `${tr('own.signInAt')}: ${d.web?.doorUrl ?? d.web?.url ?? window.location.origin}\n${admin.email}\n${tr('own.password')}: ${admin.password}`)}>{tr('own.copy')}</Button>
                   {copied === 'admin' && <span className="chip chip-ok">{tr('own.copied')}</span>}
                 </div>
                 <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.shownOnce')}</p>
@@ -244,15 +244,31 @@ function WebAddress({ schoolId, locale, initial }: { schoolId: string; locale: L
   const [web, setWeb] = useState<OwnerSchoolWeb | null>(initial);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<'slug' | 'domain' | 'removed' | null>(null);
+  const [done, setDone] = useState<'slug' | 'domain' | 'removed' | 'rotated' | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [sent, setSent] = useState<{ sent: boolean; to: string | null } | null>(null);
 
   const save = async (what: 'slug' | 'domain' | 'removed', json: { slug?: string; customDomain?: string | null }) => {
     setBusy(true); setErr(null); setDone(null);
     try {
       const r = await api<OwnerSchoolWeb>(`/api/owner/schools/${schoolId}/web`, { method: 'POST', json });
       setWeb(r); setDone(what); setConfirmRemove(false);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  const sendLink = async () => {
+    setBusy(true); setErr(null); setDone(null); setSent(null);
+    try { setSent(await api<{ sent: boolean; to: string | null }>(`/api/owner/schools/${schoolId}/door/send`, { method: 'POST', json: {} })); }
+    catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  const rotate = async () => {
+    setBusy(true); setErr(null); setDone(null); setSent(null);
+    try {
+      const r = await api<OwnerSchoolWeb>(`/api/owner/schools/${schoolId}/door/rotate`, { method: 'POST', json: {} });
+      setWeb(r); setDone('rotated'); setConfirmRotate(false);
+      // the rotate answers with what happened to the email too, so the vendor is not left guessing
+      if (r.email) setSent({ sent: r.email.sent, to: r.email.to });
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
   const copy = async (what: string, text: string) => { try { await navigator.clipboard.writeText(text); setCopied(what); } catch { setErr(tr('own.copyFailed')); } };
@@ -286,6 +302,40 @@ function WebAddress({ schoolId, locale, initial }: { schoolId: string; locale: L
               <Button type="button" size="sm" variant="ghost" onClick={() => copy('domain', `https://${web.customDomain}`)}>{tr('own.copy')}</Button>
               {copied === 'domain' && <Chip status="active">{tr('own.copied')}</Chip>}
             </div>}
+          </div>
+
+          {/*
+            The school's own sign-in address. It is the one thing on this page that is a secret: the
+            console opens here and at no other address, so it is copied and emailed rather than
+            linked, and a school that has lost it gets it sent again rather than told to search.
+          */}
+          <div className="grid gap-2 rounded-[10px] p-3" style={{ background: 'var(--surface-2)' }}>
+            <div>
+              <div className="text-sm">{tr('own.door.title')}</div>
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.door.purpose')}</p>
+            </div>
+            {!web.doorUrl ? <Banner kind="warn">{tr('own.door.none')}</Banner> : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="num break-all text-sm">{web.doorUrl}</span>
+                <Button type="button" size="sm" variant="ghost" onClick={() => copy('door', web.doorUrl!)}>{tr('own.copy')}</Button>
+                {copied === 'door' && <Chip status="active">{tr('own.copied')}</Chip>}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => sendLink()}>{tr('own.door.send')}</Button>
+              {!confirmRotate && <Button type="button" size="sm" variant="danger" disabled={busy} onClick={() => { setDone(null); setSent(null); setConfirmRotate(true); }}>{tr('own.door.rotate')}</Button>}
+            </div>
+            {/* replacing an address is irreversible for everyone holding the old one, so it is asked twice */}
+            {confirmRotate && <div className="grid gap-2">
+              <Banner kind="warn">{tr('own.door.rotateWarn')}</Banner>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" variant="danger" disabled={busy} onClick={() => rotate()}>{tr('own.door.rotateYes')}</Button>
+                <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmRotate(false)}>{tr('common.cancel')}</Button>
+              </div>
+            </div>}
+            {done === 'rotated' && <Banner kind="ok">{tr('own.door.rotated')}</Banner>}
+            {sent && <Banner kind={sent.sent ? 'ok' : 'warn'}>{sent.sent ? tr('own.door.sent').replace('{{to}}', sent.to ?? '') : tr('own.door.notSent')}</Banner>}
+            <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.door.portalNote')}</p>
           </div>
 
           {/* The name the staff type. What saving does is said before the button, not after it. */}

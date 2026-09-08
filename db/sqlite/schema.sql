@@ -8,6 +8,7 @@ CREATE TABLE `schools` (
   `id` TEXT NOT NULL,
   `code` TEXT NOT NULL,
   `slug` TEXT,
+  `login_door` TEXT,
   `name` TEXT NOT NULL,
   `name_bn` TEXT,
   `institution_type` TEXT NOT NULL DEFAULT 'school',
@@ -35,6 +36,7 @@ CREATE TABLE `schools` (
   PRIMARY KEY (`id`),
   UNIQUE (`code`),
   UNIQUE (`slug`),
+  UNIQUE (`login_door`),
   UNIQUE (`custom_domain`),
   CHECK (`institution_type` IN ('school', 'college', 'school_college', 'madrasa', 'kindergarten', 'coaching', 'university')),
   CHECK (`status` IN ('trial', 'active', 'suspended', 'closed'))

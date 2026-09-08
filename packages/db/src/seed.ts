@@ -162,33 +162,60 @@ export async function seed(db: Db, opts: SeedOptions): Promise<SeedResult> {
   }
 
   // ---- notification templates bn/en ----
-  const templates: [string, string, string, string | null, string][] = [
-    ['auth.otp', 'sms', 'bn', null, '{{school}}: আপনার কোড {{code}}। {{minutes}} মিনিটের মধ্যে ব্যবহার করুন। কাউকে শেয়ার করবেন না।'],
-    ['auth.otp', 'sms', 'en', null, '{{school}}: your code is {{code}}. Valid for {{minutes}} minutes. Do not share it.'],
-    ['auth.otp', 'email', 'bn', '{{school}} — লগইন কোড', 'আপনার লগইন কোড: {{code}} ({{minutes}} মিনিট)।'],
-    ['auth.otp', 'email', 'en', '{{school}} — your login code', 'Your login code is {{code}} (valid {{minutes}} minutes).'],
-    ['auth.welcome', 'sms', 'bn', null, '{{school}} এ স্বাগতম, {{name}}! লগইন: {{url}}'],
-    ['auth.welcome', 'sms', 'en', null, 'Welcome to {{school}}, {{name}}! Sign in: {{url}}'],
-    ['installer.selftest', 'email', 'en', '{{school}} — Pathshala self-test', 'Mail is working. Installed at {{url}} on {{engine}}.'],
-    ['installer.selftest', 'push', 'en', 'Pathshala is ready', 'Automation, queue and PDF rendering all passed the self-test.'],
-    ['automation.rule_failed', 'push', 'bn', 'অটোমেশন ব্যর্থ', 'রুল {{rule}} {{attempts}} বার ব্যর্থ হয়েছে: {{error}}'],
-    ['automation.rule_failed', 'push', 'en', 'Automation failed', 'Rule {{rule}} failed {{attempts}} times: {{error}}'],
-    ['task.assigned', 'push', 'bn', 'নতুন কাজ', '{{title}} — শেষ সময় {{due}}'],
-    ['task.assigned', 'push', 'en', 'New task', '{{title}} — due {{due}}'],
-    ['approval.requested', 'push', 'bn', 'অনুমোদন প্রয়োজন', '{{summary}}'],
-    ['approval.requested', 'push', 'en', 'Approval needed', '{{summary}}'],
-    ['fees.invoice_created', 'sms', 'bn', null, '{{school}}: {{student}} এর {{month}} মাসের বেতন ৳{{amount}}, শেষ তারিখ {{due}}। পরিশোধ: {{url}}'],
-    ['fees.invoice_created', 'sms', 'en', null, '{{school}}: fee for {{student}} ({{month}}) is Tk {{amount}}, due {{due}}. Pay: {{url}}'],
-    ['attendance.absent', 'sms', 'bn', null, '{{school}}: {{student}} আজ ({{date}}) অনুপস্থিত। কারণ জানাতে রিপ্লাই করুন।'],
-    ['attendance.absent', 'sms', 'en', null, '{{school}}: {{student}} is absent today ({{date}}). Reply with the reason.'],
-  ];
-  for (const [event_key, channel, locale, subject, body] of templates) {
-    if (await db.findOne('notification_templates', { school_id: sid, event_key, channel, locale })) continue;
-    const vars = [...body.matchAll(/{{(\w+)}}/g)].map(m => m[1]);
-    await db.insert('notification_templates', { id: ulid(), school_id: sid, event_key, channel, locale, subject, body, variables: vars, is_active: true }); bump('notification_templates');
-  }
+  bump('notification_templates', await seedNotificationTemplates(db, sid));
 
   return { inserted };
+}
+
+
+/**
+ * The messages the platform itself sends, in both languages.
+ *
+ * Kept out of `seed()` and exported because seeds run exactly once — when a school is created — so a
+ * template added by a later release would otherwise reach nobody who is already installed. The boot
+ * reconcile (`InstallerService.ensureAutomationCatalogue`) calls this for every school, and it only
+ * ever adds what is missing: a template a school has edited is left exactly as the school wrote it.
+ */
+export const NOTIFICATION_TEMPLATES: [string, string, string, string | null, string][] = [
+  ['auth.otp', 'sms', 'bn', null, '{{school}}: আপনার কোড {{code}}। {{minutes}} মিনিটের মধ্যে ব্যবহার করুন। কাউকে শেয়ার করবেন না।'],
+  ['auth.otp', 'sms', 'en', null, '{{school}}: your code is {{code}}. Valid for {{minutes}} minutes. Do not share it.'],
+  ['auth.otp', 'email', 'bn', '{{school}} — লগইন কোড', 'আপনার লগইন কোড: {{code}} ({{minutes}} মিনিট)।'],
+  ['auth.otp', 'email', 'en', '{{school}} — your login code', 'Your login code is {{code}} (valid {{minutes}} minutes).'],
+  ['auth.welcome', 'sms', 'bn', null, '{{school}} এ স্বাগতম, {{name}}! লগইন: {{url}}'],
+  ['auth.welcome', 'sms', 'en', null, 'Welcome to {{school}}, {{name}}! Sign in: {{url}}'],
+  ['installer.selftest', 'email', 'en', '{{school}} — Pathshala self-test', 'Mail is working. Installed at {{url}} on {{engine}}.'],
+  ['installer.selftest', 'push', 'en', 'Pathshala is ready', 'Automation, queue and PDF rendering all passed the self-test.'],
+  ['automation.rule_failed', 'push', 'bn', 'অটোমেশন ব্যর্থ', 'রুল {{rule}} {{attempts}} বার ব্যর্থ হয়েছে: {{error}}'],
+  ['automation.rule_failed', 'push', 'en', 'Automation failed', 'Rule {{rule}} failed {{attempts}} times: {{error}}'],
+  ['task.assigned', 'push', 'bn', 'নতুন কাজ', '{{title}} — শেষ সময় {{due}}'],
+  ['task.assigned', 'push', 'en', 'New task', '{{title}} — due {{due}}'],
+  ['approval.requested', 'push', 'bn', 'অনুমোদন প্রয়োজন', '{{summary}}'],
+  ['approval.requested', 'push', 'en', 'Approval needed', '{{summary}}'],
+  ['fees.invoice_created', 'sms', 'bn', null, '{{school}}: {{student}} এর {{month}} মাসের বেতন ৳{{amount}}, শেষ তারিখ {{due}}। পরিশোধ: {{url}}'],
+  ['fees.invoice_created', 'sms', 'en', null, '{{school}}: fee for {{student}} ({{month}}) is Tk {{amount}}, due {{due}}. Pay: {{url}}'],
+  ['attendance.absent', 'sms', 'bn', null, '{{school}}: {{student}} আজ ({{date}}) অনুপস্থিত। কারণ জানাতে রিপ্লাই করুন।'],
+  ['attendance.absent', 'sms', 'en', null, '{{school}}: {{student}} is absent today ({{date}}). Reply with the reason.'],
+  // The school's own sign-in address, sent to the school and to nobody else. It never carries the
+  // password: the address and the password travel apart, so one intercepted message opens nothing.
+  ['owner.school_ready', 'email', 'bn', '{{school}} — আপনার সাইন-ইন ঠিকানা',
+    '{{school}} এর জন্য Pathshala প্রস্তুত।\n\nসাইন ইন করুন: {{url}}\nআপনার আইডি: {{identifier}}\n\nপাসওয়ার্ড আলাদাভাবে দেওয়া হয়েছে — এই বার্তায় নেই।\n\nএই ঠিকানাটি শুধু আপনার স্কুলের কর্মীদের মধ্যেই রাখুন; এটি কোথাও লিঙ্ক করা নেই এবং কেউ অনুমান করে খুঁজে পাবে না। অভিভাবক ও শিক্ষার্থীরা {{portalUrl}} ঠিকানায় যাবেন।'],
+  ['owner.school_ready', 'email', 'en', '{{school}} — your sign-in address',
+    'Pathshala is ready for {{school}}.\n\nSign in here: {{url}}\nYour sign-in ID: {{identifier}}\n\nThe password is given to you separately — it is not in this message.\n\nPlease keep this address to your own staff. It is linked from nowhere and cannot be guessed, which is what keeps your console off the open internet. Guardians and students use {{portalUrl}} instead.'],
+];
+
+/**
+ * Adds any of the templates above that this school does not already have. Returns how many were
+ * written, so a caller can report an update that actually changed something.
+ */
+export async function seedNotificationTemplates(db: Db, schoolId: string): Promise<number> {
+  let n = 0;
+  for (const [event_key, channel, locale, subject, body] of NOTIFICATION_TEMPLATES) {
+    if (await db.findOne('notification_templates', { school_id: schoolId, event_key, channel, locale })) continue;
+    const vars = [...body.matchAll(/{{(\w+)}}/g)].map(m => m[1]);
+    await db.insert('notification_templates', { id: ulid(), school_id: schoolId, event_key, channel, locale, subject, body, variables: vars, is_active: true });
+    n++;
+  }
+  return n;
 }
 
 /**

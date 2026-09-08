@@ -6,6 +6,11 @@
 // a reserved word and a domain another school already holds are both refused; a session for school A
 // gets a 404 on school B's API; the vendor's console is a 404 on a tenant's domain and under a slug;
 // and the domain watch reports a change once rather than nightly.
+//
+// And the door: a provisioned school gets one and is emailed its address; the door signs that
+// school's administrator in; a wrong door, another school's door and /login are all 404s; rotating
+// kills the old address on the next request and emails the new one; the portal is reachable with no
+// door at all; and five wrong tries close the door for a quarter of an hour.
 //   node --test tests/tenant.test.mjs      (SQLite; set TEST_DB_URL for MySQL/Postgres)
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,6 +31,7 @@ const serverMod = await import('../apps/server/dist/index.js');
 
 let app, listener, port, baseUrl;
 let hq, saranjai, shapla;              // { schoolId, userId, cookie }
+let provisioned = null;                // the school the owner console created, and its one-time password
 const t0 = Date.now();
 
 describe('one installation, a school at each address', () => {
@@ -92,6 +98,24 @@ describe('one installation, a school at each address', () => {
     return r.body;
   };
   const slugOf = async schoolId => String((await app.db.findOne('schools', { id: schoolId })).slug ?? '');
+  const doorOf = async schoolId => String((await app.db.findOne('schools', { id: schoolId })).login_door ?? '');
+  /** A form post, as a browser makes one: the door pages are server-rendered HTML, not the JSON API. */
+  const postForm = (p, fields, { host, cookie } = {}) => new Promise((resolve, reject) => {
+    const data = new URLSearchParams(fields).toString();
+    const req = nodeHttp.request({
+      host: '127.0.0.1', port, path: p, method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(data),
+        origin: host ? `http://${host}` : baseUrl,
+        ...(cookie ? { cookie } : {}), ...(host ? { Host: host } : {}),
+      },
+    }, res => {
+      let text = ''; res.setEncoding('utf8');
+      res.on('data', c => { text += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text, setCookie: res.headers['set-cookie'] ?? [] }));
+    });
+    req.on('error', reject); req.write(data); req.end();
+  });
 
   // ---------------------------------------------------------------- the slug
   test('a school that never had a slug is given one, and keeps it on the next boot', async () => {
@@ -337,6 +361,171 @@ describe('one installation, a school at each address', () => {
     const mine = await app.db.query(`SELECT action FROM audit_logs WHERE school_id = ? AND entity_type = 'owner.school' AND action = 'web_address'`, [hq.schoolId]);
     const theirs = await app.db.query(`SELECT action FROM audit_logs WHERE school_id = ? AND entity_type = 'owner.school' AND action = 'web_address'`, [shapla.schoolId]);
     assert.ok(mine.length >= 2 && theirs.length >= 2, 'a school can see that its address was changed');
+  });
+
+  // ---------------------------------------------------------------- the school's own door
+  test('every school gets a door, and a provisioned one is emailed its address', async () => {
+    // the schools created in `before` all have one, written at creation and never blank
+    for (const s of [hq, saranjai, shapla]) {
+      const door = await doorOf(s.schoolId);
+      assert.equal(door.length, 12, `a 12-character door (${door})`);
+      assert.match(door, /^[abcdefghjkmnpqrstuvwxyz23456789]+$/, 'no l, 1, o or 0 in it: it is read down a telephone');
+    }
+    // …and no two schools share one
+    const rows = await app.db.query('SELECT login_door FROM schools WHERE login_door IS NOT NULL');
+    assert.equal(new Set(rows.map(r => String(r.login_door))).size, rows.length);
+
+    // a school installed before the column existed is repaired at boot, beside the slug back-fill
+    await app.db.update('schools', { login_door: null }, { id: shapla.schoolId });
+    assert.equal(await doorOf(shapla.schoolId), '');
+    const first = await app.installer.ensureAutomationCatalogue();
+    assert.equal(first.doors, 1, 'exactly the one school that was missing one');
+    const filled = await doorOf(shapla.schoolId);
+    assert.equal(filled.length, 12);
+    // and the second boot leaves it alone: the address is on somebody's noticeboard by now
+    assert.equal((await app.installer.ensureAutomationCatalogue()).doors, 0);
+    assert.equal(await doorOf(shapla.schoolId), filled);
+
+    // provisioning from the owner console emails the school where to sign in
+    const created = await api('/api/owner/schools', { body: {
+      schoolName: 'Nabin Adarsha School', institutionType: 'school', locale: 'bn',
+      adminName: 'Nabin Head', adminPhone: '01700000210', adminEmail: 'head@nabin.test',
+    } });
+    const door = await doorOf(created.schoolId);
+    assert.equal(door.length, 12, 'the new school came up with a door of its own');
+    assert.ok(created.url.endsWith(`/${await slugOf(created.schoolId)}/x/${door}`), `the handover carries that address, not /login (${created.url})`);
+    assert.equal(created.invitation.sent, true);
+    assert.equal(created.invitation.to, 'head@nabin.test', 'to the administrator, the school itself having no address on record');
+
+    const [mail] = await app.db.query(
+      `SELECT title, body, recipient_address, channel FROM notifications WHERE school_id = ? AND event_key = 'owner.school_ready'`, [created.schoolId]);
+    assert.ok(mail, 'the message exists as a row, written from a template');
+    assert.equal(String(mail.channel), 'email');
+    assert.equal(String(mail.recipient_address), 'head@nabin.test');
+    assert.ok(String(mail.body).includes(created.url), 'and it carries the whole sign-in address');
+    assert.ok(String(mail.body).includes('head@nabin.test'), 'and the identifier to type');
+    assert.ok(String(mail.title).includes('Nabin Adarsha School'), 'named for the school');
+    assert.ok(!String(mail.body).includes(created.password), 'and never the password');
+    provisioned = created;
+  });
+
+  test('the door signs that school\'s administrator in, and nothing else opens it', async () => {
+    const slug = await slugOf(provisioned.schoolId);
+    const door = await doorOf(provisioned.schoolId);
+    const path = `/${slug}/x/${door}`;
+
+    // the page is there, is not indexed, and says nothing about being a sign-in page anywhere else
+    const shown = await call(path);
+    assert.equal(shown.status, 200);
+    assert.match(shown.text, /noindex/, 'linked from nowhere and indexed nowhere');
+
+    // and it signs the school's own administrator in
+    const inside = await postForm(path, { intent: 'password', identifier: 'head@nabin.test', password: provisioned.password, next: `/${slug}/dashboard` });
+    assert.equal(inside.status, 302);
+    assert.equal(inside.headers.location, `/${slug}/dashboard`);
+    assert.ok([...inside.setCookie].some(c => c.startsWith('ps_session=')), 'a session');
+
+    // a wrong door is a 404 like any other address
+    assert.equal((await call(`/${slug}/x/aaaaaaaaaaaa`)).status, 404);
+    assert.equal((await call(`/${slug}/x/not-a-door`)).status, 404);
+    // …and so is another school's door, at this school's address
+    assert.equal((await call(`/${slug}/x/${await doorOf(shapla.schoolId)}`)).status, 404, 'a door is one school\'s');
+    assert.equal((await call(`/${await slugOf(shapla.schoolId)}/x/${door}`)).status, 404, 'and it does not travel');
+    // the vendor's own door is not a school's either
+    assert.equal((await call(`/${slug}/x/test-door-4t7v1n`)).status, 404);
+
+    // there is no generic sign-in page left anywhere
+    assert.equal((await call('/login')).status, 404, 'not at the installation root');
+    assert.equal((await call(`/${slug}/login`)).status, 404, 'not under a slug');
+    assert.equal((await call('/login', { host: 'saranjai.edu.bd' })).status, 404, 'not on a school\'s own domain');
+    // and a console page with no session is a 404 rather than a redirect that would leak the door
+    const shut = await call(`/${slug}/dashboard`);
+    assert.equal(shut.status, 404);
+    assert.ok(!shut.text.includes(door), 'nothing on the way out mentions the address');
+  });
+
+  test('a custom domain serves the school\'s door at its own root, and the vendor\'s nowhere', async () => {
+    const door = await doorOf(saranjai.schoolId);
+    assert.equal((await call(`/x/${door}`, { host: 'saranjai.edu.bd' })).status, 200, 'the school owns the whole host');
+    assert.equal((await call(`/x/${door}`)).status, 404, 'and the same door means nothing at the installation root');
+    assert.equal((await call('/x/test-door-4t7v1n', { host: 'saranjai.edu.bd' })).status, 404, 'the vendor has no door on a client\'s domain');
+    assert.equal((await call('/x/test-door-4t7v1n')).status, 200, 'and still has its own where it belongs');
+  });
+
+  test('rotating the door kills the old address on the next request, and emails the new one', async () => {
+    const id = provisioned.schoolId;
+    const slug = await slugOf(id);
+    const before = await doorOf(id);
+    // the old address works right now, which is what makes the next assertion mean something
+    assert.equal((await call(`/${slug}/x/${before}`)).status, 200);
+    const sentBefore = await app.db.count('notifications', { school_id: id, event_key: 'owner.school_ready' });
+
+    const rotated = await api(`/api/owner/schools/${id}/door/rotate`, { body: {} });
+    const after = await doorOf(id);
+    assert.notEqual(after, before);
+    assert.equal(rotated.loginDoor, after);
+    assert.ok(rotated.doorUrl.endsWith(`/${slug}/x/${after}`), rotated.doorUrl);
+    assert.equal(rotated.email.sent, true, 'a rotation nobody is told about is a school locked out');
+
+    assert.equal((await call(`/${slug}/x/${after}`)).status, 200, 'the new address works');
+    // and the old one is gone at once — not in a minute, when the resolve cache would have expired
+    assert.equal((await call(`/${slug}/x/${before}`)).status, 404, 'the old address stopped working immediately');
+    const mails = await app.db.query(
+      `SELECT body FROM notifications WHERE school_id = ? AND event_key = 'owner.school_ready' ORDER BY created_at DESC, id DESC`, [id]);
+    assert.equal(mails.length, sentBefore + 1, 'exactly one more message');
+    assert.ok(String(mails[0].body).includes(after), 'carrying the new address');
+
+    // and the button that only sends it again changes nothing
+    const resent = await api(`/api/owner/schools/${id}/door/send`, { body: {} });
+    assert.equal(resent.sent, true);
+    assert.equal(resent.to, 'head@nabin.test');
+    assert.equal(await doorOf(id), after, 'sending the link is not rotating it');
+
+    // …and only the vendor may do either: the school's own super admin is not there at all
+    for (const p of [`/api/owner/schools/${id}/door/rotate`, `/api/owner/schools/${id}/door/send`]) {
+      assert.equal((await call(p, { cookie: shapla.cookie, body: {} })).status, 404, p);
+    }
+    assert.equal(await doorOf(id), after, 'and nothing they tried moved it');
+    // both left a trail in the vendor's books and in the school's own
+    const trail = await app.db.query(`SELECT action FROM audit_logs WHERE school_id = ? AND action IN ('rotate_door','send_sign_in_link')`, [id]);
+    assert.ok(trail.length >= 2, 'a school can see that its sign-in address was changed');
+  });
+
+  test('the guardian portal needs no door at all', async () => {
+    const slug = await slugOf(saranjai.schoolId);
+    // the portal and its own sign-in page are plain, findable addresses — an address shared with
+    // five hundred families is not a secret, and a guardian who cannot sign in stops using it
+    assert.equal((await call(`/${slug}/portal/login`)).status, 200);
+    assert.equal((await call('/portal/login', { host: 'saranjai.edu.bd' })).status, 200);
+    // /portal itself sends a signed-out visitor to that page, not to a 404 and not to the door
+    const portal = await call(`/${slug}/portal`);
+    assert.equal(portal.status, 302);
+    assert.equal(portal.headers.location, `/${slug}/portal/login?next=%2F${slug}%2Fportal`);
+    // and the school's public site is still open to anybody
+    assert.equal((await call(`/${slug}/site`)).status, 200);
+
+    // what keeps the door meaningful: the portal page refuses a staff account outright
+    const staff = await postForm(`/${slug}/portal/login`, { intent: 'password', identifier: 'head@saranjai.test', password: 'saranjai-pass-1', next: `/${slug}/portal` });
+    assert.equal(staff.status, 200, 'the page again, not a redirect');
+    assert.equal([...staff.setCookie].some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'no session was handed out');
+    assert.equal((await app.db.query(`SELECT COUNT(*) AS n FROM users WHERE school_id = ? AND email = 'head@saranjai.test'`, [saranjai.schoolId]))[0].n, 1);
+  });
+
+  test('five wrong tries close a school\'s door for a quarter of an hour', async () => {
+    // a school of its own, so the throttle in this test cannot shut a door another test is using
+    const s = await app.installer.addTenant({ schoolName: 'Throttle Test School', institutionType: 'school', locale: 'en', adminName: 'T Head', adminPhone: '01700000211', adminPassword: 'throttle-pass-1' });
+    const slug = await slugOf(s.schoolId);
+    const door = await doorOf(s.schoolId);
+    assert.equal((await call(`/${slug}/x/${door}`)).status, 200, 'open to begin with');
+
+    // five wrong guesses from this address
+    for (let i = 0; i < 5; i++) assert.equal((await call(`/${slug}/x/wrongdoor${i}00`)).status, 404);
+    // and now even the right one is gone — the door is a name that cannot be guessed, and this is
+    // what turns "cannot be guessed" into "cannot be searched for"
+    assert.equal((await call(`/${slug}/x/${door}`)).status, 404, 'the door closed on the caller, not on the guess');
+    // the school is not otherwise shut: its site and portal are untouched
+    assert.equal((await call(`/${slug}/site`)).status, 200);
+    assert.equal((await call(`/${slug}/portal/login`)).status, 200);
   });
 
   // ---------------------------------------------------------------- the nightly watch

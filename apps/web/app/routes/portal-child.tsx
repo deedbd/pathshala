@@ -4,7 +4,7 @@ import { formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshal
 import { ctxPath, requireTenantUser, useTenantPath } from '~/tenant';
 
 export async function loader({ context, request, params }: Route.LoaderArgs) {
-  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  if (!context.user) throw redirect(`${ctxPath(context, '/portal/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
   const u = requireTenantUser(context, context.user, request);
   const [data, summary, offs] = await Promise.all([
     context.app.portal.child(u.school_id, u.id, params.id),
