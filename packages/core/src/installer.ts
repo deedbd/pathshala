@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Db, Row } from '@pathshala/db';
-import { json, migrate, nowSql, seed, seedNotificationTemplates, ulid } from '@pathshala/db';
+import type { Db, MigrateResult, Row } from '@pathshala/db';
+import { describeReconcile, json, migrate, nowSql, seed, seedNotificationTemplates, ulid } from '@pathshala/db';
 import type { Adapters, Logger } from '@pathshala/adapters';
 import { WebPush } from '@pathshala/adapters';
 import type { InstallSchoolInput } from '@pathshala/schemas';
@@ -38,6 +38,43 @@ export class InstallerService {
     if (this.schemaFlag) return true;
     try { const r = await this.db.query<{ name: string }>(`SELECT name FROM schema_migrations WHERE name = '0000_baseline'`); this.schemaFlag = r.length > 0; } catch { this.schemaFlag = false; }
     return this.schemaFlag;
+  }
+
+  private schemaPass: Promise<MigrateResult> | null = null;
+  /** What the last schema pass did. Read by /_health so an update can check it before declaring success. */
+  lastMigrate: MigrateResult | null = null;
+
+  /**
+   * Brings an already-installed database up to the shape this build ships, at every boot.
+   *
+   * The baseline is applied once and never again, so a column added to `db/schema/*.def.mjs` after a
+   * school was installed reaches a fresh install and nobody else — and the first query naming it
+   * throws. `migrate()` ends in a reconcile that adds the missing tables, columns and indexes; this
+   * is the pass that calls it outside the installer, and it runs *before* the back-fills
+   * (`ensureAutomationCatalogue`, and anything else that fills a value in), so a school that has just
+   * gained a column gets its value in the same boot.
+   */
+  async ensureSchema(): Promise<MigrateResult> {
+    if (this.schemaPass) return this.schemaPass;
+    this.schemaPass = (async () => {
+      const r = await migrate(this.db, this.config.dbDir, m => this.deps.log.info(`migrate: ${m}`));
+      this.lastMigrate = r;
+      this.reportSchema(r);
+      return r;
+    })();
+    try { return await this.schemaPass; } finally { this.schemaPass = null; }
+  }
+
+  /**
+   * One line when an old database was actually brought forward, and one per thing left alone.
+   * A database somebody has edited by hand can differ in hundreds of places; the log says how many
+   * and shows the first twenty, because a boot that prints a thousand warnings is read by nobody.
+   */
+  private reportSchema(r: MigrateResult) {
+    if (r.added.tables.length || r.added.columns.length || r.added.indexes.length) this.deps.log.info(`schema: ${describeReconcile(r)}`);
+    if (r.mismatched.length) this.deps.log.warn(`schema: ${r.mismatched.length} difference(s) this build will not change by itself:`);
+    for (const m of r.mismatched.slice(0, 20)) this.deps.log.warn(`schema:   ${m.table}${m.column ? '.' + m.column : ''} is ${m.actual}, this build expects ${m.expected} — ${m.note}`);
+    for (const f of r.failed) this.deps.log.error(`schema: the database refused "${f.statement}" — ${f.error}`);
   }
 
   /**
@@ -107,7 +144,9 @@ export class InstallerService {
       try {
         await this.mark('schema', 'running');
         const r = await migrate(this.db, this.config.dbDir, m => this.deps.log.info(`migrate: ${m}`));
-        await this.mark('schema', 'done', { baseline: r.baseline, statements: r.statements, applied: r.applied, engine: this.db.engine });
+        this.lastMigrate = r;
+        this.reportSchema(r);
+        await this.mark('schema', 'done', { baseline: r.baseline, statements: r.statements, applied: r.applied, added: r.added, mismatched: r.mismatched.slice(0, 50), mismatchedCount: r.mismatched.length, failed: r.failed, engine: this.db.engine });
         await this.mark('seeds', 'running');
         const s = await seed(this.db, { dbDir: this.config.dbDir, log: m => this.deps.log.info(`seed: ${m}`) });
         await this.mark('seeds', 'done', s.inserted);

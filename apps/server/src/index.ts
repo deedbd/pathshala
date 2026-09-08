@@ -124,7 +124,15 @@ export async function createServer(app: App = createApp()) {
     // `installation` and `url` are what the domain watch compares: a school's custom domain is only
     // "pointing here" if what answers at it is this installation, not merely something that answers.
     // The id is a one-way digest of the app key — stable across restarts, and it discloses nothing.
-    res.json({ ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode, version: process.env.APP_VERSION ?? '0.1.0', node: process.version, installation: app.tenant.installationId(), url: config.appUrl });
+    // `schema` is what the boot-time reconcile did (null until it has run). scripts/update.mjs reads
+    // it: a new release that needs a column the reconciler could not add is a failed update.
+    const m = app.installer.lastMigrate;
+    res.json({
+      ok: dbOk, engine: app.db.engine, installed: await app.installer.isInstalled(), mode: app.adapters.mode,
+      version: process.env.APP_VERSION ?? '0.1.0', node: process.version,
+      installation: app.tenant.installationId(), url: config.appUrl,
+      schema: m ? { added: m.added, mismatched: m.mismatched.slice(0, 50), mismatchedCount: m.mismatched.length, failed: m.failed } : null,
+    });
   });
   server.all('/cron/tick', async (req, res) => {
     const key = String(req.query.key ?? req.headers['x-cron-key'] ?? '');

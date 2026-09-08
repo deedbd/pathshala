@@ -101,14 +101,35 @@ const port = 3500 + (process.pid % 200);
 const child = spawn(process.execPath, ['app/server.js'], { cwd: root, env: { ...process.env, APP_ROOT: root, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 let output = '';
 child.stdout.on('data', d => { output += d; }); child.stderr.on('data', d => { output += d; });
-const health = await waitForHealth(`http://127.0.0.1:${port}/_health`, 45_000);
-child.kill();
+const url = `http://127.0.0.1:${port}/_health`;
+const health = await waitForHealth(url, 45_000);
 if (!health.ok) {
+  child.kill();
   if (!args.extracted) restorePrevious();
   console.error(output.split('\n').slice(-25).join('\n'));
   fail(`the new release did not come up healthy (${health.reason}); the old one is back in place${backupFile ? `\n  the database backup is at ${backupFile} if you need it` : ''}`);
 }
 log(`the new release booted and answered /_health (${health.body.engine}, installed=${health.body.installed}, node ${health.body.node})`);
+
+// The new build may need columns this school's database has never had. The boot-time reconcile adds
+// them; this is where we make sure it actually managed to — a half-migrated school is worse than an
+// old one, so anything the database refused rolls the whole update back.
+const schema = health.body.installed ? await waitForSchema(url, 60_000) : null;
+child.kill();
+if (health.body.installed && !schema) {
+  if (!args.extracted) restorePrevious();
+  fail(`the new release never said what it did to the database schema; the old one is back in place${backupFile ? `\n  the database backup is at ${backupFile} if you need it` : ''}`);
+}
+if (schema?.failed?.length) {
+  if (!args.extracted) restorePrevious();
+  for (const f of schema.failed) console.error(`[update]   ${f.error}\n[update]     in: ${f.statement}`);
+  fail(`this release needs a schema change the database refused (${schema.failed.length} statement(s) above); the old one is back in place${backupFile ? `\n  the database backup is at ${backupFile} if you need it` : ''}`);
+}
+if (schema) {
+  const a = schema.added ?? { tables: [], columns: [], indexes: [] };
+  if (a.tables.length || a.columns.length || a.indexes.length) log(`the database was brought forward: ${a.tables.length} table(s), ${a.columns.length} column(s), ${a.indexes.length} index(es)`);
+  for (const m of schema.mismatched ?? []) log(`note: ${m.table}${m.column ? '.' + m.column : ''} is ${m.actual} where this build expects ${m.expected} - ${m.note}`);
+}
 log(`done. Restart the app in cPanel (Setup Node.js App → Restart).`);
 if (!args.extracted) log(`if anything looks wrong later: node scripts/update.mjs --rollback`);
 
@@ -122,6 +143,18 @@ function restorePrevious() {
     fs.cpSync(kept, path.join(root, name), { recursive: true });
   }
   log('rolled back to the previous release');
+}
+/** /_health reports `schema` only once the boot-time reconcile has finished; that runs in the background. */
+async function waitForSchema(url, timeoutMs) {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    try {
+      const body = await (await fetch(url)).json();
+      if (body.schema) return body.schema;
+    } catch { /* it answered a moment ago; keep asking */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return null;
 }
 async function waitForHealth(url, timeoutMs) {
   const until = Date.now() + timeoutMs;
