@@ -38,7 +38,8 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
     await app.db.insert('fee_heads', { id, school_id: u.school_id, name: b.name, code: b.code.toUpperCase(), head_kind: b.headKind ?? 'academic', gl_account_id: gl ? String(gl.id) : null, is_refundable: false, tax_pct: 0, status: 'active' });
     return { id };
   }));
-  api.get('/fees/discounts', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.db.query(`SELECT sd.*, ds.name, ds.discount_kind, ds.value_type, ds.value, s.first_name, s.last_name, s.admission_no FROM student_discounts sd JOIN discount_schemes ds ON ds.id = sd.discount_scheme_id JOIN students s ON s.id = sd.student_id WHERE sd.school_id = ? ORDER BY sd.created_at DESC LIMIT 200`, [u.school_id]); }));
+  api.get('/fees/discounts', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.studentDiscounts(u.school_id, { status: q(req, 'status'), limit: 200 }); }));
+  api.get('/fees/discount-schemes', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.discountSchemes(u.school_id); }));
   api.post('/fees/discounts', wrap(async req => {
     const u = requirePerm(req, 'fees.create');
     const b = z.object({ studentId: z.string(), name: z.string().min(1).max(120), kind: z.enum(['sibling', 'merit', 'staff_child', 'need_based', 'early_payment', 'scholarship', 'custom']), valueType: z.enum(['percent', 'flat']), value: money, status: z.enum(['pending', 'approved']).optional() }).parse(req.body);
@@ -57,13 +58,23 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
     const b = z.object({ studentId: z.string(), items: z.array(z.object({ feeHeadId: z.string().optional().nullable(), description: z.string().min(1).max(200), amount: money, quantity: z.coerce.number().optional(), itemKind: z.enum(['fee', 'fine', 'adjustment', 'previous_due']).optional() })).min(1), dueDay: z.coerce.number().int().optional(), notes: z.string().max(255).optional().nullable() }).parse(req.body);
     return app.fees.createInvoice(u.school_id, { ...b, academicYearId: await yearOf(req, u.school_id) });
   }));
+  // the ladder as it actually ran: which stage reached which invoice, on what channel, and what came back
+  api.get('/fees/reminders', wrap(async req => {
+    const u = requirePerm(req, 'fees.view');
+    const [stages, rows] = await Promise.all([app.fees.reminderStages(u.school_id), app.fees.reminders(u.school_id, { stage: q(req, 'stage'), invoiceId: q(req, 'invoiceId'), limit: Number(q(req, 'limit') ?? 200) })]);
+    return { ladder: app.fees.reminderLadder(), stages, rows };
+  }));
   api.post('/fees/reminders/run', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.runReminders(u.school_id, q(req, 'date') ?? today()); }));
+  api.get('/fees/ageing', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.ageing(u.school_id, q(req, 'asOf') ?? today()); }));
   api.post('/fees/fines/run', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.applyOverdueAndFines(u.school_id, q(req, 'date') ?? today()); }));
 
   // ---------- payments ----------
   api.post('/fees/payments', wrap(async req => {
     const u = requirePerm(req, 'fees.create'); const b = paymentSchema.parse(req.body);
-    const session = b.method === 'cash' ? await app.fees.openSessionFor(u.school_id, u.id) : null;
+    // every payment taken while the counter is open belongs to that session, whatever the method:
+    // the drawer is still counted on the cash alone, and the till screen can say what else came across
+    // it without guessing from the clock (timestamps are only second-precise)
+    const session = await app.fees.openSessionFor(u.school_id, u.id);
     const r = await app.fees.recordPayment(u.school_id, { ...b, receivedBy: u.id, cashSessionId: session ? String(session.id) : null } as never);
     await app.audit.log({ action: 'create', entityType: 'payment', entityId: r.id, after: { amount: b.amount, method: b.method } });
     return r;
@@ -88,11 +99,17 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
   api.post('/fees/instalments/run', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.billDueInstalments(u.school_id, q(req, 'date') ?? today()); }));
 
   api.get('/fees/students/:id/ledger', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.studentLedger(u.school_id, req.params.id as string); }));
+  // chasing one family from the defaulters list — stage `manual`, so the ladder's own stages are untouched
+  api.post('/fees/students/:id/remind', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.remindNow(u.school_id, req.params.id as string); }));
+  api.post('/fees/students/:id/call-task', wrap(async req => { const u = requirePerm(req, 'fees.edit'); return app.fees.raiseCallTask(u.school_id, req.params.id as string); }));
 
   // ---------- counter cash ----------
   api.post('/fees/cash/open', wrap(async req => { const u = requirePerm(req, 'fees.create'); const b = z.object({ openingCash: money.optional() }).parse(req.body ?? {}); return app.fees.openCashSession(u.school_id, u.id, b.openingCash ?? 0); }));
   api.post('/fees/cash/close', wrap(async req => { const u = requirePerm(req, 'fees.create'); const b = z.object({ sessionId: z.string(), countedCash: money }).parse(req.body); return app.fees.closeCashSession(u.school_id, b.sessionId, b.countedCash); }));
   api.get('/fees/cash/open', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.openSessionFor(u.school_id, u.id); }));
+  // literal paths first: `/fees/cash/sessions` must not be read as a session id
+  api.get('/fees/cash/sessions', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.cashSessions(u.school_id, Number(q(req, 'limit') ?? 20)); }));
+  api.get('/fees/cash/:id', wrap(async req => { const u = requirePerm(req, 'fees.view'); return app.fees.cashSession(u.school_id, req.params.id as string); }));
 
   // ---------- gateways and IPN ----------
   api.post('/fees/gateways', wrap(async req => { const u = requirePerm(req, 'fees.approve'); const b = z.object({ provider: z.enum(['sslcommerz', 'bkash', 'nagad', 'rocket', 'upay', 'aamarpay', 'shurjopay']), displayName: z.string().min(1).max(80), credentials: z.record(z.string(), z.string()), isSandbox: z.coerce.boolean().optional(), feePct: z.coerce.number().optional() }).parse(req.body); return { id: await app.fees.saveGateway(u.school_id, b) }; }));
@@ -120,11 +137,18 @@ export function mountPhase3(api: Router, app: App, wrap: Wrap, requirePerm: (req
   }));
   api.get('/accounting/trial-balance', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.accounting.trialBalance(u.school_id, q(req, 'from') ?? today().slice(0, 8) + '01', q(req, 'to') ?? today()); }));
   api.get('/accounting/accounts', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.accounting.accounts(u.school_id); }));
+  api.get('/accounting/chart', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.accounting.chartOfAccounts(u.school_id, q(req, 'asOf') ?? today()); }));
   api.get('/accounting/entries/:id', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.accounting.entry(u.school_id, req.params.id as string); }));
   api.post('/accounting/entries', wrap(async req => { const u = requirePerm(req, 'accounting.create'); const b = journalSchema.parse(req.body); return app.accounting.post(u.school_id, { ...b, isAuto: false, postedBy: u.id }); }));
   api.post('/accounting/entries/:id/reverse', wrap(async req => { const u = requirePerm(req, 'accounting.approve'); return app.accounting.reverse(u.school_id, req.params.id as string, z.object({ memo: z.string().max(255).optional() }).parse(req.body ?? {}).memo); }));
   api.post('/accounting/expenses', wrap(async req => { const u = requirePerm(req, 'accounting.create'); const b = z.object({ categoryId: z.string(), vendorId: z.string().optional().nullable(), expenseDate: dateSchema.optional(), amount: money, description: z.string().max(255).optional(), paidFromId: z.string().optional().nullable(), paymentMethod: z.string().max(20).optional() }).parse(req.body); const r = await app.accounting.createExpense(u.school_id, { ...b, requestedBy: u.id }); await app.outbox.emitNow({ type: 'expense.created', schoolId: u.school_id, aggregateType: 'accounting.expense', aggregateId: r.id, payload: { expenseId: r.id, amount: b.amount, category: b.categoryId, status: r.status } }); return r; }));
+  api.get('/accounting/expenses', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.accounting.expenses(u.school_id, { status: q(req, 'status'), from: q(req, 'from'), to: q(req, 'to') }); }));
+  // paying an expense is what spends the money, so it is the one step a person takes: everything up to
+  // it — the number, the approval, the accounts it will hit — is already done by the time this is pressed
+  api.post('/accounting/expenses/:id/pay', wrap(async req => { const u = requirePerm(req, 'accounting.approve'); const r = await app.accounting.payExpense(u.school_id, req.params.id as string); await app.audit.log({ action: 'pay', entityType: 'accounting.expense', entityId: req.params.id as string, after: r }); return r; }));
   api.get('/accounting/expense-categories', wrap(async req => { const u = requirePerm(req, 'accounting.view'); return app.db.findMany('expense_categories', { school_id: u.school_id }, { orderBy: 'name ASC' }); }));
+  api.get('/accounting/bank/lines', wrap(async req => { const u = requirePerm(req, 'accounting.view'); const m = q(req, 'matched'); return app.accounting.statementLines(u.school_id, { bankAccountId: q(req, 'bankAccountId'), matched: m == null ? undefined : m === '1', limit: Number(q(req, 'limit') ?? 200) }); }));
+  api.post('/accounting/bank/reconcile', wrap(async req => { const u = requirePerm(req, 'accounting.create'); const b = z.object({ bankAccountId: z.string(), days: z.coerce.number().int().min(1).max(365).optional() }).parse(req.body); return app.accounting.reconcile(u.school_id, b.bankAccountId, b.days ?? 30); }));
   api.post('/accounting/bank/import', wrap(async req => { const u = requirePerm(req, 'accounting.create'); const b = z.object({ bankAccountId: z.string(), lines: z.array(z.object({ txnDate: dateSchema, description: z.string().max(255).optional(), reference: z.string().max(120).optional(), debit: money.optional(), credit: money.optional() })).min(1).max(2000) }).parse(req.body); return app.accounting.importStatement(u.school_id, b.bankAccountId, b.lines); }));
   api.post('/accounting/budgets', wrap(async req => { const u = requirePerm(req, 'accounting.create'); const b = z.object({ glAccountId: z.string(), amount: money, alertAtPct: z.coerce.number().optional() }).parse(req.body); const fy = await app.accounting.fiscalYear(u.school_id); return { id: await app.accounting.setBudget(u.school_id, String(fy.id), b.glAccountId, b.amount, b.alertAtPct) }; }));
 

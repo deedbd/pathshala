@@ -368,6 +368,33 @@ export class FeesService {
     await this.outbox.emitNow({ type: 'cheque.bounced', schoolId, aggregateType: 'fees.payment', aggregateId: paymentId, payload: { paymentId, reason } });
     return { id: paymentId, status: 'failed' as const, reason };
   }
+  /** The receipt book: every payment with the child it was for, filterable by how it was taken. */
+  async payments(schoolId: string, f: { method?: string; from?: string; to?: string; limit?: number } = {}) {
+    const where = ['p.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.method) { where.push('p.method = ?'); params.push(f.method); }
+    if (f.from) { where.push('p.paid_at >= ?'); params.push(`${f.from} 00:00:00`); }
+    if (f.to) { where.push('p.paid_at <= ?'); params.push(`${f.to} 23:59:59`); }
+    const limit = Math.min(Math.max(Number(f.limit ?? 100), 1), 500);
+    return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no, u.display_name AS received_by_name
+      FROM payments p LEFT JOIN students s ON s.id = p.student_id LEFT JOIN users u ON u.id = p.received_by
+      WHERE ${where.join(' AND ')} ORDER BY p.paid_at DESC, p.id DESC LIMIT ${limit}`, params);
+  }
+  /** Who holds a discount, under which scheme, and whether it is still waiting for a person. */
+  async studentDiscounts(schoolId: string, f: { status?: string; limit?: number } = {}) {
+    const where = ['sd.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.status) { where.push('sd.status = ?'); params.push(f.status); }
+    const limit = Math.min(Math.max(Number(f.limit ?? 100), 1), 500);
+    return this.db.query<Row>(`SELECT sd.id, sd.student_id, sd.discount_scheme_id, sd.status, sd.value_override, sd.created_at, ds.name, ds.discount_kind, ds.value_type, ds.value, s.first_name, s.last_name, s.admission_no
+      FROM student_discounts sd JOIN discount_schemes ds ON ds.id = sd.discount_scheme_id JOIN students s ON s.id = sd.student_id
+      WHERE ${where.join(' AND ')} ORDER BY sd.created_at DESC, sd.id DESC LIMIT ${limit}`, params);
+  }
+  /** The schemes discounts are granted under, with how many children hold each one. */
+  async discountSchemes(schoolId: string) {
+    return this.db.query<Row>(`SELECT ds.*, (SELECT COUNT(*) FROM student_discounts sd WHERE sd.discount_scheme_id = ds.id AND sd.status = 'approved') AS students,
+        (SELECT COUNT(*) FROM student_discounts sd WHERE sd.discount_scheme_id = ds.id AND sd.status = 'pending') AS pending
+      FROM discount_schemes ds WHERE ds.school_id = ? ORDER BY ds.name`, [schoolId]);
+  }
+
   async pendingCheques(schoolId: string) {
     return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no FROM payments p LEFT JOIN students s ON s.id = p.student_id WHERE p.school_id = ? AND p.method = 'cheque' AND p.status = 'pending' ORDER BY p.paid_at`, [schoolId]);
   }
@@ -522,7 +549,11 @@ export class FeesService {
     const where = ['i.school_id = ?', 'i.balance > 0', `i.status <> 'cancelled'`]; const params: unknown[] = [schoolId];
     if (f.classId) { where.push('s.current_class_id = ?'); params.push(f.classId); }
     if (f.minDays) { where.push('i.due_date <= ?'); params.push(new Date(Date.now() - f.minDays * 86400_000).toISOString().slice(0, 10)); }
-    return this.db.query<Row>(`SELECT s.id AS student_id, s.first_name, s.last_name, s.admission_no, c.name AS class_name, COUNT(i.id) AS invoices, SUM(i.balance) AS due, MIN(i.due_date) AS oldest_due
+    // the guardian comes with the row because the only thing anyone does with this list is ring them:
+    // scalar subqueries on the grouping key, so every engine accepts them beside the aggregates
+    return this.db.query<Row>(`SELECT s.id AS student_id, s.first_name, s.last_name, s.admission_no, c.name AS class_name, COUNT(i.id) AS invoices, SUM(i.balance) AS due, MIN(i.due_date) AS oldest_due,
+        (SELECT g.full_name FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = s.id ORDER BY sg.is_primary DESC, sg.pays_fees DESC LIMIT 1) AS guardian_name,
+        (SELECT g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = s.id ORDER BY sg.is_primary DESC, sg.pays_fees DESC LIMIT 1) AS guardian_phone
       FROM invoices i JOIN students s ON s.id = i.student_id LEFT JOIN classes c ON c.id = s.current_class_id WHERE ${where.join(' AND ')}
       GROUP BY s.id, s.first_name, s.last_name, s.admission_no, c.name ORDER BY SUM(i.balance) DESC LIMIT 300`, params);
   }
@@ -840,6 +871,143 @@ export class FeesService {
   async collectionSummary(schoolId: string, from: string, to: string) {
     return this.db.query<Row>(`SELECT on_date, method, count, amount FROM fee_collection_daily WHERE school_id = ? AND on_date BETWEEN ? AND ? ORDER BY on_date DESC`, [schoolId, from, to]);
   }
+  // ---------- what the ladder actually did, and what is in the till ----------
+  /**
+   * The ladder as it is configured, read-only. The rule itself is `REMINDER_LADDER` and only
+   * `runReminders` acts on it; this exists so the console can name the stages without inventing them.
+   */
+  reminderLadder() { return REMINDER_LADDER.map(s => ({ stage: s.stage, offsetDays: s.offsetDays })); }
+
+  /**
+   * The ladder as it actually ran: one `fee_reminders` row per invoice per stage, and beside it the
+   * `notifications` rows that carried it — who was written to, on what channel, and what came back.
+   * The link is by time, not by a column: a reminder row is written immediately after the messages
+   * for it, so each message belongs to the earliest reminder written at or after it was created.
+   */
+  async reminders(schoolId: string, f: { stage?: string; invoiceId?: string; limit?: number } = {}) {
+    const where = ['r.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.stage) { where.push('r.stage = ?'); params.push(f.stage); }
+    if (f.invoiceId) { where.push('r.invoice_id = ?'); params.push(f.invoiceId); }
+    const limit = Math.min(Math.max(Number(f.limit ?? 200), 1), 500);
+    const rows = await this.db.query<Row>(`SELECT r.id, r.invoice_id, r.stage, r.channel, r.sent_at, i.invoice_no, i.due_date, i.balance, i.total, i.status AS invoice_status,
+        s.id AS student_id, s.first_name, s.last_name, s.admission_no, c.name AS class_name
+      FROM fee_reminders r JOIN invoices i ON i.id = r.invoice_id JOIN students s ON s.id = i.student_id LEFT JOIN classes c ON c.id = s.current_class_id
+      WHERE ${where.join(' AND ')} ORDER BY r.sent_at DESC, r.id DESC LIMIT ${limit}`, params);
+    if (!rows.length) return [];
+    const invoiceIds = [...new Set(rows.map(r => String(r.invoice_id)))];
+    const msgs = await this.db.query<Row>(`SELECT id, entity_id, channel, status, recipient_address, cost, error, created_at, sent_at, read_at
+      FROM notifications WHERE school_id = ? AND event_key = 'fees.reminder' AND entity_type = 'fees.invoice' AND entity_id IN (${invoiceIds.map(() => '?').join(',')})
+      ORDER BY created_at ASC, id ASC`, [schoolId, ...invoiceIds]);
+    // per invoice, the reminder rows oldest first; a message belongs to the first reminder written at
+    // or after it, and anything later than the last reminder (a retry) hangs off that last one
+    const byInvoice = new Map<string, Row[]>();
+    for (const r of [...rows].reverse()) { const k = String(r.invoice_id); if (!byInvoice.has(k)) byInvoice.set(k, []); byInvoice.get(k)!.push(r); }
+    const attached = new Map<string, Row[]>();
+    for (const m of msgs) {
+      const list = byInvoice.get(String(m.entity_id)); if (!list) continue;
+      const owner = list.find(r => String(r.sent_at) >= String(m.created_at)) ?? list[list.length - 1];
+      const k = String(owner.id); if (!attached.has(k)) attached.set(k, []); attached.get(k)!.push(m);
+    }
+    return rows.map(r => {
+      const sent = attached.get(String(r.id)) ?? [];
+      const count = (st: string) => sent.filter(m => String(m.status) === st).length;
+      return {
+        ...r,
+        messages: sent.map(m => ({ id: String(m.id), channel: String(m.channel), status: String(m.status), to: (m.recipient_address as string) ?? null, cost: m.cost == null ? null : Number(m.cost), error: (m.error as string) ?? null, sentAt: (m.sent_at as string) ?? null, readAt: (m.read_at as string) ?? null })),
+        told: sent.length,
+        delivered: count('delivered') + count('sent') + count('read'),
+        failed: count('failed'),
+        cost: round(sent.reduce((a, m) => a + Number(m.cost ?? 0), 0)),
+      };
+    });
+  }
+
+  /**
+   * One family chased by hand, from the defaulters list. The ladder is left alone: this writes stage
+   * `manual`, which is not a stage `runReminders` looks for, so chasing somebody today can never
+   * silence the stage the ladder owes them tomorrow.
+   */
+  async remindNow(schoolId: string, studentId: string) {
+    const invoices = await this.db.query<Row>(`SELECT i.*, s.first_name FROM invoices i JOIN students s ON s.id = i.student_id
+      WHERE i.school_id = ? AND i.student_id = ? AND i.balance > 0 AND i.status IN ('issued','partially_paid','overdue') ORDER BY i.due_date LIMIT 24`, [schoolId, studentId]);
+    if (!invoices.length) throw badRequest('that family owes nothing');
+    const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [studentId]);
+    if (!guardians.length) throw badRequest('no guardian of that child is set to receive messages');
+    const owed = round(invoices.reduce((a, i) => a + Number(i.balance), 0));
+    const oldest = String(invoices[0].due_date);
+    let told = 0;
+    for (const g of guardians) {
+      const ids = await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['sms', 'push', 'in_app'], eventKey: 'fees.reminder',
+        data: { student: String(invoices[0].first_name), amount: owed, due: oldest, month: String(invoices[0].billing_period ?? '').slice(0, 7) },
+        title: 'Fee due', body: `${invoices[0].first_name}: Tk ${owed} outstanding, oldest due ${oldest}.`, entityType: 'fees.invoice', entityId: String(invoices[0].id) });
+      told += ids.length;
+    }
+    for (const inv of invoices.slice(0, 1)) {
+      const dup = await this.db.findOne('fee_reminders', { invoice_id: String(inv.id), stage: 'manual', channel: 'sms' });
+      if (!dup) await this.db.insert('fee_reminders', { id: ulid(), school_id: schoolId, invoice_id: String(inv.id), stage: 'manual', channel: 'sms', notification_id: null, sent_at: nowSql() });
+      else await this.db.update('fee_reminders', { sent_at: nowSql() }, { id: String((dup as Row).id) });
+    }
+    return { told, invoices: invoices.length, owed };
+  }
+
+  /** Somebody has to ring them. One open task per child, not one per press. */
+  async raiseCallTask(schoolId: string, studentId: string) {
+    const s = await this.db.findOne<Row>('students', { id: studentId, school_id: schoolId });
+    if (!s) throw notFound('student');
+    const owed = await this.db.query<{ due: number }>(`SELECT COALESCE(SUM(balance), 0) AS due FROM invoices WHERE school_id = ? AND student_id = ? AND balance > 0 AND status <> 'cancelled'`, [schoolId, studentId]);
+    const total = round(Number(owed[0]?.due ?? 0));
+    const id = await this.tasks.ensure({ schoolId, title: `Call about fees: ${s.first_name} ${s.last_name ?? ''}`.trim(), description: `Tk ${total} outstanding.`, taskType: 'fees.call', assignedRole: 'accountant', entityType: 'fees.student', entityId: studentId, priority: 'normal' });
+    return { taskId: id, already: id === null, owed: total };
+  }
+
+  /** Every stage of the ladder with what it has done: how many invoices it reached, and when it last ran. */
+  async reminderStages(schoolId: string) {
+    const counts = await this.db.query<Row>(`SELECT stage, COUNT(*) AS n, MAX(sent_at) AS last_sent FROM fee_reminders WHERE school_id = ? GROUP BY stage`, [schoolId]);
+    const by = new Map(counts.map(c => [String(c.stage), c]));
+    return this.reminderLadder().map(s => {
+      const c = by.get(s.stage);
+      return { stage: s.stage, offsetDays: s.offsetDays, reminders: Number(c?.n ?? 0), lastSent: (c?.last_sent as string) ?? null };
+    });
+  }
+
+  /**
+   * A counter session as the cashier sees it: everything taken across this counter since it opened,
+   * split by method, and the cash half of that — which is the only part a drawer can be counted
+   * against. A bKash payment taken at the counter is in the takings and never in the till.
+   */
+  async cashSession(schoolId: string, sessionId: string) {
+    const s = await this.db.findOne<Row>('cash_sessions', { id: sessionId, school_id: schoolId });
+    if (!s) throw notFound('cash session');
+    // grouped on the session the payment carries, never on a time window: timestamps are second-precise
+    // on every engine, so a payment taken in the same second the session opened must not drift into it
+    const byMethod = await this.db.query<Row>(`SELECT method, COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total FROM payments
+      WHERE school_id = ? AND status = 'success' AND cash_session_id = ? GROUP BY method ORDER BY method`, [schoolId, sessionId]);
+    const receipts = await this.db.query<Row>(`SELECT p.id, p.payment_no, p.paid_at, p.amount, p.method, p.reference, s.first_name, s.last_name, s.admission_no
+      FROM payments p LEFT JOIN students s ON s.id = p.student_id
+      WHERE p.school_id = ? AND p.status = 'success' AND p.cash_session_id = ? ORDER BY p.paid_at DESC LIMIT 200`, [schoolId, sessionId]);
+    const inDrawer = await this.db.query<{ total: number }>(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE cash_session_id = ? AND method = 'cash' AND status = 'success'`, [sessionId]);
+    const cashier = await this.db.findOne<Row>('users', { id: String(s.cashier_id) });
+    const cashTaken = round(Number(inDrawer[0]?.total ?? 0));
+    return {
+      session: { ...s, cashier_name: (cashier?.display_name as string) ?? null } as Row,
+      byMethod: byMethod.map(m => ({ method: String(m.method), count: Number(m.n), total: round(Number(m.total)) })),
+      receipts,
+      openingCash: round(Number(s.opening_cash)),
+      cashTaken,
+      takings: round(byMethod.reduce((a, m) => a + Number(m.total), 0)),
+      expected: round(Number(s.opening_cash) + cashTaken),
+      counted: s.counted_cash == null ? null : round(Number(s.counted_cash)),
+      variance: s.variance == null ? null : round(Number(s.variance)),
+      closed: !!s.closed_at,
+    };
+  }
+  /** The counter's recent sessions, so yesterday's variance sits on the same screen as today's till. */
+  async cashSessions(schoolId: string, limit = 20) {
+    return this.db.query<Row>(`SELECT cs.*, u.display_name AS cashier_name,
+        (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.cash_session_id = cs.id AND p.method = 'cash' AND p.status = 'success') AS cash_taken
+      FROM cash_sessions cs LEFT JOIN users u ON u.id = cs.cashier_id WHERE cs.school_id = ? ORDER BY cs.opened_at DESC, cs.id DESC LIMIT ${Math.min(Math.max(Number(limit), 1), 100)}`, [schoolId]);
+  }
+
   async batches(schoolId: string) { return this.db.findMany<Row>('invoice_batches', { school_id: schoolId }, { orderBy: 'billing_period DESC', limit: 24 }); }
 
   /**

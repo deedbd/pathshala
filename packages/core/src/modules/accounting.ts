@@ -157,6 +157,49 @@ export class AccountingService {
   }
   async bankAccounts(schoolId: string) { return this.db.findMany<Row>('bank_accounts', { school_id: schoolId, status: 'active' }, { orderBy: 'account_kind ASC' }); }
 
+  /**
+   * The chart of accounts as the console shows it: the tree, in code order, each leaf carrying the
+   * balance the posted journal lines actually hold up to `asOf`. A group carries nothing of its own —
+   * its figure is the sum of what sits under it, and is computed here rather than stored, so an
+   * account moved under another parent cannot leave a stale total behind.
+   */
+  async chartOfAccounts(schoolId: string, asOf = nowSql().slice(0, 10)) {
+    const accounts = await this.db.findMany<Row>('gl_accounts', { school_id: schoolId }, { orderBy: 'code ASC' });
+    const sums = await this.db.query<Row>(`SELECT l.account_id, SUM(l.debit) AS debit, SUM(l.credit) AS credit
+      FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+      WHERE l.school_id = ? AND e.entry_date <= ? AND e.status = 'posted' GROUP BY l.account_id`, [schoolId, asOf]);
+    const by = new Map(sums.map(s => [String(s.account_id), s]));
+    const rows = accounts.map(a => {
+      const s = by.get(String(a.id));
+      const debit = round(Number(s?.debit ?? 0)), credit = round(Number(s?.credit ?? 0));
+      const type = String(a.account_type);
+      // a debit account (asset, expense) is positive when it has been debited; the rest are the other way round
+      const own = type === 'asset' || type === 'expense' ? round(debit - credit) : round(credit - debit);
+      return { id: String(a.id), code: String(a.code), name: String(a.name), account_type: type, parent_id: (a.parent_id as string) ?? null, is_group: !!Number(a.is_group), is_system: !!Number(a.is_system), status: String(a.status), debit, credit, own, balance: own };
+    });
+    const byId = new Map(rows.map(r => [r.id, r]));
+    // roll a leaf's balance up through every parent above it, so a group total is always its children
+    for (const r of rows) {
+      if (r.is_group) continue;
+      let p = r.parent_id;
+      const seen = new Set<string>();
+      while (p && !seen.has(p)) { seen.add(p); const up = byId.get(p); if (!up) break; up.balance = round(up.balance + r.own); p = up.parent_id; }
+    }
+    const depth = (r: { parent_id: string | null }) => { let d = 0, p = r.parent_id; const seen = new Set<string>(); while (p && !seen.has(p)) { seen.add(p); d++; p = byId.get(p)?.parent_id ?? null; } return d; };
+    return { asOf, accounts: rows.map(r => ({ ...r, depth: depth(r) })) };
+  }
+
+  /** Imported statement lines with what each one was matched to — the leftovers are the work. */
+  async statementLines(schoolId: string, f: { bankAccountId?: string; matched?: boolean; limit?: number } = {}) {
+    const where = ['l.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.bankAccountId) { where.push('l.bank_account_id = ?'); params.push(f.bankAccountId); }
+    if (f.matched === true) where.push('l.matched_id IS NOT NULL');
+    if (f.matched === false) where.push('l.matched_id IS NULL');
+    const limit = Math.min(Math.max(Number(f.limit ?? 200), 1), 500);
+    return this.db.query<Row>(`SELECT l.*, b.bank_name, b.account_name FROM bank_statement_lines l JOIN bank_accounts b ON b.id = l.bank_account_id
+      WHERE ${where.join(' AND ')} ORDER BY l.txn_date DESC, l.id DESC LIMIT ${limit}`, params);
+  }
+
   /** Bank reconciliation: match imported statement lines to payments/expenses by amount and date. */
   async reconcile(schoolId: string, bankAccountId: string, days = 30) {
     const lines = await this.db.query<Row>(`SELECT * FROM bank_statement_lines WHERE school_id = ? AND bank_account_id = ? AND matched_id IS NULL ORDER BY txn_date DESC LIMIT 500`, [schoolId, bankAccountId]);

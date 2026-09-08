@@ -4,6 +4,7 @@ import type { Adapters } from '@pathshala/adapters';
 import type { OutboxService } from '../automation/outbox.js';
 import type { NotificationService } from '../notifications.js';
 import { HttpError, badRequest, forbidden, notFound } from '../context.js';
+import { decryptSecret, encryptSecret, renderTemplate } from '../util.js';
 
 export type BroadcastChannel = 'sms' | 'email' | 'push' | 'in_app' | 'whatsapp' | 'voice';
 export interface Audience { roles?: string[]; classIds?: string[]; sectionIds?: string[]; studentIds?: string[]; guardians?: boolean; staff?: boolean; withDues?: boolean }
@@ -17,7 +18,7 @@ export interface MessageInput { conversationId: string; body?: string | null; at
  * quiet hours and per-user channel preferences apply to chat pushes too.
  */
 export class CommunicationService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private adapters: Adapters) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private adapters: Adapters, private appKey = '') {}
 
   // ---------- conversations ----------
   async conversations(schoolId: string, userId: string) {
@@ -154,6 +155,173 @@ export class CommunicationService {
     if (!notice) throw notFound('notice');
     const rows = await this.db.query<{ channel: string; status: string; n: number; cost: number }>(`SELECT channel, status, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM notifications WHERE school_id = ? AND entity_type = 'communication.notice' AND entity_id = ? GROUP BY channel, status`, [schoolId, noticeId]);
     return { notice: { ...notice, audience: json(notice.audience) }, delivery: rows, cost: rows.reduce((a, r) => a + Number(r.cost), 0) };
+  }
+
+  // ---------- the notice board ----------
+  /**
+   * Every notice with what became of it: who it went to, how many of those messages are still in the
+   * queue, and how many people have opened it. The reads are counted on the `notifications` rows the
+   * pipeline actually wrote, not on a column somebody has to remember to bump.
+   */
+  async noticeBoard(schoolId: string, f: { status?: string; limit?: number } = {}) {
+    const where = ['n.school_id = ?', 'n.deleted_at IS NULL']; const params: unknown[] = [schoolId];
+    if (f.status) { where.push('n.status = ?'); params.push(f.status); }
+    const limit = Math.min(Math.max(Number(f.limit ?? 100), 1), 200);
+    const notices = await this.db.query<Row>(`SELECT n.*, u.display_name AS author FROM notices n LEFT JOIN users u ON u.id = n.created_by
+      WHERE ${where.join(' AND ')} ORDER BY n.publish_at DESC, n.id DESC LIMIT ${limit}`, params);
+    if (!notices.length) return [];
+    const ids = notices.map(n => String(n.id));
+    const delivery = await this.db.query<Row>(`SELECT entity_id, channel, status, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM notifications
+      WHERE school_id = ? AND entity_type = 'communication.notice' AND entity_id IN (${ids.map(() => '?').join(',')}) GROUP BY entity_id, channel, status`, [schoolId, ...ids]);
+    const receipts = await this.db.query<Row>(`SELECT notice_id, COUNT(*) AS n FROM notice_reads WHERE notice_id IN (${ids.map(() => '?').join(',')}) GROUP BY notice_id`, ids);
+    const receiptBy = new Map(receipts.map(r => [String(r.notice_id), Number(r.n)]));
+    return notices.map(n => {
+      const mine = delivery.filter(d => String(d.entity_id) === String(n.id));
+      const count = (p: (d: Row) => boolean) => mine.filter(p).reduce((a, d) => a + Number(d.n), 0);
+      const channels = [...new Set(mine.map(d => String(d.channel)))];
+      return {
+        ...n, audience: json(n.audience),
+        channels, told: count(() => true),
+        queued: count(d => String(d.status) === 'queued'),
+        failed: count(d => String(d.status) === 'failed'),
+        read: count(d => String(d.status) === 'read') + (receiptBy.get(String(n.id)) ?? 0),
+        cost: Math.round(mine.reduce((a, d) => a + Number(d.cost ?? 0), 0) * 100) / 100,
+      };
+    });
+  }
+
+  // ---------- the message log ----------
+  /** Every message the school has sent, with the channel it went on, what came back and what it cost. */
+  async notificationLog(schoolId: string, f: { channel?: string; status?: string; eventKey?: string; from?: string; to?: string; search?: string; limit?: number; offset?: number } = {}) {
+    const where = ['n.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.channel) { where.push('n.channel = ?'); params.push(f.channel); }
+    if (f.status) { where.push('n.status = ?'); params.push(f.status); }
+    if (f.eventKey) { where.push('n.event_key = ?'); params.push(f.eventKey); }
+    if (f.from) { where.push('n.created_at >= ?'); params.push(`${f.from} 00:00:00`); }
+    if (f.to) { where.push('n.created_at <= ?'); params.push(`${f.to} 23:59:59`); }
+    if (f.search) { where.push('(n.recipient_address LIKE ? OR n.title LIKE ?)'); params.push(`%${f.search}%`, `%${f.search}%`); }
+    const limit = Math.min(Math.max(Number(f.limit ?? 100), 1), 500);
+    const offset = Math.max(Number(f.offset ?? 0), 0);
+    const rows = await this.db.query<Row>(`SELECT n.id, n.channel, n.event_key, n.title, n.body, n.status, n.recipient_address, n.attempts, n.cost, n.error,
+        n.scheduled_for, n.created_at, n.sent_at, n.delivered_at, n.read_at, u.display_name AS recipient_name
+      FROM notifications n LEFT JOIN users u ON u.id = n.recipient_user_id
+      WHERE ${where.join(' AND ')} ORDER BY n.created_at DESC, n.id DESC LIMIT ${limit} OFFSET ${offset}`, params);
+    const total = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM notifications n WHERE ${where.join(' AND ')}`, params);
+    return { rows, total: Number(total[0]?.n ?? 0), limit, offset };
+  }
+  /** The same rows added up: what went out today, what failed, and the bill for it. */
+  async notificationStats(schoolId: string, from: string, to: string) {
+    const rows = await this.db.query<Row>(`SELECT channel, status, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM notifications
+      WHERE school_id = ? AND created_at >= ? AND created_at <= ? GROUP BY channel, status`, [schoolId, `${from} 00:00:00`, `${to} 23:59:59`]);
+    const sum = (p: (r: Row) => boolean) => rows.filter(p).reduce((a, r) => a + Number(r.n), 0);
+    const sent = sum(r => ['sent', 'delivered', 'read'].includes(String(r.status)));
+    const total = sum(() => true);
+    return {
+      from, to, total, sent, queued: sum(r => String(r.status) === 'queued'), failed: sum(r => String(r.status) === 'failed'),
+      byChannel: [...new Set(rows.map(r => String(r.channel)))].map(ch => ({ channel: ch, count: sum(r => String(r.channel) === ch), failed: sum(r => String(r.channel) === ch && String(r.status) === 'failed'), cost: Math.round(rows.filter(r => String(r.channel) === ch).reduce((a, r) => a + Number(r.cost ?? 0), 0) * 100) / 100 })),
+      cost: Math.round(rows.reduce((a, r) => a + Number(r.cost ?? 0), 0) * 100) / 100,
+      // "delivered" here means the provider took it: only a gateway that reports back can say more
+      deliveredPct: total ? Math.round(sent / total * 1000) / 10 : null,
+    };
+  }
+  /** Queue a failed message again. Nothing is rewritten: the same row goes back on the queue. */
+  async retryNotification(schoolId: string, id: string) {
+    const n = await this.db.findOne<Row>('notifications', { id, school_id: schoolId });
+    if (!n) throw notFound('notification');
+    if (String(n.status) !== 'failed') throw badRequest('only a failed message is retried');
+    await this.db.update('notifications', { status: 'queued', attempts: 0, error: null, scheduled_for: nowSql(), updated_at: nowSql() }, { id });
+    await this.adapters.queue.push({ name: 'notifications.deliver', queue: 'notifications', schoolId, payload: { ids: [id] }, triggeredBy: 'console.retry' });
+    return { id, queued: true };
+  }
+
+  // ---------- templates ----------
+  /** Every template: event × channel × locale, and whether the pipeline is allowed to pick it. */
+  async templates(schoolId: string, f: { eventKey?: string; channel?: string; locale?: string } = {}) {
+    const where: Row = { school_id: schoolId };
+    if (f.eventKey) where.event_key = f.eventKey;
+    if (f.channel) where.channel = f.channel;
+    if (f.locale) where.locale = f.locale;
+    const rows = await this.db.findMany<Row>('notification_templates', where, { orderBy: 'event_key ASC, channel ASC, locale ASC', limit: 500 });
+    return rows.map(r => ({ ...r, variables: json(r.variables), is_active: !!Number(r.is_active), placeholders: [...new Set(String(r.body).match(/{{\s*[\w.]+\s*}}/g) ?? [])].map(v => v.replace(/[{}\s]/g, '')) }));
+  }
+  /**
+   * One template per event × channel × locale — the unique key says so, so this updates the row that
+   * is already there instead of leaving two and letting the pipeline pick whichever it finds first.
+   */
+  async saveTemplate(schoolId: string, t: { eventKey: string; channel: string; locale: string; subject?: string | null; body: string; isActive?: boolean }) {
+    if (!t.body.trim()) throw badRequest('a template needs a body');
+    const ex = await this.db.findOne<{ id: string }>('notification_templates', { school_id: schoolId, event_key: t.eventKey, channel: t.channel, locale: t.locale });
+    const row = { subject: t.subject ?? null, body: t.body, is_active: t.isActive ?? true };
+    if (ex) { await this.db.update('notification_templates', { ...row, updated_at: nowSql() }, { id: ex.id }); return { id: ex.id, created: false }; }
+    const id = ulid();
+    await this.db.insert('notification_templates', { id, school_id: schoolId, event_key: t.eventKey, channel: t.channel, locale: t.locale, variables: null, ...row });
+    return { id, created: true };
+  }
+  async setTemplateActive(schoolId: string, id: string, active: boolean) {
+    return { updated: await this.db.update('notification_templates', { is_active: active, updated_at: nowSql() }, { id, school_id: schoolId }) };
+  }
+  /** What the next send would read like, with the placeholders filled from the sample given. */
+  async previewTemplate(schoolId: string, t: { id?: string; body?: string; subject?: string | null }, sample: Record<string, unknown> = {}) {
+    let body = t.body ?? '', subject = t.subject ?? null;
+    if (t.id) {
+      const row = await this.db.findOne<Row>('notification_templates', { id: t.id, school_id: schoolId });
+      if (!row) throw notFound('template');
+      body = t.body ?? String(row.body); subject = t.subject ?? ((row.subject as string) ?? null);
+    }
+    const school = await this.db.findOne<Row>('schools', { id: schoolId });
+    const data = { school: String(school?.name ?? ''), ...sample };
+    const used = [...new Set(body.match(/{{\s*[\w.]+\s*}}/g) ?? [])].map(v => v.replace(/[{}\s]/g, ''));
+    return { subject: subject ? renderTemplate(subject, data) : null, body: renderTemplate(body, data), placeholders: used, missing: used.filter(k => k.split('.').reduce<unknown>((o, kk) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[kk] : undefined), data) == null) };
+  }
+
+  // ---------- providers ----------
+  /**
+   * The providers a school sends through. Credentials never leave the server: the row says whether a
+   * key is set and nothing more, because a page that can display an API key is a page that leaks it.
+   */
+  async providers(schoolId: string) {
+    const rows = await this.db.findMany<Row>('messaging_providers', { school_id: schoolId }, { orderBy: 'channel ASC, provider ASC' });
+    return rows.map(r => {
+      const { credentials, ...rest } = r;
+      return {
+        ...rest,
+        hasCredentials: !!credentials && Object.keys((json<Record<string, unknown>>(credentials) ?? {})).length > 0,
+        is_default: !!Number(r.is_default), is_active: !!Number(r.is_active),
+        balance: r.balance == null ? null : Number(r.balance),
+        low_balance_threshold: r.low_balance_threshold == null ? null : Number(r.low_balance_threshold),
+        low: r.balance != null && r.low_balance_threshold != null && Number(r.balance) < Number(r.low_balance_threshold),
+      };
+    });
+  }
+  /**
+   * One default per channel: setting a new default clears the old one in the same breath, because
+   * two defaults is the same as none — the pipeline would take whichever row came back first.
+   */
+  async saveProvider(schoolId: string, p: { id?: string; channel: string; provider: string; senderId?: string | null; credentials?: Record<string, string> | null; isDefault?: boolean; isActive?: boolean; lowBalanceThreshold?: number | null; costPerUnit?: number | null }) {
+    const ex = p.id
+      ? await this.db.findOne<Row>('messaging_providers', { id: p.id, school_id: schoolId })
+      : await this.db.findOne<Row>('messaging_providers', { school_id: schoolId, channel: p.channel, provider: p.provider });
+    if (p.id && !ex) throw notFound('provider');
+    const secret = p.credentials && Object.keys(p.credentials).length
+      ? { enc: encryptSecret(JSON.stringify(p.credentials), this.appKey) }
+      : undefined;
+    const row: Record<string, unknown> = {
+      channel: p.channel, provider: p.provider, sender_id: p.senderId ?? null,
+      is_default: p.isDefault ?? false, is_active: p.isActive ?? true,
+      low_balance_threshold: p.lowBalanceThreshold ?? null, cost_per_unit: p.costPerUnit ?? null,
+    };
+    if (secret) row.credentials = secret;
+    const id = ex ? String(ex.id) : ulid();
+    if (ex) await this.db.update('messaging_providers', { ...row, updated_at: nowSql() }, { id });
+    else await this.db.insert('messaging_providers', { id, school_id: schoolId, balance: null, credentials: null, ...row });
+    if (row.is_default) await this.db.execute(`UPDATE messaging_providers SET is_default = FALSE WHERE school_id = ? AND channel = ? AND id <> ?`, [schoolId, p.channel, id]);
+    return { id, created: !ex };
+  }
+  /** The credentials, for the server only — nothing that answers a browser may call this. */
+  providerCredentials(provider: Row): Record<string, string> {
+    const raw = json<Record<string, unknown>>(provider.credentials) ?? {};
+    if (typeof raw.enc === 'string') { try { return JSON.parse(decryptSecret(raw.enc, this.appKey)) as Record<string, string>; } catch { return {}; } }
+    return raw as Record<string, string>;
   }
 
   async createPtmSlots(schoolId: string, s: { teacherId: string; date: string; startTime: string; endTime: string; minutes: number; capacity?: number; roomId?: string | null; mode?: 'in_person' | 'online' }) {

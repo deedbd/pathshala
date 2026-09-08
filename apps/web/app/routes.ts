@@ -35,6 +35,7 @@ function schoolApp(id: (name: string) => string): RouteConfigEntry[] {
       route('attendance', 'routes/attendance.tsx', { id: id('attendance') }),
       route('diary', 'routes/diary.tsx', { id: id('diary') }),
       route('chat', 'routes/chat.tsx', { id: id('chat') }),
+      route('communication', 'routes/communication.tsx', { id: id('communication') }),
       route('exams', 'routes/exams.tsx', { id: id('exams') }),
       route('fees', 'routes/fees.tsx', { id: id('fees') }),
       route('accounts', 'routes/accounts.tsx', { id: id('accounts') }),

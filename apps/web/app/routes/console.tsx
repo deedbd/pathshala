@@ -89,6 +89,7 @@ export default function Console() {
           <NavLink to="/platform" className={link} style={style}>{tr('nav.platform')}</NavLink>
           <NavLink to="/diary" className={link} style={style}>{tr('nav.diary')}</NavLink>
           <NavLink to="/chat" className={link} style={style}>{tr('nav.chat')}</NavLink>
+          <NavLink to="/communication" className={link} style={style}>{tr('nav.communication')}</NavLink>
           <NavLink to="/syllabus" className={link} style={style}>{tr('nav.syllabus')}</NavLink>
           <NavLink to="/calendar" className={link} style={style}>{tr('nav.calendar')}</NavLink>
           <NavLink to="/import" className={link} style={style}>{tr('nav.import')}</NavLink>
