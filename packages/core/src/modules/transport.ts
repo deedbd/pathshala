@@ -91,6 +91,23 @@ export class TransportService {
   async trips(schoolId: string, onDate = nowSql().slice(0, 10)) {
     return this.db.query<Row>(`SELECT t.*, r.name AS route_name, v.registration_no, (SELECT COUNT(*) FROM transport_boardings b WHERE b.trip_id = t.id AND b.boarded_at IS NOT NULL) AS boarded FROM vehicle_trips t JOIN transport_routes r ON r.id = t.route_id JOIN vehicles v ON v.id = t.vehicle_id WHERE t.school_id = ? AND t.trip_date = ? ORDER BY t.trip_type, r.name`, [schoolId, onDate]);
   }
+  /**
+   * How many buses are out, of how many trips the day has. A school with no trips is not the same
+   * as a school with no buses, so the note says which: nought of nought with routes on the books
+   * means this morning's trips were never created, and that is worth a line on the dashboard.
+   */
+  async todaySummary(schoolId: string, onDate: string) {
+    const [r] = await this.db.query<Row>(`SELECT COALESCE(SUM(running), 0) AS running, COALESCE(SUM(total), 0) AS total, COALESCE(SUM(routes), 0) AS routes FROM (
+        SELECT SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running, COUNT(*) AS total, 0 AS routes
+          FROM vehicle_trips WHERE school_id = ? AND trip_date = ?
+        UNION ALL
+        SELECT 0, 0, COUNT(*) FROM transport_routes WHERE school_id = ? AND status = 'active'
+      ) parts`, [schoolId, onDate, schoolId]);
+    const running = Number(r?.running ?? 0), total = Number(r?.total ?? 0), routes = Number(r?.routes ?? 0);
+    const note = total > 0 ? null : routes > 0 ? 'no trips have been created for today' : null;
+    return { running, total, note };
+  }
+
   async startTrip(schoolId: string, tripId: string, checklist?: Record<string, boolean>) {
     const t = await this.db.findOne<Row>('vehicle_trips', { id: tripId, school_id: schoolId });
     if (!t) throw notFound('trip');

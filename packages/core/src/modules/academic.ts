@@ -82,6 +82,39 @@ export class AcademicService {
     return past[0] ?? null;
   }
 
+  /**
+   * The year and the term a date sits in, in one query. Every page that says "today" opens with
+   * these two, and asking for them separately costs a round trip on a shared host for an answer the
+   * one join already has. The term is `null` when no term contains the date — a year with no terms
+   * entered, or the gap between two of them — because inventing one would put marks in the wrong
+   * bucket.
+   */
+  async currentPeriod(schoolId: string, onDate: string) {
+    const [r] = await this.db.query<Row>(`SELECT y.id AS year_id, y.name AS year_name, t.id AS term_id, t.name AS term_name
+      FROM academic_years y LEFT JOIN terms t ON t.academic_year_id = y.id AND t.start_date <= ? AND t.end_date >= ?
+      WHERE y.school_id = ? AND y.is_current = TRUE ORDER BY t.start_date DESC, t.id DESC LIMIT 1`, [onDate, onDate, schoolId]);
+    if (!r) return { year: null, term: null };
+    return {
+      year: { id: String(r.year_id), name: String(r.year_name) },
+      term: r.term_id ? { id: String(r.term_id), name: String(r.term_name) } : null,
+    };
+  }
+
+  /**
+   * Every active section of a year with its class, its class teacher and how many children are on
+   * its roll — one query, not one per section. A dashboard that shows which sections are short has
+   * to know the roll to compare the register against, and a school with sixty sections cannot pay
+   * for sixty round trips on every page load.
+   */
+  async sectionRoster(schoolId: string, yearId: string, limit = 200) {
+    return this.db.query<Row>(`SELECT sec.id AS section_id, sec.name AS section, c.name AS class_name, c.numeric_level,
+        st.first_name AS teacher_first_name, st.last_name AS teacher_last_name,
+        (SELECT COUNT(*) FROM student_enrollments e WHERE e.section_id = sec.id AND e.status = 'active') AS students
+      FROM sections sec JOIN classes c ON c.id = sec.class_id LEFT JOIN staff st ON st.id = sec.class_teacher_id
+      WHERE sec.school_id = ? AND sec.academic_year_id = ? AND sec.status = 'active'
+      ORDER BY c.numeric_level ASC, sec.name ASC, sec.id ASC LIMIT ?`, [schoolId, yearId, limit]);
+  }
+
   // ---------- programmes ----------
   /**
    * A programme is what a college or a coaching centre admits into: HSC Science, BBA, a six-month

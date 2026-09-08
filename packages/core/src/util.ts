@@ -47,6 +47,28 @@ export function addDays(d: Date, n: number) { return addHours(d, n * 24); }
 export function localHHMM(d: Date, tz = 'Asia/Dhaka'): string {
   return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
 }
+/**
+ * The calendar date (YYYY-MM-DD) in a zone. A register is kept on the school's own day, not on the
+ * server's: at 23:00 UTC a school in Dhaka is already on tomorrow, and a dashboard that read the
+ * server's date would show an empty morning for six hours every evening.
+ */
+export function localDate(d: Date, tz = 'Asia/Dhaka'): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+/**
+ * The UTC window a local day occupies, as the `'YYYY-MM-DD HH:MM:SS'` strings every timestamp column
+ * holds. Date columns (`on_date`, `due_date`) are compared against the local date itself; timestamp
+ * columns (`paid_at`, `created_at`) are UTC and need this window instead.
+ */
+export function localDayRange(date: string, tz = 'Asia/Dhaka'): { from: string; to: string } {
+  const noon = new Date(`${date}T12:00:00Z`);
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(noon);
+  const p: Record<string, number> = {}; for (const x of parts) if (x.type !== 'literal') p[x.type] = Number(x.value);
+  const offsetMs = Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!) - noon.getTime();
+  const start = Date.parse(`${date}T00:00:00Z`) - offsetMs;
+  const sql = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  return { from: sql(start), to: sql(start + 86_400_000 - 1000) };
+}
 /** Returns the next Date at local `hhmm` in `tz` at or after `from`. */
 export function nextLocalTime(hhmm: string, tz: string, from = new Date()): Date {
   const [h, m] = hhmm.split(':').map(Number);

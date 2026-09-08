@@ -100,6 +100,22 @@ export class AnalyticsService {
     return rows.map(r => ({ period: String(r.period).slice(0, 10), value: Number(r.value) })).reverse();
   }
 
+  /**
+   * The days this school has actually been counted, newest last, straight off `kpi_daily`. A trend
+   * line is drawn on every dashboard load, so it reads the rows the nightly pass already wrote
+   * rather than recomputing a month of registers and payments on a shared host. A day with no
+   * register has `attendancePct` null — a holiday is not a day nobody came.
+   */
+  async trend(schoolId: string, opts: { to: string; days?: number } = { to: nowSql().slice(0, 10) }) {
+    const rows = await this.db.query<Row>(`SELECT day, attendance_pct, fees_collected FROM kpi_daily
+      WHERE school_id = ? AND day <= ? ORDER BY day DESC, id DESC LIMIT ?`, [schoolId, opts.to, opts.days ?? 30]);
+    return rows.reverse().map(r => ({
+      day: String(r.day).slice(0, 10),
+      attendancePct: r.attendance_pct == null ? null : Number(r.attendance_pct),
+      collected: round(Number(r.fees_collected ?? 0)),
+    }));
+  }
+
   // ---------- what a role sees when they sign in ----------
   /**
    * The dashboard for a role. Each card is a number with the direction it moved and whether that is

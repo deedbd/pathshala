@@ -53,4 +53,30 @@ export class TaskService {
     if (opts.assignedRole) where.assigned_role = opts.assignedRole;
     return this.db.findMany('tasks', where as never, { orderBy: 'due_at ASC', limit: opts.limit ?? 50 });
   }
+
+  /**
+   * The open list a dashboard prints: the most pressing few, with the count of the whole queue
+   * beside them. Priority is a word, so it is ordered by what the words mean rather than by the
+   * alphabet — sorting `priority ASC` would put "high" above "urgent" and "low" above both. A task
+   * with no date sorts after the dated ones on every engine, because the three of them disagree
+   * about where NULLs belong.
+   */
+  async openSummary(schoolId: string, limit = 6) {
+    const [total, rows] = await Promise.all([
+      this.db.count('tasks', { school_id: schoolId, status: 'open' }),
+      this.db.query<Record<string, unknown>>(`SELECT t.id, t.title, t.due_at, t.priority, t.assigned_role, u.display_name AS assignee
+        FROM tasks t LEFT JOIN users u ON u.id = t.assigned_to WHERE t.school_id = ? AND t.status = 'open'
+        ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END ASC,
+                 CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END ASC, t.due_at ASC, t.id ASC LIMIT ?`, [schoolId, limit]),
+    ]);
+    return {
+      total,
+      items: rows.map(r => ({
+        id: String(r.id), title: String(r.title),
+        assignee: r.assignee != null ? String(r.assignee) : r.assigned_role != null ? String(r.assigned_role) : null,
+        due: r.due_at == null ? null : String(r.due_at),
+        priority: String(r.priority),
+      })),
+    };
+  }
 }
