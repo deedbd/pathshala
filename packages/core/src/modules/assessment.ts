@@ -48,7 +48,7 @@ export class AssessmentService {
   async gradingScales(schoolId: string) {
     const scales = await this.db.findMany<Row>('grading_scales', { school_id: schoolId });
     const out = [];
-    for (const s of scales) out.push({ ...s, bands: await this.db.findMany<Row>('grading_bands', { scale_id: String(s.id) }, { orderBy: 'min_percent DESC' }) });
+    for (const s of scales) out.push({ ...s, bands: await this.db.findMany<Row>('grading_bands', { scale_id: String(s.id) }, { orderBy: 'min_percent DESC' }) } as Row & { bands: Row[] });
     return out;
   }
   async ensureExamTypes(schoolId: string) {
@@ -92,9 +92,9 @@ export class AssessmentService {
     return this.db.query<Row>(`SELECT e.*, t.name AS exam_type, (SELECT COUNT(*) FROM exam_schedules s WHERE s.exam_id = e.id) AS subjects, (SELECT COUNT(*) FROM exam_results r WHERE r.exam_id = e.id) AS results FROM exams e JOIN exam_types t ON t.id = e.exam_type_id WHERE e.school_id = ?${yearId ? ' AND e.academic_year_id = ?' : ''} ORDER BY e.start_date DESC`, yearId ? [schoolId, yearId] : [schoolId]);
   }
   async schedules(schoolId: string, examId: string) {
-    return this.db.query<Row>(`SELECT s.*, sub.name AS subject_name, sub.name_bn AS subject_name_bn, c.name AS class_name, c.id AS class_id, c.numeric_level,
+    return this.db.query<Row>(`SELECT s.*, sub.name AS subject_name, sub.name_bn AS subject_name_bn, c.name AS class_name, c.id AS class_id, c.numeric_level, r.name AS room_name,
       (SELECT COUNT(*) FROM marks m WHERE m.schedule_id = s.id) AS entered
-      FROM exam_schedules s JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id
+      FROM exam_schedules s JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id LEFT JOIN rooms r ON r.id = s.room_id
       WHERE s.school_id = ? AND s.exam_id = ? ORDER BY c.numeric_level, sub.name`, [schoolId, examId]);
   }
   async setSchedule(schoolId: string, scheduleId: string, patch: { examDate?: string; startTime?: string | null; endTime?: string | null; roomId?: string | null; fullMarks?: number; passMarks?: number }) {
@@ -614,16 +614,40 @@ export class AssessmentService {
     }
     return { students: count };
   }
-  /** Moves promoted students into next year's enrollment; retained students keep their class. */
+  /**
+   * Moves promoted students into next year's enrollment; retained students keep their class.
+   *
+   * Without `apply` nothing at all is written — the same walk, counted per class, so the office can
+   * read what the rules decided before the year turns over. The class rows carry `graduate`
+   * separately: a child promoted out of the top class has no next class to go to, and calling that
+   * "retained" would tell a head teacher sixty leavers had failed.
+   */
   async promote(schoolId: string, fromYearId: string, toYearId: string, opts: { apply?: boolean } = {}) {
     const results = await this.db.query<Row>(`SELECT a.*, s.current_class_id, s.current_section_id, e.id AS enrollment_id, e.class_id FROM annual_results a JOIN students s ON s.id = a.student_id JOIN student_enrollments e ON e.student_id = a.student_id AND e.academic_year_id = ? WHERE a.school_id = ? AND a.academic_year_id = ?`, [fromYearId, schoolId, fromYearId]);
     const classes = await this.academic.classes(schoolId);
     const byLevel = new Map(classes.map(c => [Number(c.numeric_level), c]));
-    let promoted = 0, retained = 0;
+    const rules = await this.db.findMany<Row>('promotion_rules', { school_id: schoolId, academic_year_id: fromYearId });
+    const ruleText = (classId: string | null) => {
+      const r = rules.find(x => String(x.class_id ?? '') === String(classId ?? '')) ?? rules.find(x => !x.class_id);
+      return `GPA ≥ ${Number(r?.min_gpa ?? 1).toFixed(2)} · ≤ ${Number(r?.max_failed_subjects ?? 0)} failed${Number(r?.min_attendance_pct ?? 0) ? ` · attendance ≥ ${Number(r!.min_attendance_pct)}%` : ''}`;
+    };
+    type Cls = { classId: string; className: string; rule: string; students: number; promote: number; retain: number; graduate: number };
+    const byClass = new Map<string, Cls>();
+    const bump = (classId: string | null, k: 'promote' | 'retain' | 'graduate') => {
+      const c = classes.find(x => String(x.id) === String(classId ?? ''));
+      const key = String(classId ?? '');
+      const row = byClass.get(key) ?? { classId: key, className: c ? String(c.name) : '—', rule: ruleText(classId), students: 0, promote: 0, retain: 0, graduate: 0 };
+      row.students++; row[k]++; byClass.set(key, row);
+    };
+    let promoted = 0, retained = 0, graduated = 0;
     for (const r of results) {
       const current = classes.find(c => String(c.id) === String(r.class_id));
       const nextClass = r.decision === 'promoted' ? byLevel.get(Number(current?.numeric_level ?? 0) + 1) : current;
-      if (!nextClass) { retained++; continue; }
+      if (!nextClass) {
+        // promoted out of the top class: a leaver, not a failure
+        if (r.decision === 'promoted') { graduated++; bump(r.class_id as string | null, 'graduate'); } else { retained++; bump(r.class_id as string | null, 'retain'); }
+        continue;
+      }
       if (opts.apply) {
         const sections = await this.academic.sections(schoolId, toYearId, String(nextClass.id));
         const target = sections.find(s => Number(s.enrolled) < Number(s.capacity)) ?? sections[0];
@@ -637,9 +661,10 @@ export class AssessmentService {
         }
         await this.db.insert('promotions', { id: ulid(), school_id: schoolId, student_id: String(r.student_id), from_enrollment_id: String(r.enrollment_id), to_enrollment_id: toEnrollmentId, decision: r.decision as never, annual_gpa: Number(r.weighted_gpa), is_auto: true, decided_by: null, note: null });
       }
-      if (r.decision === 'promoted') promoted++; else retained++;
+      if (r.decision === 'promoted') { promoted++; bump(r.class_id as string | null, 'promote'); } else { retained++; bump(r.class_id as string | null, 'retain'); }
     }
-    return { promoted, retained, applied: !!opts.apply };
+    const order = new Map(classes.map(c => [String(c.id), Number(c.numeric_level)]));
+    return { promoted, retained, graduated, students: results.length, applied: !!opts.apply, byClass: [...byClass.values()].sort((a, b) => (order.get(a.classId) ?? 0) - (order.get(b.classId) ?? 0)) };
   }
 
   // ---------- the result pipeline, without a person driving it ----------
@@ -984,6 +1009,29 @@ export class AssessmentService {
   }
 
   // ---------- question bank & papers ----------
+  /** The bank as a person reads it: the subject and class by name, and how often each has been set. */
+  async questions(schoolId: string, f: { subjectId?: string; classId?: string; qType?: string; difficulty?: string } = {}) {
+    const where = ['q.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.subjectId) { where.push('q.subject_id = ?'); params.push(f.subjectId); }
+    if (f.classId) { where.push('q.class_id = ?'); params.push(f.classId); }
+    if (f.qType) { where.push('q.q_type = ?'); params.push(f.qType); }
+    if (f.difficulty) { where.push('q.difficulty = ?'); params.push(f.difficulty); }
+    const rows = await this.db.query<Row>(`SELECT q.id, q.q_type, q.difficulty, q.body, q.body_bn, q.marks, q.usage_count, q.options, q.subject_id, q.class_id,
+        sub.name AS subject_name, sub.name_bn AS subject_name_bn, c.name AS class_name
+      FROM questions q JOIN subjects sub ON sub.id = q.subject_id LEFT JOIN classes c ON c.id = q.class_id
+      WHERE ${where.join(' AND ')} ORDER BY q.created_at DESC LIMIT 300`, params);
+    return rows.map(r => ({ ...r, options: json(r.options) }) as Row);
+  }
+  /** Papers built from the bank, newest first, with the class and subject they were built for. */
+  async papers(schoolId: string, f: { examId?: string } = {}) {
+    const where = ['p.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.examId) { where.push('p.exam_id = ?'); params.push(f.examId); }
+    const rows = await this.db.query<Row>(`SELECT p.id, p.title, p.total_marks, p.duration_min, p.status, p.set_label, p.pdf_file_id, p.created_at, p.exam_id,
+        sub.name AS subject_name, c.name AS class_name, (SELECT COUNT(*) FROM question_paper_items i WHERE i.paper_id = p.id) AS questions
+      FROM question_papers p JOIN class_subjects cs ON cs.id = p.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id
+      WHERE ${where.join(' AND ')} ORDER BY p.created_at DESC LIMIT 200`, params);
+    return rows;
+  }
   async addQuestion(schoolId: string, q: { subjectId: string; classId?: string | null; qType: 'mcq' | 'true_false' | 'short' | 'long' | 'fill_blank' | 'match' | 'numeric' | 'essay'; difficulty?: 'easy' | 'medium' | 'hard'; body: string; bodyBn?: string | null; options?: unknown; answer?: unknown; marks?: number; unitId?: string | null }) {
     const id = ulid();
     await this.db.insert('questions', { id, school_id: schoolId, subject_id: q.subjectId, class_id: q.classId ?? null, unit_id: q.unitId ?? null, outcome_id: null, q_type: q.qType, difficulty: q.difficulty ?? 'medium', body: q.body, body_bn: q.bodyBn ?? null, options: jsonCol(q.options), answer: jsonCol(q.answer), marks: q.marks ?? 1, tags: null, ai_generated: false, created_by: null, usage_count: 0 });
@@ -1020,6 +1068,24 @@ export class AssessmentService {
   }
 
   // ---------- online exams ----------
+  /**
+   * The online exams of this school with the section, the subject, how many questions the linked
+   * paper holds and how many students have sat it. `attempts` counts submitted attempts only — an
+   * open browser tab is not a sitting.
+   */
+  async onlineExams(schoolId: string, f: { sectionId?: string; status?: string } = {}) {
+    const where = ['o.school_id = ?']; const params: unknown[] = [schoolId];
+    if (f.sectionId) { where.push('o.section_id = ?'); params.push(f.sectionId); }
+    if (f.status) { where.push('o.status = ?'); params.push(f.status); }
+    return this.db.query<Row>(`SELECT o.id, o.title, o.starts_at, o.ends_at, o.duration_min, o.total_marks, o.auto_grade, o.status, o.paper_id,
+        sec.name AS section_name, c.name AS class_name, sub.name AS subject_name, sub.name_bn AS subject_name_bn,
+        (SELECT COUNT(*) FROM question_paper_items i WHERE i.paper_id = o.paper_id) AS questions,
+        (SELECT COUNT(*) FROM online_exam_attempts a WHERE a.online_exam_id = o.id AND a.submitted_at IS NOT NULL) AS attempts,
+        (SELECT COUNT(*) FROM student_enrollments e WHERE e.section_id = o.section_id AND e.status = 'active') AS roll
+      FROM online_exams o JOIN sections sec ON sec.id = o.section_id JOIN classes c ON c.id = sec.class_id
+      JOIN class_subjects cs ON cs.id = o.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id
+      WHERE ${where.join(' AND ')} ORDER BY o.starts_at DESC LIMIT 200`, params);
+  }
   async createOnlineExam(schoolId: string, o: { sectionId: string; classSubjectId: string; paperId?: string | null; title: string; startsAt: string; endsAt: string; durationMin: number; totalMarks: number; autoGrade?: boolean }) {
     const id = ulid();
     await this.db.insert('online_exams', { id, school_id: schoolId, schedule_id: null, section_id: o.sectionId, class_subject_id: o.classSubjectId, paper_id: o.paperId ?? null, title: o.title, instructions: null, starts_at: o.startsAt, ends_at: o.endsAt, duration_min: o.durationMin, total_marks: o.totalMarks, shuffle_questions: true, auto_grade: o.autoGrade ?? true, auto_publish: false, proctoring: null, status: 'scheduled', created_by: null });

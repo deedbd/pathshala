@@ -132,6 +132,71 @@ describe('phase 2', () => {
     assert.equal((await api(`/attendance/auto-absent?date=${today}`, {})).absent, 0);
   });
 
+  // The head teacher's first screen. What matters here is not the arithmetic but the shape of the
+  // answer: a section nobody has opened must say so, and must never be reported as 0%.
+  test('attendance today: counts, sections with their teacher, and what the sweep did', async () => {
+    const t = await api(`/attendance/today?date=${today}`);
+    assert.equal(t.onDate, today);
+    assert.equal(t.holiday, false);
+    assert.ok(t.cutoffs.includes('10:30'), JSON.stringify(t.cutoffs));
+    assert.ok(Number(t.counts.absent) >= 5, JSON.stringify(t.counts));
+    assert.ok(t.enrolled >= 17, `enrolled ${t.enrolled}`);
+    assert.equal(t.marked, Object.values(t.counts).reduce((a, n) => a + Number(n), 0));
+    // the cut-off sweep is reported as its own sentence: five marked, five guardians told
+    assert.equal(t.sweep.absent, 5, JSON.stringify(t.sweep));
+    assert.equal(t.sweep.notified, 5, 'every one of them had a guardian messaged');
+    assert.ok(t.sweep.at, 'and the time it happened');
+    const marked = t.sections.find(s => s.marked > 0);
+    assert.ok(marked, 'the section that was marked is on the board');
+    assert.ok(marked.pct != null && marked.pct >= 0 && marked.pct <= 100, `pct ${marked.pct}`);
+    assert.equal(marked.marked, marked.present + marked.late + marked.absent + marked.half_day + marked.excused);
+    const untouched = t.sections.filter(s => s.marked === 0);
+    assert.ok(untouched.length, 'a school always has a section nobody has marked yet');
+    assert.ok(untouched.every(s => s.pct === null), 'an unmarked register reports null, never 0%');
+    assert.ok(t.sections.every(s => 'class_teacher' in s && 'source' in s));
+    // the device punches came from a device and the sweep from the system, and the board says which
+    assert.ok(t.sections.some(s => s.source === 'system' || s.source === 'mixed' || s.source === 'device'), JSON.stringify(t.sections.map(s => s.source)));
+  });
+
+  test('a policy edit keeps the fields it was not sent', async () => {
+    const before = (await api('/attendance/policies')).find(p => p.audience === 'student');
+    await api('/attendance/policies', { audience: 'student', minAttendancePct: 80 }, 'PUT');
+    const after = (await api('/attendance/policies')).find(p => p.audience === 'student');
+    assert.equal(Number(after.min_attendance_pct), 80);
+    assert.equal(Number(after.late_after_minutes), Number(before.late_after_minutes), 'the late threshold was not sent, so it did not move');
+    assert.equal(String(after.auto_absent_at).slice(0, 5), '10:30', 'and neither did the cut-off');
+    assert.equal(Number(after.notify_on_absent), Number(before.notify_on_absent));
+    // the whole form comes back and every field is writable, including the staff LOP rule
+    await api('/attendance/policies', { audience: 'staff', lateAfterMinutes: 10, halfDayAfterMinutes: 90, autoAbsentAt: '11:15', consecutiveAbsentAlert: 4, minAttendancePct: 70, lateCountToLop: 3, notifyOnArrival: false, notifyOnLate: true, notifyOnAbsent: true }, 'PUT');
+    const staffPolicy = (await api('/attendance/policies')).find(p => p.audience === 'staff');
+    assert.equal(Number(staffPolicy.late_after_minutes), 10);
+    assert.equal(Number(staffPolicy.late_count_to_lop), 3);
+    assert.equal(String(staffPolicy.auto_absent_at).slice(0, 5), '11:15');
+    assert.equal(Number(staffPolicy.notify_on_arrival), 0);
+    // and it is audited, because these values decide what the automation does tomorrow
+    assert.ok(await app.db.count('audit_logs', { school_id: schoolId, entity_type: 'attendance.policy' }) >= 1);
+    await api('/attendance/policies', { audience: 'student', minAttendancePct: Number(before.min_attendance_pct) }, 'PUT');
+  });
+
+  test('the staff register carries the department, the designation and this month\'s lates', async () => {
+    const rows = await api(`/attendance/staff?date=${today}`);
+    assert.ok(rows.length >= 1, JSON.stringify(rows));
+    const me = rows.find(r => r.staff_id === teacher.id);
+    assert.ok(me, 'the teacher is on the staff register');
+    assert.ok('department' in me && 'designation' in me && 'lates_this_month' in me);
+    assert.equal(Number(me.lates_this_month), 0);
+    await app.attendance.markStaff(schoolId, teacher.id, today.slice(0, 8) + '02', 'late');
+    const again = (await api(`/attendance/staff?date=${today}`)).find(r => r.staff_id === teacher.id);
+    assert.equal(Number(again.lates_this_month), 1, 'a late earlier this month counts against the LOP rule');
+  });
+
+  test('devices report what they took in today', async () => {
+    const devices = await api(`/attendance/devices?date=${today}`);
+    const gate = devices.find(x => x.name === 'Main gate');
+    assert.ok(gate, JSON.stringify(devices.map(x => x.name)));
+    assert.equal(Number(gate.punches_today), 4, 'four punches arrived, one of them from nobody we know');
+  });
+
   test('monthly summary and the below-minimum alert', async () => {
     const month = today.slice(0, 8) + '01';
     const r = await api(`/attendance/refresh-summary?month=${month}`, {});

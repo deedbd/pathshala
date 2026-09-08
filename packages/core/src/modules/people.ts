@@ -223,6 +223,26 @@ export class PeopleService {
     const id = ulid(); await this.db.insert('departments', { id, school_id: schoolId, name, head_staff_id: null, kind }); return id;
   }
   async departments(schoolId: string) { return this.db.findMany<Row>('departments', { school_id: schoolId }, { orderBy: 'name ASC' }); }
+  /**
+   * Departments with the head, the headcount and who is away today — the view a head teacher uses to
+   * see which desk is short-handed. Staff with no department are reported as their own row, because
+   * a school that has never filled the field should be told so, not shown an empty page.
+   */
+  async departmentSummary(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    const rows = await this.db.query<Row>(`SELECT d.id, d.name, d.kind, d.head_staff_id, h.first_name AS head_first, h.last_name AS head_last,
+        (SELECT COUNT(*) FROM staff s WHERE s.department_id = d.id AND s.status IN ('active','probation','on_leave')) AS headcount,
+        (SELECT COUNT(*) FROM staff s WHERE s.department_id = d.id AND s.status IN ('active','probation') AND s.staff_category = 'teaching') AS teaching,
+        (SELECT COUNT(*) FROM staff s JOIN leave_applications l ON l.staff_id = s.id AND l.status = 'approved' AND l.from_date <= ? AND l.to_date >= ? WHERE s.department_id = d.id) AS on_leave
+      FROM departments d LEFT JOIN staff h ON h.id = d.head_staff_id WHERE d.school_id = ? ORDER BY d.name`, [onDate, onDate, schoolId]);
+    const unassigned = Number((await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM staff WHERE school_id = ? AND department_id IS NULL AND status IN ('active','probation','on_leave')`, [schoolId]))[0]?.n ?? 0);
+    const out = rows.map(r => ({
+      id: String(r.id), name: String(r.name), kind: String(r.kind),
+      head: r.head_first ? `${r.head_first} ${r.head_last ?? ''}`.trim() : null,
+      headcount: Number(r.headcount), teaching: Number(r.teaching), on_leave: Number(r.on_leave),
+    }));
+    if (unassigned) out.push({ id: '', name: '', kind: 'unassigned', head: null, headcount: unassigned, teaching: 0, on_leave: 0 });
+    return out;
+  }
   /** The head of department, who is the person a departmental view is scoped to. Only a member of the department can head it. */
   async setDepartmentHead(schoolId: string, departmentId: string, staffId: string | null) {
     if (!(await this.db.findOne('departments', { id: departmentId, school_id: schoolId }))) throw notFound('department');

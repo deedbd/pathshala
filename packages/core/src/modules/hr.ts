@@ -136,9 +136,51 @@ export class HrService {
     return id;
   }
   async contracts(schoolId: string, staffId?: string) {
-    const where: Row = { school_id: schoolId };
-    if (staffId) where.staff_id = staffId;
-    return this.db.findMany<Row>('staff_contracts', where, { orderBy: 'start_date DESC', limit: 200 });
+    return this.db.query<Row>(`SELECT c.*, s.first_name, s.last_name, s.employee_no, s.status AS staff_status FROM staff_contracts c JOIN staff s ON s.id = c.staff_id
+      WHERE c.school_id = ?${staffId ? ' AND c.staff_id = ?' : ''} ORDER BY (CASE WHEN c.end_date IS NULL THEN 1 ELSE 0 END), c.end_date, c.start_date DESC LIMIT 200`,
+      staffId ? [schoolId, staffId] : [schoolId]);
+  }
+  /**
+   * Everything the nightly `hr.expiry_alerts` pass is already shouting about, in one list a person
+   * can actually look at: contracts ending, probations ending, staff documents expiring. `days` is
+   * how far ahead to look; anything already past shows with a negative count, because a licence that
+   * lapsed last week is the urgent row, not the one three weeks out.
+   */
+  async expiries(schoolId: string, days = 60) {
+    const today = nowSql().slice(0, 10);
+    const until = isoDay(today, days);
+    const [contracts, probations, documents] = await Promise.all([
+      this.db.query<Row>(`SELECT c.id, c.staff_id, c.end_date AS on_date, c.contract_type, s.first_name, s.last_name, s.employee_no FROM staff_contracts c JOIN staff s ON s.id = c.staff_id
+        WHERE c.school_id = ? AND c.end_date IS NOT NULL AND c.end_date <= ? AND s.status IN ('active','probation') ORDER BY c.end_date`, [schoolId, until]),
+      this.db.query<Row>(`SELECT id AS staff_id, probation_end AS on_date, first_name, last_name, employee_no FROM staff
+        WHERE school_id = ? AND status = 'probation' AND probation_end IS NOT NULL AND probation_end <= ? ORDER BY probation_end`, [schoolId, until]),
+      this.db.query<Row>(`SELECT d.id, d.staff_id, d.expires_at AS on_date, d.doc_type, s.first_name, s.last_name, s.employee_no FROM staff_documents d JOIN staff s ON s.id = d.staff_id
+        WHERE d.school_id = ? AND d.expires_at IS NOT NULL AND d.expires_at <= ? AND s.status IN ('active','probation','on_leave') ORDER BY d.expires_at`, [schoolId, until]),
+    ]);
+    const day = (v: unknown) => String(v).slice(0, 10);
+    const inDays = (on: string) => Math.round((Date.parse(`${on}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+    const row = (kind: string, what: string, r: Row, id: string) => ({
+      id, kind, what, staff_id: String(r.staff_id), employee_no: r.employee_no ?? null,
+      name: `${r.first_name} ${r.last_name ?? ''}`.trim(), on_date: day(r.on_date), days: inDays(day(r.on_date)),
+    });
+    return [
+      ...contracts.map(r => row('contract', `${String(r.contract_type).replace(/_/g, ' ')} contract ends`, r, String(r.id))),
+      ...probations.map(r => row('probation', 'probation ends', r, `probation:${String(r.staff_id)}`)),
+      ...documents.map(r => row('document', `${String(r.doc_type).replace(/_/g, ' ')} expires`, r, String(r.id))),
+    ].sort((a, b) => a.days - b.days);
+  }
+  /**
+   * Leave balances the monthly accrual writes and an approval decrements. `remaining` is what is
+   * actually left — allocated plus carry-forward, less what has been used and encashed.
+   */
+  async leaveBalances(schoolId: string, f: { staffId?: string; academicYearId?: string } = {}) {
+    const yearId = f.academicYearId ?? String((await this.academic.requireYear(schoolId, null)).id);
+    const where = ['b.school_id = ?', 'b.academic_year_id = ?']; const params: unknown[] = [schoolId, yearId];
+    if (f.staffId) { where.push('b.staff_id = ?'); params.push(f.staffId); }
+    const rows = await this.db.query<Row>(`SELECT b.*, t.name AS leave_type, t.code AS leave_code, s.first_name, s.last_name, s.employee_no, dep.name AS department
+      FROM leave_balances b JOIN leave_types t ON t.id = b.leave_type_id JOIN staff s ON s.id = b.staff_id LEFT JOIN departments dep ON dep.id = s.department_id
+      WHERE ${where.join(' AND ')} ORDER BY s.employee_no, t.name LIMIT 2000`, params);
+    return rows.map(r => ({ ...r, remaining: Number(r.allocated) + Number(r.carried_forward) - Number(r.used) - Number(r.encashed) }) as Row);
   }
   async createShift(schoolId: string, s: { name: string; startTime: string; endTime: string; days?: number[] }) {
     const id = ulid();

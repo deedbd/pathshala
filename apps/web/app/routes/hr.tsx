@@ -8,21 +8,27 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const user = requireUser(context, request); const sid = user.school_id; const url = new URL(request.url);
   const runs = await context.app.hr.runs(sid);
   const runId = url.searchParams.get('runId') ?? (runs[0] ? String(runs[0].id) : null);
-  const [detail, staff, components, loans, postings, applicants, exits] = await Promise.all([
+  const cycleId = url.searchParams.get('cycleId');
+  const [detail, staff, components, loans, postings, applicants, exits, cycles, appraisals, contracts, expiries, balances] = await Promise.all([
     runId ? context.app.hr.run(sid, runId).catch(() => null) : null,
-    context.app.db.query(`SELECT s.id, s.employee_no, s.first_name, s.last_name, s.staff_category, s.status, ss.basic, ss.mpo_portion FROM staff s LEFT JOIN salary_structures ss ON ss.staff_id = s.id AND (ss.effective_to IS NULL OR ss.effective_to >= ?) WHERE s.school_id = ? AND s.status IN ('active','probation','on_leave') ORDER BY s.employee_no LIMIT 500`, [new Date().toISOString().slice(0, 10), sid]),
+    context.app.db.query(`SELECT s.id, s.employee_no, s.first_name, s.last_name, s.staff_category, s.status, ss.basic, ss.mpo_portion, ss.effective_from, d.name AS designation, dep.name AS department FROM staff s LEFT JOIN salary_structures ss ON ss.staff_id = s.id AND (ss.effective_to IS NULL OR ss.effective_to >= ?) LEFT JOIN designations d ON d.id = s.designation_id LEFT JOIN departments dep ON dep.id = s.department_id WHERE s.school_id = ? AND s.status IN ('active','probation','on_leave') ORDER BY s.employee_no LIMIT 500`, [new Date().toISOString().slice(0, 10), sid]),
     context.app.hr.components(sid), context.app.hr.loans(sid), context.app.hr.postings(sid), context.app.hr.applicants(sid),
     context.app.db.query(`SELECT e.*, s.first_name, s.last_name, s.employee_no FROM staff_exits e JOIN staff s ON s.id = e.staff_id WHERE e.school_id = ? ORDER BY e.last_working_day DESC LIMIT 100`, [sid]),
+    context.app.db.findMany<Record<string, unknown>>('appraisal_cycles', { school_id: sid }, { orderBy: 'opens_at DESC', limit: 20 }),
+    context.app.hr.appraisals(sid, cycleId ?? undefined),
+    context.app.hr.contracts(sid),
+    context.app.hr.expiries(sid, 60),
+    context.app.hr.leaveBalances(sid).catch(() => [] as Awaited<ReturnType<typeof context.app.hr.leaveBalances>>),
   ]);
-  return { locale: (user.locale as Locale) || context.locale, runs, runId, detail, staff, components, loans, postings, applicants, exits };
+  return { locale: (user.locale as Locale) || context.locale, runs, runId, detail, staff, components, loans, postings, applicants, exits, cycleId, cycles, appraisals, contracts, expiries, balances };
 }
 export function meta() { return [{ title: 'Pathshala — HR & payroll' }]; }
 
 export default function Hr() {
   const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
-  const [tab, setTab] = useState<'payroll' | 'salary' | 'loans' | 'hiring' | 'exits'>('payroll');
-  const [drawer, setDrawer] = useState<null | 'run' | 'structure' | 'loan' | 'posting' | 'exit'>(null);
+  const [tab, setTab] = useState<'payroll' | 'salary' | 'loans' | 'hiring' | 'exits' | 'appraisals' | 'expiry' | 'leave'>('payroll');
+  const [drawer, setDrawer] = useState<null | 'run' | 'structure' | 'loan' | 'posting' | 'exit' | 'cycle' | 'contract'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await fn(); setDrawer(null); rv.revalidate(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   const setParam = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n); };
@@ -75,6 +81,9 @@ export default function Hr() {
         { key: 'loans', label: tr('hr.loans'), count: d.loans.length },
         { key: 'hiring', label: tr('hr.hiring'), count: d.applicants.length },
         { key: 'exits', label: tr('hr.exits'), count: d.exits.length },
+        { key: 'appraisals', label: tr('hr.appraisals'), count: d.appraisals.length },
+        { key: 'expiry', label: tr('hr.expiry'), count: d.expiries.length },
+        { key: 'leave', label: tr('hr.leaveBalances'), count: d.balances.length },
       ]} /></div>
 
       {tab === 'payroll' && <div className="mt-4"><DataTable locale={d.locale} rows={d.detail?.payslips ?? []} columns={[
@@ -91,15 +100,76 @@ export default function Hr() {
       ]} /></div>}
 
       {tab === 'salary' && <div className="mt-4">
-        <div className="mb-3 flex justify-end"><Button size="sm" onClick={() => setDrawer('structure')}>{tr('hr.setStructure')}</Button></div>
+        <h2 className="text-lg">{tr('hr.components')}</h2>
+        <div className="mt-2"><DataTable locale={d.locale} searchable={false} rows={d.components} columns={[
+          { key: 'name', label: tr('hr.components'), render: r => String(r.name) },
+          { key: 'code', label: 'Code', className: 'num' },
+          { key: 'component_type', label: tr('common.type'), render: r => <span className="chip">{String(r.component_type)}</span> },
+          { key: 'calc_type', label: tr('hr.calculation'), render: r => String(r.calc_type).replace(/_/g, ' ') },
+          { key: 'default_value', label: tr('hr.value'), className: 'num', render: r => String(r.calc_type).startsWith('percent') ? `${Number(r.default_value)}%` : String(r.calc_type) === 'fixed' ? money(r.default_value) : '—' },
+          { key: 'is_taxable', label: tr('hr.tax'), render: r => Number(r.is_taxable) ? '✓' : '' },
+        ]} /></div>
+        <div className="mt-6 mb-3 flex items-center justify-between"><h2 className="text-lg">{tr('hr.structures')}</h2><Button size="sm" onClick={() => setDrawer('structure')}>{tr('hr.setStructure')}</Button></div>
         <DataTable locale={d.locale} rows={d.staff} columns={[
           { key: 'employee_no', label: tr('hr.employeeNo'), className: 'num' },
           { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name} ${r.last_name ?? ''}` },
+          { key: 'designation', label: tr('staff.designation'), render: r => r.designation ? String(r.designation) : <span style={{ color: 'var(--muted)' }}>—</span> },
           { key: 'staff_category', label: tr('hr.category') },
           { key: 'basic', label: tr('hr.basic'), className: 'num', render: r => r.basic == null ? <Chip status="pending">{tr('hr.noStructure')}</Chip> : money(r.basic) },
           { key: 'mpo_portion', label: tr('hr.mpo'), className: 'num', render: r => money(r.mpo_portion) },
+          { key: 'effective_from', label: tr('hr.effectiveFrom'), render: r => r.effective_from ? formatDate(String(r.effective_from), d.locale) : <span style={{ color: 'var(--muted)' }}>—</span> },
         ]} />
       </div>}
+
+      {tab === 'appraisals' && <div className="mt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm" style={{ color: 'var(--muted)' }}>{tr('hr.appraisalNote')}</p>
+          <div className="flex items-center gap-2">
+            {d.cycles.length > 0 && <Select value={d.cycleId ?? ''} onChange={e => setParam('cycleId', e.target.value)} placeholder={tr('common.all')} className="max-w-[220px]" options={d.cycles.map(c => ({ value: String(c.id), label: String(c.name) }))} />}
+            <Button size="sm" onClick={() => setDrawer('cycle')}>{tr('hr.openCycle')}</Button>
+          </div>
+        </div>
+        <div className="mt-3"><DataTable locale={d.locale} rows={d.appraisals} empty={tr('hr.noAppraisals')} columns={[
+          { key: 'employee_no', label: tr('hr.employeeNo'), className: 'num' },
+          { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name} ${r.last_name ?? ''}` },
+          { key: 'auto_metrics', label: tr('hr.autoMetrics'), render: r => { const m = metrics(r.auto_metrics); return m.length ? <span className="text-xs">{m.map(([k, v]) => `${k} ${v}`).join(' · ')}</span> : <span style={{ color: 'var(--muted)' }}>—</span>; } },
+          { key: 'overall_score', label: tr('hr.overall'), className: 'num', render: r => r.overall_score == null ? <span style={{ color: 'var(--muted)' }}>—</span> : Number(r.overall_score).toFixed(2) },
+          { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status) === 'finalised' ? 'active' : String(r.status) === 'reviewed' ? 'done' : 'pending'}>{String(r.status).replace('_', ' ')}</Chip> },
+          { key: 'id', label: '', render: r => String(r.status) === 'finalised' || r.overall_score == null ? null : <Button size="sm" onClick={() => run(async () => { const x = await api<{ overall: number }>(`/api/hr/appraisals/${r.id}/finalise`, { method: 'POST', json: {} }); setMsg(`${tr('hr.overall')}: ${x.overall}`); })}>{tr('hr.finalise')}</Button> },
+        ]} /></div>
+      </div>}
+
+      {tab === 'expiry' && <div className="mt-4">
+        <p className="text-sm" style={{ color: 'var(--muted)' }}>{tr('hr.expiryNote')}</p>
+        <div className="mt-3"><DataTable locale={d.locale} searchable={false} rows={d.expiries} empty={tr('hr.noExpiries')} columns={[
+          { key: 'name', label: tr('hr.staff') },
+          { key: 'employee_no', label: tr('hr.employeeNo'), className: 'num', render: r => String(r.employee_no ?? '—') },
+          { key: 'what', label: tr('hr.item') },
+          { key: 'on_date', label: tr('common.date'), render: r => formatDate(String(r.on_date), d.locale) },
+          { key: 'days', label: tr('hr.expiresIn'), className: 'num', sortValue: r => Number(r.days), render: r => Number(r.days) < 0 ? <span style={{ color: 'var(--bad)' }}>{tr('hr.overdue')}</span> : <span style={{ color: Number(r.days) <= 14 ? 'var(--bad)' : undefined }}>{Number(r.days)} {tr('hr.days')}</span> },
+          { key: 'kind', label: tr('common.status'), render: r => <Chip status={Number(r.days) <= 30 ? 'pending' : 'scheduled'}>{String(r.kind)}</Chip> },
+        ]} /></div>
+        <div className="mt-6 mb-3 flex items-center justify-between"><h2 className="text-lg">{tr('hr.contracts')}</h2><Button size="sm" onClick={() => setDrawer('contract')}>{tr('hr.newContract')}</Button></div>
+        <DataTable locale={d.locale} rows={d.contracts} columns={[
+          { key: 'employee_no', label: tr('hr.employeeNo'), className: 'num' },
+          { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name} ${r.last_name ?? ''}` },
+          { key: 'contract_type', label: tr('hr.contractType'), render: r => <span className="chip">{String(r.contract_type).replace(/_/g, ' ')}</span> },
+          { key: 'start_date', label: tr('hr.starts'), render: r => formatDate(String(r.start_date), d.locale) },
+          { key: 'end_date', label: tr('hr.ends'), render: r => r.end_date ? formatDate(String(r.end_date), d.locale) : <span style={{ color: 'var(--muted)' }}>—</span> },
+          { key: 'staff_status', label: tr('common.status'), render: r => <Chip status={String(r.staff_status) === 'active' ? 'active' : String(r.staff_status)}>{String(r.staff_status)}</Chip> },
+        ]} />
+      </div>}
+
+      {tab === 'leave' && <div className="mt-4"><DataTable locale={d.locale} rows={d.balances} empty={tr('lv.noBalances')} columns={[
+        { key: 'employee_no', label: tr('hr.employeeNo'), className: 'num' },
+        { key: 'first_name', label: tr('common.name'), render: r => `${r.first_name} ${r.last_name ?? ''}` },
+        { key: 'department', label: tr('common.department'), render: r => r.department ? String(r.department) : <span style={{ color: 'var(--muted)' }}>—</span> },
+        { key: 'leave_type', label: tr('lv.type') },
+        { key: 'allocated', label: tr('lv.allocated'), className: 'num', render: r => Number(r.allocated) },
+        { key: 'carried_forward', label: tr('lv.carried'), className: 'num', render: r => Number(r.carried_forward) },
+        { key: 'used', label: tr('lv.used'), className: 'num', render: r => Number(r.used) },
+        { key: 'remaining', label: tr('lv.remaining'), className: 'num', render: r => <b>{Number(r.remaining)}</b> },
+      ]} /></div>}
 
       {tab === 'loans' && <div className="mt-4">
         <div className="mb-3 flex justify-end"><Button size="sm" onClick={() => setDrawer('loan')}>{tr('hr.newLoan')}</Button></div>
@@ -184,6 +254,24 @@ export default function Hr() {
         </form>
       </Drawer>
 
+      <Drawer open={drawer === 'cycle'} onClose={() => setDrawer(null)} title={tr('hr.openCycle')}>
+        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(async () => { const r = await api<{ appraisals: number }>('/api/hr/appraisals/cycles', { method: 'POST', json: { name: f.name, opensAt: f.opensAt, closesAt: f.closesAt } }); setMsg(`${r.appraisals}`); }); }}>
+          <Field label={tr('common.name')}><Input name="name" required defaultValue={`${new Date().getFullYear()}`} /></Field>
+          <div className="grid grid-cols-2 gap-3"><Field label={tr('hr.starts')}><Input name="opensAt" type="date" required /></Field><Field label={tr('hr.ends')}><Input name="closesAt" type="date" required /></Field></div>
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('hr.appraisalNote')}</p>
+          <Button disabled={busy}>{tr('common.save')}</Button>
+        </form>
+      </Drawer>
+
+      <Drawer open={drawer === 'contract'} onClose={() => setDrawer(null)} title={tr('hr.newContract')}>
+        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/hr/contracts', { method: 'POST', json: { staffId: f.staffId, contractType: f.contractType, startDate: f.startDate, endDate: f.endDate || null } })); }}>
+          <Field label={tr('hr.staff')}><Select name="staffId" required options={d.staff.map(s => ({ value: String(s.id), label: `${s.employee_no} · ${s.first_name} ${s.last_name ?? ''}` }))} /></Field>
+          <Field label={tr('hr.contractType')}><Select name="contractType" options={['permanent', 'contract', 'part_time', 'intern', 'volunteer', 'mpo'].map(v => ({ value: v, label: v.replace(/_/g, ' ') }))} /></Field>
+          <div className="grid grid-cols-2 gap-3"><Field label={tr('hr.starts')}><Input name="startDate" type="date" required /></Field><Field label={tr('hr.ends')} hint={tr('common.none')}><Input name="endDate" type="date" /></Field></div>
+          <Button disabled={busy}>{tr('common.save')}</Button>
+        </form>
+      </Drawer>
+
       <Drawer open={drawer === 'exit'} onClose={() => setDrawer(null)} title={tr('hr.newExit')}>
         <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/hr/exits', { method: 'POST', json: { staffId: f.staffId, exitType: f.exitType, lastWorkingDay: f.lastWorkingDay, noticeDate: f.noticeDate || null } })); }}>
           <Field label={tr('hr.staff')}><Select name="staffId" required options={d.staff.map(s => ({ value: String(s.id), label: `${s.employee_no} · ${s.first_name}` }))} /></Field>
@@ -197,3 +285,12 @@ export default function Hr() {
 }
 
 const nextStage = (s: string) => ({ applied: 'shortlisted', shortlisted: 'interview', interview: 'offered', offered: 'hired' } as Record<string, string>)[s] ?? 'hired';
+
+/** `auto_metrics` arrives as JSON on Postgres/MySQL and as a string on SQLite; both read the same here. */
+function metrics(v: unknown): [string, string][] {
+  if (v == null) return [];
+  let o: unknown = v;
+  if (typeof v === 'string') { try { o = JSON.parse(v); } catch { return []; } }
+  if (!o || typeof o !== 'object') return [];
+  return Object.entries(o as Record<string, unknown>).map(([k, n]) => [k.replace(/_/g, ' '), typeof n === 'number' ? String(Math.round(n * 100) / 100) : String(n)]);
+}

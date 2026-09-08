@@ -10,9 +10,12 @@ import { HttpError, badRequest, notFound } from '../context.js';
 
 export type StudentStatus = 'present' | 'absent' | 'late' | 'half_day' | 'excused' | 'holiday';
 export interface MarkInput { studentId: string; status: StudentStatus; checkIn?: string | null; lateMinutes?: number | null; remarks?: string | null }
-export interface PolicyInput { audience: 'student' | 'staff'; classId?: string | null; shiftId?: string | null; lateAfterMinutes?: number; halfDayAfterMinutes?: number; autoAbsentAt?: string | null; notifyOnArrival?: boolean; notifyOnAbsent?: boolean; notifyOnLate?: boolean; consecutiveAbsentAlert?: number; minAttendancePct?: number; blockExamBelowMin?: boolean }
+export interface PolicyInput { audience: 'student' | 'staff'; classId?: string | null; shiftId?: string | null; lateAfterMinutes?: number; halfDayAfterMinutes?: number; autoAbsentAt?: string | null; notifyOnArrival?: boolean; notifyOnAbsent?: boolean; notifyOnLate?: boolean; consecutiveAbsentAlert?: number; minAttendancePct?: number; blockExamBelowMin?: boolean; lateCountToLop?: number | null }
 export interface RegisterRow extends Row { student_id: string; first_name: string; last_name: string | null; name_bn: string | null; current_roll_no: string | null; photo_file_id: string | null; attendance_id: string | null; status: StudentStatus | null; check_in: string | null; late_minutes: number | null; remarks: string | null; source: string | null; on_leave: boolean }
 export interface LeaveInput { applicantType: 'student' | 'staff'; studentId?: string | null; staffId?: string | null; leaveTypeId: string; fromDate: string; toDate: string; halfDay?: 'first' | 'second' | null; reason: string; documentFileId?: string | null }
+/** One row of the "today" board. `pct` is null when nothing has been marked — not zero. */
+export interface TodaySection { id: string; name: string; class_name: string; class_teacher: string | null; enrolled: number; marked: number; present: number; late: number; absent: number; half_day: number; excused: number; pct: number | null; partial: boolean; source: string | null }
+export interface TodaySweep { absent: number; at: string | null; notified: number; lastRunAt: string | null; lastStatus: string | null }
 
 /**
  * Attendance: one row per student per day (`student_attendance`), optional per-period rows, staff
@@ -24,11 +27,31 @@ export class AttendanceService {
   constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private approvals: ApprovalService, private adapters: Adapters) {}
 
   // ---------- policies ----------
+  /**
+   * Writes one policy row. A field the caller did not send keeps what the row already holds, so a
+   * form that changes the cut-off does not quietly reset the late threshold and the notification
+   * switches to their defaults on its way past.
+   */
   async setPolicy(schoolId: string, p: PolicyInput) {
     const where: Row = { school_id: schoolId, audience: p.audience, class_id: p.classId ?? null, shift_id: p.shiftId ?? null };
-    const row = { late_after_minutes: p.lateAfterMinutes ?? 15, half_day_after_minutes: p.halfDayAfterMinutes ?? 120, auto_absent_at: p.autoAbsentAt ?? null, notify_on_arrival: p.notifyOnArrival ?? true, notify_on_absent: p.notifyOnAbsent ?? true, notify_on_late: p.notifyOnLate ?? true, consecutive_absent_alert: p.consecutiveAbsentAlert ?? 3, min_attendance_pct: p.minAttendancePct ?? 75, block_exam_below_min: p.blockExamBelowMin ?? false, is_active: true };
-    const ex = await this.db.findOne<{ id: string }>('attendance_policies', where);
-    if (ex) { await this.db.update('attendance_policies', { ...row, updated_at: nowSql() }, { id: ex.id }); return ex.id; }
+    const ex = await this.db.findOne<Row>('attendance_policies', where);
+    const keep = <T>(sent: T | undefined, had: unknown, fallback: T): T => (sent !== undefined ? sent : ex ? (had as T) : fallback);
+    const bool = (sent: boolean | undefined, had: unknown, fallback: boolean) => (sent !== undefined ? sent : ex ? Number(had) === 1 : fallback);
+    const row = {
+      late_after_minutes: Number(keep(p.lateAfterMinutes, ex?.late_after_minutes, 15)),
+      half_day_after_minutes: Number(keep(p.halfDayAfterMinutes, ex?.half_day_after_minutes, 120)),
+      // 'HH:MM' and 'HH:MM:SS' both arrive; the column is a TIME, so store one shape
+      auto_absent_at: 'autoAbsentAt' in p ? (p.autoAbsentAt ? `${String(p.autoAbsentAt).slice(0, 5)}:00` : null) : (ex?.auto_absent_at ?? null),
+      notify_on_arrival: bool(p.notifyOnArrival, ex?.notify_on_arrival, true),
+      notify_on_absent: bool(p.notifyOnAbsent, ex?.notify_on_absent, true),
+      notify_on_late: bool(p.notifyOnLate, ex?.notify_on_late, true),
+      consecutive_absent_alert: Number(keep(p.consecutiveAbsentAlert, ex?.consecutive_absent_alert, 3)),
+      min_attendance_pct: Number(keep(p.minAttendancePct, ex?.min_attendance_pct, 75)),
+      block_exam_below_min: bool(p.blockExamBelowMin, ex?.block_exam_below_min, false),
+      late_count_to_lop: 'lateCountToLop' in p ? p.lateCountToLop ?? null : (ex?.late_count_to_lop ?? null),
+      is_active: true,
+    };
+    if (ex) { await this.db.update('attendance_policies', { ...row, updated_at: nowSql() }, { id: String(ex.id) }); return String(ex.id); }
     const id = ulid(); await this.db.insert('attendance_policies', { id, ...where, ...row }); return id;
   }
   async policies(schoolId: string) { return this.db.findMany<Row>('attendance_policies', { school_id: schoolId, is_active: true }); }
@@ -113,8 +136,19 @@ export class AttendanceService {
     if (ex) { await this.db.update('staff_attendance', { ...row, updated_at: nowSql() }, { id: ex.id as string }); return String(ex.id); }
     const id = ulid(); await this.db.insert('staff_attendance', { id, ...row }); return id;
   }
+  /**
+   * Staff for one day, with the department, the designation and how many times this person has been
+   * late in the month the date falls in — the count the LOP rule on the staff policy is counted
+   * against, so the office can see the third late coming rather than find it on a payslip.
+   */
   async staffRegister(schoolId: string, onDate: string) {
-    return this.db.query<Row>(`SELECT st.id AS staff_id, st.employee_no, st.first_name, st.last_name, st.staff_category, a.status, a.check_in, a.check_out FROM staff st LEFT JOIN staff_attendance a ON a.staff_id = st.id AND a.on_date = ? WHERE st.school_id = ? AND st.status IN ('active','probation') ORDER BY st.first_name`, [onDate, schoolId]);
+    const first = `${onDate.slice(0, 7)}-01`;
+    return this.db.query<Row>(`SELECT st.id AS staff_id, st.employee_no, st.first_name, st.last_name, st.staff_category, d.name AS designation, dep.name AS department,
+        a.status, a.check_in, a.check_out,
+        (SELECT COUNT(*) FROM staff_attendance la WHERE la.staff_id = st.id AND la.status = 'late' AND la.on_date >= ? AND la.on_date <= ?) AS lates_this_month
+      FROM staff st LEFT JOIN designations d ON d.id = st.designation_id LEFT JOIN departments dep ON dep.id = st.department_id
+      LEFT JOIN staff_attendance a ON a.staff_id = st.id AND a.on_date = ?
+      WHERE st.school_id = ? AND st.status IN ('active','probation') ORDER BY st.first_name`, [first, onDate, onDate, schoolId]);
   }
 
   // ---------- devices ----------
@@ -124,7 +158,11 @@ export class AttendanceService {
     await this.db.insert('attendance_devices', { id, school_id: schoolId, campus_id: d.campusId ?? null, name: d.name, device_type: d.deviceType, vendor: d.vendor ?? null, serial_no: d.serialNo ?? null, api_key_hash: sha256(key), location: d.location ?? null, direction: d.direction ?? 'both', is_active: true });
     return { id, apiKey: key };   // shown once
   }
-  async devices(schoolId: string) { return this.db.findMany<Row>('attendance_devices', { school_id: schoolId }, { orderBy: 'name ASC' }); }
+  /** Devices with today's punch count, so "online" is a thing the register can be checked against. */
+  async devices(schoolId: string, onDate = nowSql().slice(0, 10)) {
+    return this.db.query<Row>(`SELECT d.*, (SELECT COUNT(*) FROM device_punch_logs p WHERE p.device_id = d.id AND p.punched_at >= ? AND p.punched_at <= ?) AS punches_today
+      FROM attendance_devices d WHERE d.school_id = ? ORDER BY d.name ASC`, [`${onDate} 00:00:00`, `${onDate} 23:59:59`, schoolId]);
+  }
   async deviceByKey(apiKey: string) {
     const { sha256 } = await import('../util.js');
     return this.db.findOne<Row>('attendance_devices', { api_key_hash: sha256(apiKey), is_active: true });
@@ -235,6 +273,83 @@ export class AttendanceService {
     if (f.sectionId) { where.push('a.section_id = ?'); params.push(f.sectionId); }
     return this.db.query<Row>(`SELECT a.on_date, a.status, COUNT(*) AS n FROM student_attendance a WHERE ${where.join(' AND ')} GROUP BY a.on_date, a.status ORDER BY a.on_date`, params);
   }
+
+  /**
+   * The whole of today in one read: the counts, every section with its class teacher, the check-in
+   * curve, and what the cut-off sweep actually did and when.
+   *
+   * A register nobody has opened is not a register of absentees. A section with no marks reports
+   * `marked: 0` and `pct: null`, and the caller has to say "not marked" — printing 0% would tell a
+   * head teacher a class was empty when the truth is that the teacher has not started.
+   */
+  async today(schoolId: string, onDate: string) {
+    const holiday = await this.academic.isHoliday(schoolId, onDate);
+    const year = await this.academic.currentYear(schoolId);
+    const cutoffs = [...new Set((await this.policies(schoolId)).filter(p => p.audience === 'student' && p.auto_absent_at).map(p => String(p.auto_absent_at).slice(0, 5)))].sort();
+    // the school's own wall clock, so a page can say "the register has not closed yet" without
+    // guessing at the browser's timezone or the server's — and only for the day that is actually today
+    const clock = await this.schoolClock(schoolId);
+    const beforeCutoff = onDate >= (await this.schoolDate(schoolId)) && (!cutoffs.length || clock < cutoffs[0]!);
+    if (!year) return { onDate, holiday, cutoffs, clock, beforeCutoff, counts: {} as Record<string, number>, enrolled: 0, marked: 0, unmarked: 0, onLeave: 0, sections: [] as TodaySection[], checkIns: [] as { at: string; n: number }[], sweep: null as TodaySweep | null };
+    const yearId = String(year.id);
+    const [cells, sectionRows, leaveRow, checkInRows, sweepRow, jobRow] = await Promise.all([
+      this.db.query<Row>(`SELECT section_id, status, source, COUNT(*) AS n FROM student_attendance WHERE school_id = ? AND on_date = ? GROUP BY section_id, status, source`, [schoolId, onDate]),
+      this.db.query<Row>(`SELECT sec.id, sec.name, c.name AS class_name, c.numeric_level, st.first_name AS teacher_first, st.last_name AS teacher_last,
+          (SELECT COUNT(*) FROM student_enrollments e JOIN students s ON s.id = e.student_id WHERE e.section_id = sec.id AND e.status = 'active' AND s.status = 'active') AS enrolled
+        FROM sections sec JOIN classes c ON c.id = sec.class_id LEFT JOIN staff st ON st.id = sec.class_teacher_id
+        WHERE sec.school_id = ? AND sec.academic_year_id = ? AND sec.status = 'active' ORDER BY c.numeric_level, sec.name`, [schoolId, yearId]),
+      this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM leave_applications WHERE school_id = ? AND applicant_type = 'student' AND status = 'approved' AND from_date <= ? AND to_date >= ?`, [schoolId, onDate, onDate]),
+      this.db.query<{ check_in: string }>(`SELECT check_in FROM student_attendance WHERE school_id = ? AND on_date = ? AND check_in IS NOT NULL`, [schoolId, onDate]),
+      this.db.query<Row>(`SELECT COUNT(*) AS n, MIN(created_at) AS at, SUM(CASE WHEN guardian_notified_at IS NULL THEN 0 ELSE 1 END) AS notified FROM student_attendance WHERE school_id = ? AND on_date = ? AND source = 'system' AND status = 'absent'`, [schoolId, onDate]),
+      this.db.query<Row>(`SELECT last_run_at, last_status FROM scheduled_jobs WHERE school_id = ? AND job_key = 'attendance.auto_absent'`, [schoolId]),
+    ]);
+    const counts: Record<string, number> = {};
+    const per = new Map<string, { status: Record<string, number>; source: Record<string, number> }>();
+    for (const c of cells) {
+      const n = Number(c.n); const status = String(c.status);
+      counts[status] = (counts[status] ?? 0) + n;
+      const key = c.section_id == null ? '' : String(c.section_id);
+      const bucket = per.get(key) ?? { status: {}, source: {} };
+      bucket.status[status] = (bucket.status[status] ?? 0) + n;
+      bucket.source[String(c.source)] = (bucket.source[String(c.source)] ?? 0) + n;
+      per.set(key, bucket);
+    }
+    const sections: TodaySection[] = sectionRows.map(s => {
+      const b = per.get(String(s.id)) ?? { status: {}, source: {} };
+      const g = (k: string) => b.status[k] ?? 0;
+      const marked = Object.values(b.status).reduce((a, n) => a + n, 0);
+      const inSchool = g('present') + g('late') + g('half_day') * 0.5;
+      const sources = Object.entries(b.source).sort((a, b2) => b2[1] - a[1]).map(([k]) => k);
+      return {
+        id: String(s.id), name: String(s.name), class_name: String(s.class_name),
+        class_teacher: s.teacher_first ? `${s.teacher_first} ${s.teacher_last ?? ''}`.trim() : null,
+        enrolled: Number(s.enrolled), marked, present: g('present'), late: g('late'), absent: g('absent'), half_day: g('half_day'), excused: g('excused'),
+        pct: marked ? Math.round((inSchool / marked) * 1000) / 10 : null,
+        partial: marked > 0 && marked < Number(s.enrolled),
+        source: sources.length ? (sources.length > 1 ? 'mixed' : sources[0]!) : null,
+      };
+    });
+    const buckets = new Map<string, number>();
+    for (const r of checkInRows) {
+      const hhmm = String(r.check_in).slice(11, 16); if (hhmm.length < 5) continue;
+      const at = `${hhmm.slice(0, 3)}${String(Math.floor(Number(hhmm.slice(3, 5)) / 15) * 15).padStart(2, '0')}`;
+      buckets.set(at, (buckets.get(at) ?? 0) + 1);
+    }
+    const enrolled = sections.reduce((a, s) => a + s.enrolled, 0);
+    const marked = Object.values(counts).reduce((a, n) => a + n, 0);
+    // counted section by section, so a register that is half done still says how many are outstanding
+    const unmarked = sections.reduce((a, s) => a + Math.max(0, s.enrolled - s.marked), 0);
+    const swept = Number(sweepRow[0]?.n ?? 0);
+    return {
+      onDate, holiday, cutoffs, clock, beforeCutoff, counts, enrolled, marked, unmarked,
+      onLeave: Number(leaveRow[0]?.n ?? 0), sections,
+      checkIns: [...buckets.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([at, n]) => ({ at, n })),
+      sweep: {
+        absent: swept, at: swept ? String(sweepRow[0]!.at) : null, notified: Number(sweepRow[0]?.notified ?? 0),
+        lastRunAt: jobRow[0]?.last_run_at ? String(jobRow[0].last_run_at) : null, lastStatus: jobRow[0]?.last_status ? String(jobRow[0].last_status) : null,
+      } as TodaySweep,
+    };
+  }
   async studentHistory(schoolId: string, studentId: string, from: string, to: string) {
     return this.db.query<Row>(`SELECT on_date, status, check_in, late_minutes, remarks FROM student_attendance WHERE school_id = ? AND student_id = ? AND on_date BETWEEN ? AND ? ORDER BY on_date DESC`, [schoolId, studentId, from, to]);
   }
@@ -262,6 +377,11 @@ export class AttendanceService {
   private async schoolClock(schoolId: string) {
     const school = await this.db.findOne<{ timezone: string | null }>('schools', { id: schoolId });
     return localHHMM(new Date(), String(school?.timezone ?? 'Asia/Dhaka'));
+  }
+  /** Today's date in the school's own zone — what "today" means to the office, not to the server. */
+  private async schoolDate(schoolId: string) {
+    const school = await this.db.findOne<{ timezone: string | null }>('schools', { id: schoolId });
+    return new Intl.DateTimeFormat('en-CA', { timeZone: String(school?.timezone ?? 'Asia/Dhaka'), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   }
 
   /**
