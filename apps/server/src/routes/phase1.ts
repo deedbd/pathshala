@@ -1,11 +1,24 @@
 import type { Request, Response, Router } from 'express';
 import { HttpError, type App } from '@pathshala/core';
+import { nowSql } from '@pathshala/db';
 import { calendarEventSchema, classSchema, classSubjectSchema, contactSchema, enquirySchema, generateSchema, guardianSchema, lessonPlanSchema, noticeSchema, pageSchema, periodSchema, sectionSchema, slotSchema, staffSchema, studentSchema, subjectSchema, syllabusSchema, yearSchema, z } from '@pathshala/schemas';
 
 type Wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: (e?: unknown) => void) => void;
 
 /** Phase 1 API: academic structure, people, import, timetable, curriculum, website, guardian portal. */
 export function mountPhase1(api: Router, app: App, wrap: Wrap, requirePerm: (req: Request, perm: string) => { id: string; school_id: string }, requireUser: (req: Request) => { id: string; school_id: string; user_type: string }) {
+
+  /**
+   * The language a person reads the software in, kept on their own row so the choice follows them
+   * from the office computer to the phone they mark attendance on. The cookie the console also sets
+   * covers the pages seen before signing in; this is the half that lasts.
+   */
+  api.post('/auth/locale', wrap(async req => {
+    const u = requireUser(req);
+    const { locale } = z.object({ locale: z.enum(['bn', 'en']) }).parse(req.body ?? {});
+    await app.db.update('users', { locale, updated_at: nowSql() }, { id: u.id });
+    return { locale };
+  }));
   const q = (req: Request, k: string) => (typeof req.query[k] === 'string' ? String(req.query[k]) : undefined);
   const yearOf = async (req: Request, schoolId: string) => String((await app.academic.requireYear(schoolId, q(req, 'yearId') ?? (req.body?.academicYearId as string | undefined))).id);
 

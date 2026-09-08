@@ -135,3 +135,75 @@ export function formatDate(d: Date | string | null | undefined, locale: Locale =
 export function formatDateTime(d: Date | string | null | undefined, locale: Locale = 'bn'): string {
   return formatDate(d, locale, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
+
+// ---------------------------------------------------------------- the school's own clock
+/**
+ * The Bangla calendar as Bangladesh actually keeps it since the 2019 reform: Boishakh 1 is always
+ * 14 April, the first five months have 31 days, the next six have 30, and Falgun takes a sixth day
+ * in a Gregorian leap year. A head teacher writes this date on a notice board; showing them only the
+ * Gregorian one is showing them half the date.
+ */
+const BN_MONTHS = ['বৈশাখ', 'জ্যৈষ্ঠ', 'আষাঢ়', 'শ্রাবণ', 'ভাদ্র', 'আশ্বিন', 'কার্তিক', 'অগ্রহায়ণ', 'পৌষ', 'মাঘ', 'ফাল্গুন', 'চৈত্র'];
+const BN_MONTHS_EN = ['Boishakh', 'Jyoishtho', 'Asharh', 'Srabon', 'Bhadro', 'Ashwin', 'Kartik', 'Ogrohayon', 'Poush', 'Magh', 'Falgun', 'Choitro'];
+const BN_DAYS = ['রবিবার', 'সোমবার', 'মঙ্গলবার', 'বুধবার', 'বৃহস্পতিবার', 'শুক্রবার', 'শনিবার'];
+
+/** The year, month and day a wall clock in `timeZone` is showing right now. */
+export function partsIn(d: Date, timeZone = 'Asia/Dhaka') {
+  const f = new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hour12: false });
+  const p: Record<string, string> = {};
+  for (const part of f.formatToParts(d)) p[part.type] = part.value;
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return {
+    year: Number(p.year), month: Number(p.month), day: Number(p.day),
+    hour: Number(p.hour) % 24, minute: Number(p.minute), second: Number(p.second),
+    weekday: Math.max(0, weekdays.indexOf(String(p.weekday).slice(0, 3))),
+  };
+}
+
+const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const utcDay = (y: number, m: number, d: number) => Math.floor(Date.UTC(y, m - 1, d) / 86_400_000);
+
+export function bengaliDate(d: Date = new Date(), timeZone = 'Asia/Dhaka') {
+  const { year, month, day } = partsIn(d, timeZone);
+  // the Bangla year turns on 14 April, so a date before it still belongs to the year that began last April
+  const anchorYear = month > 4 || (month === 4 && day >= 14) ? year : year - 1;
+  const lengths = [31, 31, 31, 31, 31, 30, 30, 30, 30, 30, isLeap(anchorYear + 1) ? 30 : 29, 30];
+  let left = utcDay(year, month, day) - utcDay(anchorYear, 4, 14);
+  let index = 0;
+  while (index < 11 && left >= lengths[index]!) { left -= lengths[index]!; index++; }
+  return { year: anchorYear - 593, monthIndex: index, day: left + 1, month: BN_MONTHS[index]!, monthEn: BN_MONTHS_EN[index]! };
+}
+
+/** `বৃহস্পতিবার, ৮ সেপ্টেম্বর ২০২৬ · ২৪ ভাদ্র ১৪৩৩` — the two calendars a Bangladeshi school lives in. */
+export function longDate(d: Date = new Date(), locale: Locale = 'bn', timeZone = 'Asia/Dhaka'): string {
+  const gregorian = new Intl.DateTimeFormat(locale === 'bn' ? 'bn-BD' : 'en-GB', { timeZone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(d);
+  const b = bengaliDate(d, timeZone);
+  const bangla = locale === 'bn'
+    ? `${formatNumber(b.day, 'bn')} ${b.month} ${formatNumber(b.year, 'bn', 'bn')}`
+    : `${b.day} ${b.monthEn} ${b.year}`;
+  return `${gregorian} · ${bangla}`;
+}
+
+/** `০৯:০৪:১৭ PM` in Bangla, `09:04:17 pm` in English — the same second, read the way each reader reads it. */
+export function clockTime(d: Date = new Date(), locale: Locale = 'bn', timeZone = 'Asia/Dhaka'): string {
+  const { hour, minute, second } = partsIn(d, timeZone);
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const time = `${pad(h12)}:${pad(minute)}:${pad(second)}`;
+  const suffix = locale === 'bn' ? (hour < 6 ? 'রাত' : hour < 12 ? 'সকাল' : hour < 16 ? 'দুপুর' : hour < 19 ? 'বিকেল' : 'রাত') : hour < 12 ? 'am' : 'pm';
+  return locale === 'bn' ? `${suffix} ${formatNumber(time, 'bn')}` : `${time} ${suffix}`;
+}
+
+/** What to call somebody at this hour: a dashboard that opens with "good morning" at ten at night is a machine talking. */
+export function greeting(d: Date = new Date(), locale: Locale = 'bn', timeZone = 'Asia/Dhaka'): string {
+  const { hour } = partsIn(d, timeZone);
+  const bn = hour < 6 ? 'শুভ রাত্রি' : hour < 12 ? 'শুভ সকাল' : hour < 16 ? 'শুভ দুপুর' : hour < 19 ? 'শুভ বিকেল' : 'শুভ সন্ধ্যা';
+  const en = hour < 6 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 16 ? 'Good afternoon' : hour < 19 ? 'Good evening' : 'Good evening';
+  return locale === 'bn' ? bn : en;
+}
+
+/** The weekday, for a school whose week is Sunday to Thursday. */
+export function weekdayName(d: Date = new Date(), locale: Locale = 'bn', timeZone = 'Asia/Dhaka'): string {
+  const { weekday } = partsIn(d, timeZone);
+  return locale === 'bn' ? BN_DAYS[weekday]! : new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'long' }).format(d);
+}

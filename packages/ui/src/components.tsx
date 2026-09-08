@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { formatNumber, type Locale } from './i18n';
+import { clockTime, greeting, longDate, formatNumber, t, weekdayName, type Locale } from './i18n';
 import { chipClass } from './status';
 
 export function Button({ variant = 'primary', size = 'md', className = '', ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; size?: 'sm' | 'md' }) {
@@ -87,4 +87,60 @@ export async function api<T = unknown>(path: string, init?: RequestInit & { json
   const text = await r.text(); let data: unknown = null; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!r.ok) { const d = data as { error?: string; issues?: { path: string; message: string }[] }; throw new Error(d?.issues ? d.issues.map(i => `${i.path}: ${i.message}`).join(', ') : d?.error || r.statusText); }
   return data as T;
+}
+
+/**
+ * The date and the time, as the school itself keeps them.
+ *
+ * Two calendars, because a Bangladeshi school lives in both: the Gregorian date the government asks
+ * for and the Bangla date that goes on the notice board. The clock ticks every second in the
+ * *school's* time zone, not the browser's — a head teacher checking from Dubai should see the time
+ * their office is keeping. The first paint is the server's second so the page does not flicker, and
+ * the ticking starts once the browser has it.
+ */
+export function LiveClock({ locale = 'bn', timeZone = 'Asia/Dhaka', now, compact = false }: { locale?: Locale; timeZone?: string; now?: string | number | Date; compact?: boolean }) {
+  const start = now == null ? new Date() : new Date(now);
+  const [at, setAt] = useState<Date>(start);
+  useEffect(() => {
+    setAt(new Date());
+    const id = setInterval(() => setAt(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className={compact ? 'text-right text-xs' : 'text-right'}>
+      <div className={compact ? 'num' : 'num text-lg'} style={{ fontVariantNumeric: 'tabular-nums' }}>{clockTime(at, locale, timeZone)}</div>
+      <div className="text-xs" style={{ color: 'var(--muted)' }}>{compact ? weekdayName(at, locale, timeZone) : longDate(at, locale, timeZone)}</div>
+    </div>
+  );
+}
+
+/** "শুভ সকাল, রফিক" — the hour decides, in the school's own zone. */
+export function Greeting({ name, locale = 'bn', timeZone = 'Asia/Dhaka', now }: { name: string; locale?: Locale; timeZone?: string; now?: string | number | Date }) {
+  const [at, setAt] = useState<Date>(now == null ? new Date() : new Date(now));
+  useEffect(() => { const id = setInterval(() => setAt(new Date()), 60_000); return () => clearInterval(id); }, []);
+  return <>{greeting(at, locale, timeZone)}, {name}</>;
+}
+
+/**
+ * বাংলা / English.
+ *
+ * A signed-in person's language is their own row, so the choice follows them to the phone they check
+ * attendance on; the cookie is set as well for the pages they see before signing in. It is a form
+ * post rather than a link because it changes something.
+ */
+export function LocaleToggle({ locale, className = '' }: { locale: Locale; className?: string }) {
+  const next: Locale = locale === 'bn' ? 'en' : 'bn';
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button" className={`btn btn-ghost btn-sm ${className}`} disabled={busy}
+      aria-label={next === 'bn' ? 'বাংলায় দেখুন' : 'View in English'}
+      onClick={async () => {
+        setBusy(true);
+        document.cookie = `ps_locale=${next}; Path=/; Max-Age=31536000; SameSite=Lax`;
+        try { await fetch('/api/auth/locale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: next }) }); } catch { /* the cookie already carries it */ }
+        window.location.reload();
+      }}
+    >{t('lang.switch', locale)}</button>
+  );
 }
