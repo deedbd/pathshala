@@ -231,6 +231,65 @@ export class AcademicService {
   async rooms(schoolId: string) { return this.db.findMany<Row>('rooms', { school_id: schoolId }, { orderBy: 'name ASC' }); }
   async mainCampus(schoolId: string) { return (await this.db.findOne<Row>('campuses', { school_id: schoolId, is_main: true })) ?? (await this.db.findOne<Row>('campuses', { school_id: schoolId })); }
 
+  // ---------- campuses ----------
+  /** Every campus, with the sections that sit on it — the count is what makes the list mean anything. */
+  async campuses(schoolId: string) {
+    const rows = await this.db.findMany<Row>('campuses', { school_id: schoolId }, { orderBy: 'is_main DESC, name ASC' });
+    const counts = await this.db.query<{ campus_id: string | null; n: number }>(
+      `SELECT campus_id, COUNT(*) AS n FROM sections WHERE school_id = ? GROUP BY campus_id`, [schoolId]);
+    return rows.map(r => ({
+      id: String(r.id), name: String(r.name), code: String(r.code), address: (r.address as string) ?? null, phone: (r.phone as string) ?? null,
+      isMain: !!Number(r.is_main), status: String(r.status),
+      sectionCount: Number(counts.find(c => String(c.campus_id) === String(r.id))?.n ?? 0),
+    }));
+  }
+  async createCampus(schoolId: string, c: { name: string; code: string; address?: string | null; phone?: string | null; isMain?: boolean }) {
+    const code = c.code.trim().toUpperCase();
+    if (await this.db.findOne('campuses', { school_id: schoolId, code })) throw new HttpError(409, `a campus with code ${code} already exists`, 'conflict');
+    const id = ulid();
+    await this.db.transaction(async tx => {
+      if (c.isMain) await tx.update('campuses', { is_main: false, updated_at: nowSql() }, { school_id: schoolId });
+      await tx.insert('campuses', { id, school_id: schoolId, name: c.name.trim(), code, address: c.address ?? null, phone: c.phone ?? null, is_main: !!c.isMain, status: 'active' });
+    });
+    return id;
+  }
+  async updateCampus(schoolId: string, id: string, patch: { name?: string; address?: string | null; phone?: string | null; isMain?: boolean; status?: 'active' | 'inactive' }) {
+    const row = await this.db.findOne<Row>('campuses', { id, school_id: schoolId });
+    if (!row) throw notFound('campus');
+    const set: Row = {};
+    if (patch.name !== undefined) set.name = patch.name.trim();
+    if ('address' in patch) set.address = patch.address ?? null;
+    if ('phone' in patch) set.phone = patch.phone ?? null;
+    if (patch.status) set.status = patch.status;
+    if (!Object.keys(set).length && patch.isMain === undefined) return 0;
+    return this.db.transaction(async tx => {
+      if (patch.isMain) { await tx.update('campuses', { is_main: false, updated_at: nowSql() }, { school_id: schoolId }); set.is_main = true; }
+      else if (patch.isMain === false) set.is_main = false;
+      return tx.update('campuses', { ...set, updated_at: nowSql() }, { id, school_id: schoolId });
+    });
+  }
+
+  // ---------- shifts ----------
+  async createShift(schoolId: string, s: { name: string; startTime: string; endTime: string }) {
+    if (s.startTime >= s.endTime) throw badRequest('a shift ends after it starts');
+    if (await this.db.findOne('shifts', { school_id: schoolId, name: s.name.trim() })) throw new HttpError(409, `a shift called ${s.name.trim()} already exists`, 'conflict');
+    const id = ulid();
+    await this.db.insert('shifts', { id, school_id: schoolId, name: s.name.trim(), start_time: s.startTime, end_time: s.endTime });
+    return id;
+  }
+  async updateShift(schoolId: string, id: string, patch: { name?: string; startTime?: string; endTime?: string }) {
+    const row = await this.db.findOne<Row>('shifts', { id, school_id: schoolId });
+    if (!row) throw notFound('shift');
+    const set: Row = {};
+    if (patch.name !== undefined) set.name = patch.name.trim();
+    if (patch.startTime !== undefined) set.start_time = patch.startTime;
+    if (patch.endTime !== undefined) set.end_time = patch.endTime;
+    const start = String(set.start_time ?? row.start_time); const end = String(set.end_time ?? row.end_time);
+    if (start >= end) throw badRequest('a shift ends after it starts');
+    if (!Object.keys(set).length) return 0;
+    return this.db.update('shifts', { ...set, updated_at: nowSql() }, { id, school_id: schoolId });
+  }
+
   // ---------- calendar ----------
   async addCalendarEvent(schoolId: string, e: CalendarEventInput) {
     if (e.startDate > e.endDate) throw badRequest('end date before start date');

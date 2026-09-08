@@ -68,6 +68,33 @@ export default function Console() {
           <NavLink to={tp('/import')} className={link} style={style}>{tr('nav.import')}</NavLink>
           <NavLink to={tp('/website')} className={link} style={style}>{tr('nav.website')}</NavLink>
           {d.canAutomation && <NavLink to={tp('/automation')} className={link} style={style}>{tr('nav.automation')}</NavLink>}
+          <NavLink to="/dashboard" className={link} style={style}>{tr('nav.dashboard')}</NavLink>
+          <NavLink to="/academic" className={link} style={style}>{tr('nav.academic')}</NavLink>
+          <NavLink to="/students" className={link} style={style}>{tr('nav.students')}</NavLink>
+          <NavLink to="/staff" className={link} style={style}>{tr('nav.staff')}</NavLink>
+          <NavLink to="/attendance" className={link} style={style}>{tr('nav.attendance')}</NavLink>
+          <NavLink to="/timetable" className={link} style={style}>{tr('nav.timetable')}</NavLink>
+          <NavLink to="/exams" className={link} style={style}>{tr('nav.exams')}</NavLink>
+          <NavLink to="/fees" className={link} style={style}>{tr('nav.fees')}</NavLink>
+          <NavLink to="/accounts" className={link} style={style}>{tr('nav.accounts')}</NavLink>
+          <NavLink to="/hr" className={link} style={style}>{tr('nav.hr')}</NavLink>
+          <NavLink to="/admissions" className={link} style={style}>{tr('nav.admissions')}</NavLink>
+          <NavLink to="/operations" className={link} style={style}>{tr('nav.operations')}</NavLink>
+          <NavLink to="/learning" className={link} style={style}>{tr('nav.learning')}</NavLink>
+          <NavLink to="/community" className={link} style={style}>{tr('nav.community')}</NavLink>
+          <NavLink to="/institution" className={link} style={style}>{tr('nav.institution')}</NavLink>
+          <NavLink to="/insights" className={link} style={style}>{tr('nav.insights')}</NavLink>
+          <NavLink to="/college" className={link} style={style}>{tr('nav.college')}</NavLink>
+          <NavLink to="/group" className={link} style={style}>{tr('nav.group')}</NavLink>
+          <NavLink to="/platform" className={link} style={style}>{tr('nav.platform')}</NavLink>
+          <NavLink to="/diary" className={link} style={style}>{tr('nav.diary')}</NavLink>
+          <NavLink to="/chat" className={link} style={style}>{tr('nav.chat')}</NavLink>
+          <NavLink to="/syllabus" className={link} style={style}>{tr('nav.syllabus')}</NavLink>
+          <NavLink to="/calendar" className={link} style={style}>{tr('nav.calendar')}</NavLink>
+          <NavLink to="/import" className={link} style={style}>{tr('nav.import')}</NavLink>
+          <NavLink to="/website" className={link} style={style}>{tr('nav.website')}</NavLink>
+          <NavLink to="/settings" className={link} style={style}>{tr('nav.settings')}</NavLink>
+          {d.canAutomation && <NavLink to="/automation" className={link} style={style}>{tr('nav.automation')}</NavLink>}
         </nav>
         <div className="hidden sm:mt-auto sm:block">
           <div className="text-xs" style={{ color: 'var(--muted)' }}>{d.user.name} · {d.roles[0] ?? d.user.type}</div>

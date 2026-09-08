@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createRequestHandler } from '@react-router/express';
 import { createApp, runWithContext, normalizeBdPhone, HttpError, type App, type UserRow, type SessionRow, type RequestContext, type RequestTenant } from '@pathshala/core';
 import { LocalStorage, SseRealtime } from '@pathshala/adapters';
-import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, settingWriteSchema, z } from '@pathshala/schemas';
+import { installSchoolSchema, loginSchema, otpRequestSchema, otpVerifySchema, z } from '@pathshala/schemas';
 import { mountPhase1, mountPublic } from './routes/phase1.js';
 import { mountPhase2 } from './routes/phase2.js';
 import { mountPhase3 } from './routes/phase3.js';
@@ -26,6 +26,7 @@ import { mountPhase18 } from './routes/phase18.js';
 import { mountPhase14 } from './routes/phase14.js';
 import { mountPhase15 } from './routes/phase15.js';
 import { mountOwner, suspendedSchoolGuard } from './routes/owner.js';
+import { mountSettings } from './routes/settings.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SESSION_COOKIE = 'ps_session';
@@ -250,9 +251,6 @@ export async function createServer(app: App = createApp()) {
   api.post('/automation/tick', wrap(async req => { requirePerm(req, 'platform.automation'); return app.tick(); }));
   api.get('/notifications', wrap(async req => { const u = requireUser(req); return app.notifications.recentFor(u.id); }));
   api.post('/notifications/:id/read', wrap(async req => { const u = requireUser(req); return { updated: await app.notifications.markRead(req.params.id as string, u.id) }; }));
-  api.get('/settings', wrap(async req => { const u = requirePerm(req, 'platform.view'); return app.settings.all(u.school_id); }));
-  api.put('/settings', wrap(async req => { const u = requirePerm(req, 'platform.settings'); const { key, value } = settingWriteSchema.parse(req.body); await app.settings.set(u.school_id, key, value); return { ok: true }; }));
-  api.get('/audit', wrap(async req => { const u = requirePerm(req, 'core.audit'); return app.audit.recent(u.school_id); }));
   api.post('/push/subscribe', wrap(async req => {
     const u = requireUser(req);
     const s = z.object({ endpoint: z.string().url(), keys: z.object({ p256dh: z.string(), auth: z.string() }) }).parse(req.body);
@@ -282,6 +280,7 @@ export async function createServer(app: App = createApp()) {
   mountPhase18(api, app, wrap, requirePerm);
   mountPhase14(api, app, wrap, requirePerm);
   mountPhase15(api, app, wrap, requirePerm, requireUser);
+  mountSettings(api, app, wrap, requirePerm);
   // the vendor's console: gated in OwnerService, not by a permission any school can hold. Every
   // refusal leaves as a 404 — a school's administrator who pokes at /api/owner learns that the path
   // does not exist here, rather than that it exists and they are not allowed

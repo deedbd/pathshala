@@ -43,6 +43,7 @@ function schoolApp(id: (name: string) => string): RouteConfigEntry[] {
       route('college', 'routes/college.tsx', { id: id('college') }),
       route('group', 'routes/group.tsx', { id: id('group') }),
       route('platform', 'routes/platform.tsx', { id: id('platform') }),
+      route('settings', 'routes/settings.tsx', { id: id('settings') }),
     ]),
     route('teach', 'routes/teach.tsx', { id: id('teach') }),
     ...prefix('site', [

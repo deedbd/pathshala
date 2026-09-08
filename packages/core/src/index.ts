@@ -2,9 +2,9 @@ export * from './context.js';
 export * from './config.js';
 export * from './util.js';
 export { createLogger } from './logger.js';
-export { AuditService, type AuditEntry } from './audit.js';
-export { SettingsService } from './settings.js';
-export { RbacService, type UserAccess } from './rbac.js';
+export { AuditService, type AuditEntry, type AuditFilter, type AuditRow } from './audit.js';
+export { SettingsService, SETTING_CATALOGUE, isSecretSetting, assertWritableSetting, type SettingMeta, type SettingRow, type SettingType, type SchoolProfilePatch } from './settings.js';
+export { RbacService, type UserAccess, type RbacUser, type RbacRole, type RbacMatrix } from './rbac.js';
 export { OwnerAccessService, ownerDeviceCookie, readOwnerDeviceCookie, randomDeviceLabel, normalizeIp, normalizeMac, ipMatches, isLanIp, OWNER_DEVICE_COOKIE, type OwnerDevice, type OwnerAccessResult } from './owner-access.js';
 export {
   TenantService, RESERVED_SLUGS, DOMAIN_WATCH_KEY, ensureSchoolSlugs, claimSlug, slugifySchoolName,
@@ -27,7 +27,7 @@ export { RuleEngine, type RuleRow } from './automation/rules.js';
 export { Relay } from './automation/relay.js';
 export { registerPlatformJobs } from './automation/jobs.js';
 export { createApp, type App, type CreateAppOptions } from './app.js';
-export { NumberingService } from './modules/numbering.js';
+export { NumberingService, type SequenceRow } from './modules/numbering.js';
 export { AcademicService, type YearInput, type ClassInput, type SubjectInput, type SectionInput, type ClassSubjectInput, type PeriodInput, type CalendarEventInput } from './modules/academic.js';
 export { PeopleService, type StudentInput, type GuardianInput, type StaffInput } from './modules/people.js';
 export { ImportService, STUDENT_COLUMNS, type ImportRowError } from './modules/importer.js';

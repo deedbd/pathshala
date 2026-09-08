@@ -1,5 +1,6 @@
-import type { Db } from '@pathshala/db';
+import type { Db, Row } from '@pathshala/db';
 import { ulid } from '@pathshala/db';
+import { badRequest, notFound } from '../context.js';
 
 /**
  * Per-school document numbers (admission_no, employee_no, invoice_no…) from `number_sequences`.
@@ -37,6 +38,62 @@ export class NumberingService {
     }
     throw new Error(`could not allocate number for ${key}${lastError ? `: ${(lastError as Error).message}` : ''}`);
   }
+
+  /** Every sequence this school has, with a worked example of the next number it would hand out. */
+  async sequences(schoolId: string): Promise<SequenceRow[]> {
+    const rows = await this.db.findMany<Row>('number_sequences', { school_id: schoolId }, { orderBy: 'key_name ASC' });
+    return rows.map(r => {
+      const resetYearly = !!Number(r.reset_yearly);
+      const year = String(new Date().getUTCFullYear());
+      // a yearly sequence whose tag is last year's restarts at 1 on its next call, so say so
+      const next = resetYearly && r.year_tag !== year ? 1 : Number(r.next_value);
+      return {
+        id: String(r.id), key: String(r.key_name), prefix: String(r.prefix ?? ''), nextValue: Number(r.next_value),
+        padding: Number(r.padding) || 0, resetYearly, yearTag: (r.year_tag as string) ?? null,
+        issued: Math.max(Number(r.next_value) - 1, 0),
+        example: format(String(r.prefix ?? ''), next, Number(r.padding) || 0, resetYearly ? year : null),
+      };
+    });
+  }
+
+  /**
+   * Change how a sequence reads, and where it goes next.
+   *
+   * The one thing refused is moving `next_value` backwards: every number below it is already on a
+   * receipt or an admission form somebody is holding, and handing the same one out twice puts two
+   * documents under one number. Moving it forward is allowed — that is how a school carries on from
+   * the last number its old register used.
+   */
+  async updateSequence(schoolId: string, id: string, patch: { prefix?: string; padding?: number; nextValue?: number; resetYearly?: boolean }) {
+    const row = await this.db.findOne<Row>('number_sequences', { id, school_id: schoolId });
+    if (!row) throw notFound('sequence');
+    const set: Row = {};
+    if (patch.prefix !== undefined) set.prefix = patch.prefix.slice(0, 20);
+    if (patch.padding !== undefined) {
+      if (patch.padding < 0 || patch.padding > 12) throw badRequest('padding is between 0 and 12 digits');
+      set.padding = Math.floor(patch.padding);
+    }
+    if (patch.nextValue !== undefined) {
+      const current = Number(row.next_value);
+      const issued = Math.max(current - 1, 0);
+      if (patch.nextValue < current) throw badRequest(`${row.key_name} has already issued up to ${issued}; the next number cannot go below ${current} without giving two documents the same number`);
+      if (patch.nextValue > 1e12) throw badRequest('that number is too large to be a document number');
+      set.next_value = Math.floor(patch.nextValue);
+    }
+    if (patch.resetYearly !== undefined) {
+      set.reset_yearly = patch.resetYearly;
+      // turning the yearly reset on has to claim the current year, or the very next call restarts at 1
+      set.year_tag = patch.resetYearly ? String(new Date().getUTCFullYear()) : null;
+    }
+    if (!Object.keys(set).length) return { updated: 0 };
+    const updated = await this.db.update('number_sequences', set, { id, school_id: schoolId });
+    return { updated, before: { prefix: String(row.prefix ?? ''), padding: Number(row.padding) || 0, nextValue: Number(row.next_value), resetYearly: !!Number(row.reset_yearly) }, key: String(row.key_name) };
+  }
+}
+
+export interface SequenceRow {
+  id: string; key: string; prefix: string; nextValue: number; padding: number;
+  resetYearly: boolean; yearTag: string | null; issued: number; example: string;
 }
 
 const format = (prefix: string, value: number, padding: number, yearTag: string | null) => `${prefix}${yearTag ? `${yearTag}-` : ''}${String(value).padStart(padding, '0')}`;
