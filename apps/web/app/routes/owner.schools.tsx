@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/owner.schools';
-import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, Tabs, api, formatDate, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
+import { Banner, Button, Chip, DataTable, Drawer, Field, Input, Select, Tabs, api, formatDate, formatDateTime, formatMoney, formatNumber, t, type Locale } from '@pathshala/ui';
 import { requireUser } from '~/lib';
-import { num, ownerApi, ownerLoad, requireOwnerOr404, str, type OwnerSchoolRow, type Row } from '~/owner-api';
+import { num, ownerApi, ownerHas, ownerLoad, requireOwnerOr404, str, type OwnerDnsInstruction, type OwnerSchoolRow, type OwnerSchoolWeb, type Row } from '~/owner-api';
 
 const PER_PAGE = 25;
 const TYPES = ['school', 'college', 'school_college', 'madrasa', 'kindergarten', 'coaching', 'university'];
@@ -21,10 +21,15 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const list = await ownerLoad(() => ownerApi(context).schools({ q: q || undefined, status: status || undefined, planId: planId || undefined, limit: PER_PAGE, offset: page * PER_PAGE }));
   // the row a click opened: server data, so it travels in the URL and is read here
   const detail = list && selected ? await ownerLoad(() => ownerApi(context).school(selected)) : null;
+  // where that school is reached. The web half of the owner service may not be on this server yet,
+  // so it is asked for only if it is there: the section then says so instead of the page failing.
+  const web = detail && selected && ownerHas(ownerApi(context), 'web')
+    ? await ownerLoad(() => ownerApi(context).web(selected))
+    : null;
   // plans come from the subscription service the owner API bills through; only ever read once the
   // owner API has already answered, so a refused caller learns nothing from this page either
   const plans = list ? await context.app.saas.plans() : [];
-  return { locale: (user.locale as Locale) || context.locale, denied: list === null, q, status, planId, page, rows: list?.rows ?? [], total: list?.total ?? 0, selected, detail, plans };
+  return { locale: (user.locale as Locale) || context.locale, denied: list === null, q, status, planId, page, rows: list?.rows ?? [], total: list?.total ?? 0, selected, detail, web, plans };
 }
 export function meta() { return [{ title: 'Pathshala — Owner schools' }]; }
 
@@ -213,6 +218,8 @@ export default function OwnerSchools() {
                 <Button size="sm" disabled={busy}>{tr('own.addAdmin')}</Button>
               </form>)}
 
+            <WebAddress key={d.selected ?? ''} schoolId={str(d.selected)} locale={d.locale} initial={d.web} />
+
             <SchoolTabs
               locale={d.locale} sub={sub} meters={meters} invoices={detail.invoices} admins={detail.admins} findings={findings}
               trialEnds={selectedRow?.trialEndsAt ?? null} lastBackup={selectedRow?.lastBackupAt ?? null}
@@ -220,6 +227,149 @@ export default function OwnerSchools() {
           </div>
         )}
       </Drawer>
+    </div>
+  );
+}
+
+/**
+ * Where one school is reached: the address its staff type every morning, and the school's own domain.
+ *
+ * Nothing here is guessed. The address, the DNS the school's IT person has to create, whether cPanel
+ * took the alias and whether the domain resolves are all read off the API's answer — a null field is
+ * said to be unchecked rather than turned into a no — and a refusal is shown in the words it came in,
+ * because those words name the school already holding the domain or the word that is reserved.
+ */
+function WebAddress({ schoolId, locale, initial }: { schoolId: string; locale: Locale; initial: OwnerSchoolWeb | null }) {
+  const tr = (k: Parameters<typeof t>[0]) => t(k, locale);
+  const [web, setWeb] = useState<OwnerSchoolWeb | null>(initial);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<'slug' | 'domain' | 'removed' | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  const save = async (what: 'slug' | 'domain' | 'removed', json: { slug?: string; customDomain?: string | null }) => {
+    setBusy(true); setErr(null); setDone(null);
+    try {
+      const r = await api<OwnerSchoolWeb>(`/api/owner/schools/${schoolId}/web`, { method: 'POST', json });
+      setWeb(r); setDone(what); setConfirmRemove(false);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  const copy = async (what: string, text: string) => { try { await navigator.clipboard.writeText(text); setCopied(what); } catch { setErr(tr('own.copyFailed')); } };
+  // true / false / a word the server used / nothing checked at all — each says only what it knows
+  const flag = (v: boolean | string | null | undefined, yes: string, no: string) =>
+    v === true ? <Chip status="active">{yes}</Chip>
+      : v === false ? <Chip status="pending">{no}</Chip>
+        : typeof v === 'string' && v ? <Chip status={v}>{v}</Chip>
+          : <Chip status="draft">{tr('own.web.notChecked')}</Chip>;
+
+  return (
+    <div className="card grid gap-3 p-4">
+      <div>
+        <div className="display text-base">{tr('own.web.title')}</div>
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.purpose')}</p>
+      </div>
+
+      {!web ? <Banner kind="warn">{tr('own.web.unavailable')}</Banner> : (
+        <>
+          {err && <Banner kind="bad">{err}</Banner>}
+
+          <div className="text-sm">
+            <div className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.current')}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <a className="num break-all" style={{ color: 'var(--accent)' }} href={web.url} target="_blank" rel="noreferrer">{web.url}</a>
+              <Button type="button" size="sm" variant="ghost" onClick={() => copy('url', web.url)}>{tr('own.copy')}</Button>
+              {copied === 'url' && <Chip status="active">{tr('own.copied')}</Chip>}
+            </div>
+            {web.customDomain && <div className="mt-1 flex flex-wrap items-center gap-2">
+              <a className="num break-all" style={{ color: 'var(--accent)' }} href={`https://${web.customDomain}`} target="_blank" rel="noreferrer">https://{web.customDomain}</a>
+              <Button type="button" size="sm" variant="ghost" onClick={() => copy('domain', `https://${web.customDomain}`)}>{tr('own.copy')}</Button>
+              {copied === 'domain' && <Chip status="active">{tr('own.copied')}</Chip>}
+            </div>}
+          </div>
+
+          {/* The name the staff type. What saving does is said before the button, not after it. */}
+          <form className="grid gap-2" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); save('slug', { slug: str(f.get('slug')).trim() }); }}>
+            <Field label={tr('own.web.slug')} hint={tr('own.web.slugHint')}>
+              <Input key={web.slug} name="slug" defaultValue={web.slug} required minLength={2} maxLength={40} pattern="[a-z0-9-]+" inputMode="url" spellCheck={false} />
+            </Field>
+            <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.slugWarn')}</p>
+            <div><Button size="sm" disabled={busy}>{tr('own.web.saveSlug')}</Button></div>
+            {done === 'slug' && <Banner kind="ok">{tr('own.web.slugSaved')}</Banner>}
+          </form>
+
+          {/* The school's own domain: one field, and everything the vendor has to hand on afterwards. */}
+          <form className="grid gap-2" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); save('domain', { customDomain: str(f.get('customDomain')).trim() }); }}>
+            <Field label={tr('own.web.ownDomain')} hint={tr('own.web.domainHint')}>
+              <Input key={web.customDomain ?? ''} name="customDomain" defaultValue={web.customDomain ?? ''} required maxLength={190} inputMode="url" spellCheck={false} placeholder="saranjaischool.edu.bd" />
+            </Field>
+            <div><Button size="sm" disabled={busy}>{tr('own.web.saveDomain')}</Button></div>
+            {done === 'domain' && <Banner kind="ok">{tr('own.web.domainSaved')}</Banner>}
+            {done === 'removed' && <Banner kind="ok">{tr('own.web.removed')}</Banner>}
+          </form>
+
+          {!web.customDomain ? <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.noDomain')}</p> : (
+            <div className="grid gap-3">
+              {/* 1. did cPanel take it, or what to add by hand */}
+              <Banner kind={web.cpanel.configured && web.cpanel.aliasAdded !== false ? 'ok' : 'warn'}>
+                <div>{web.cpanel.configured && web.cpanel.aliasAdded !== false ? tr('own.web.cpanelDone') : tr('own.web.cpanelManual')}</div>
+                {web.cpanel.note && <div className="mt-1 text-xs">{web.cpanel.note}</div>}
+              </Banner>
+
+              {/* 2. the record the school's own IT person creates, in the API's own words */}
+              <div>
+                <div className="text-sm">{tr('own.web.dns')}</div>
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.dnsNote')}</p>
+                <div className="mt-2">
+                  <DataTable<OwnerDnsInstruction & { id?: string }>
+                    locale={locale} searchable={false} rows={web.instructions} empty={tr('own.web.dnsNone')}
+                    columns={[
+                      { key: 'type', label: tr('own.web.recordType'), render: r => <span className="num">{r.type}</span> },
+                      { key: 'name', label: tr('own.web.recordName'), render: r => <span className="num break-all">{r.name}</span> },
+                      { key: 'value', label: tr('own.web.recordValue'), render: r => <div><div className="num break-all">{r.value}</div>{r.note && <div className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{r.note}</div>}</div> },
+                    ]}
+                  />
+                </div>
+                {web.instructions.length > 0 && <div className="mt-2 flex items-center gap-2">
+                  <Button type="button" size="sm" variant="secondary" onClick={() => copy('dns', web.instructions.map(i => `${i.type}\t${i.name}\t${i.value}${i.note ? `\n${i.note}` : ''}`).join('\n'))}>{tr('own.web.copyRecords')}</Button>
+                  {copied === 'dns' && <Chip status="active">{tr('own.copied')}</Chip>}
+                </div>}
+              </div>
+
+              {/* 3. where it stands — exactly what the last check found, and when it was */}
+              <div>
+                <div className="text-sm">{tr('own.web.status')}</div>
+                {!web.domain ? <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.neverChecked')}</p> : (
+                  <>
+                    <div className="mt-1 num break-all text-xs" style={{ color: 'var(--muted)' }}>{web.domain.hostname}</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {flag(web.domain.resolves, tr('own.web.resolves'), tr('own.web.resolvesNot'))}
+                      {flag(web.domain.pointsHere, tr('own.web.pointsHere'), tr('own.web.pointsAway'))}
+                      {flag(web.domain.certificate, tr('own.web.certOk'), tr('own.web.certNone'))}
+                    </div>
+                    <div className="mt-1 text-xs num" style={{ color: 'var(--muted)' }}>
+                      {tr('own.web.lastChecked')}: {web.domain.checkedAt ? formatDateTime(web.domain.checkedAt, locale) : tr('own.web.notChecked')}
+                    </div>
+                    {web.domain.note && <p className="mt-1 text-xs">{web.domain.note}</p>}
+                  </>
+                )}
+                <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>{tr('own.web.wait')}</p>
+              </div>
+
+              {/* Removing is its own decision, asked for twice. */}
+              {confirmRemove ? (
+                <div className="grid gap-2">
+                  <Banner kind="warn">{tr('own.web.removeConfirm')}</Banner>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="danger" disabled={busy} onClick={() => save('removed', { customDomain: null })}>{tr('own.web.removeYes')}</Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmRemove(false)}>{tr('common.cancel')}</Button>
+                  </div>
+                </div>
+              ) : <div><Button type="button" size="sm" variant="danger" onClick={() => { setDone(null); setConfirmRemove(true); }}>{tr('own.web.remove')}</Button></div>}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

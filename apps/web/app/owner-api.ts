@@ -68,6 +68,34 @@ export interface OwnerHealthReport {
   checkedAt?: string;
 }
 
+/**
+ * Where a school is reached, and what stands between a domain somebody typed and it working.
+ *
+ * `domain` is what the server last checked, not what the console believes: every field can be null,
+ * and a null is rendered as "not checked yet" rather than as a no.
+ */
+export interface OwnerDomainStatus {
+  hostname: string;
+  resolves: boolean | null;
+  pointsHere: boolean | null;
+  certificate: boolean | string | null;
+  checkedAt: string | null;
+  note: string | null;
+}
+/** One DNS record the school's own IT person has to create, in the words the API gave. */
+export interface OwnerDnsInstruction { type: 'A' | 'CNAME'; name: string; value: string; note: string }
+/** Whether cPanel took the alias by itself, and what to do by hand when it did not. */
+export interface OwnerCpanel { configured: boolean; aliasAdded?: boolean; note?: string }
+export interface OwnerSchoolWeb {
+  slug: string;
+  url: string;
+  customDomain: string | null;
+  domain: OwnerDomainStatus | null;
+  instructions: OwnerDnsInstruction[];
+  cpanel: OwnerCpanel;
+}
+export interface OwnerWebInput { slug?: string; customDomain?: string | null }
+
 export interface OwnerListFilter { q?: string; status?: string; planId?: string; schoolId?: string; limit?: number; offset?: number }
 
 export interface OwnerApi {
@@ -77,11 +105,27 @@ export interface OwnerApi {
   billing(filter?: OwnerListFilter): Promise<OwnerBilling>;
   tickets(filter?: OwnerListFilter): Promise<Row[] | { rows: Row[]; total?: number }>;
   health(): Promise<OwnerHealthReport | Row[]>;
+  /** Where the school is reached, the DNS its own domain needs, and the last check of it. */
+  web(id: string): Promise<OwnerSchoolWeb>;
   /** Mutations are called over `/api/owner/*` from the browser, never from a loader. */
   provision(input: Row): Promise<{ schoolId: string; code: string; adminEmail: string; password: string; url: string }>;
   setStatus(id: string, status: string, reason: string): Promise<unknown>;
   setPlan(id: string, input: Row): Promise<unknown>;
   addAdmin(id: string, input: Row): Promise<{ email: string; password: string }>;
+  /** `customDomain: null` removes the domain. Answers the same shape `web()` does. */
+  setWeb(id: string, input: OwnerWebInput): Promise<OwnerSchoolWeb>;
+}
+
+/**
+ * Whether this build's owner service actually carries a call.
+ *
+ * The console ships beside the service, so a page may be newer than the server it is served from:
+ * the method is declared above and missing at runtime, which is a TypeError rather than the refusal
+ * `ownerLoad` knows about. Asked first, the page renders and says plainly that this server does not
+ * have the setting yet.
+ */
+export function ownerHas(owner: OwnerApi, method: keyof OwnerApi): boolean {
+  return typeof (owner as unknown as Record<string, unknown>)[method] === 'function';
 }
 
 /** The owner service, or a refusal `ownerLoad` turns into the "not for you" page. */
