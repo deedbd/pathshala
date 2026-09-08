@@ -54,7 +54,11 @@ export class RuleEngine {
     }
     const preview = !!rule.preview_until && rule.preview_until > started && !opts.manual;
     const actions = (json<RuleAction[]>(rule.actions) ?? []).filter(a => a && typeof a === 'object');
-    if (preview) { await this.record(runId, rule, event, 'preview', { actions: actions.map(a => a.type) }); return false; }
+    // A rule in preview is live in every way except that it does not act: it matched, its conditions
+    // were evaluated against this event, and what it would have done is written down in the words the
+    // person would have read. A list of action *types* is not that — "notify" tells a head teacher
+    // nothing about who was going to be texted at what hour — so the preview renders the templates.
+    if (preview) { await this.record(runId, rule, event, 'preview', { preview: true, until: rule.preview_until, actions: actions.map(a => this.describeAction(a, rule, data)) }); return false; }
 
     const results: unknown[] = [];
     try {
@@ -69,6 +73,24 @@ export class RuleEngine {
       const fails = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM automation_runs WHERE rule_id = ? AND status = 'failed' AND started_at >= ?`, [rule.id, nowSql(new Date(Date.now() - 86_400_000))]);
       if (Number(fails[0]?.n) >= 3) await this.deps.outbox.emitNow({ type: 'rule.failed', schoolId: rule.school_id, aggregateType: 'platform.rule', aggregateId: rule.id, payload: { ruleId: rule.id, ruleCode: rule.code, attempts: Number(fails[0]?.n), error: err.message.slice(0, 500) } });
       return false;
+    }
+  }
+
+  /** What one action would have done, in the sentence a person would have received. */
+  private describeAction(a: RuleAction, rule: RuleRow, data: Record<string, unknown>): { type: string; would: string } {
+    const safe = (s: string | undefined | null, fallback: string) => { try { return s ? renderTemplate(s, data) : fallback; } catch { return s ?? fallback; } };
+    switch (a.type) {
+      case 'notify': {
+        const to = a.to === 'user' ? `user ${a.userId}` : a.to === 'actor' ? 'whoever caused this' : a.to === 'guardians' ? 'the guardians' : `everyone with the ${a.role ?? 'admin'} role`;
+        return { type: 'notify', would: `message ${to} by ${a.channel ?? 'push and in-app'}: “${safe(a.title, rule.name)} — ${safe(a.body, a.note ?? rule.name)}”` };
+      }
+      case 'task': return { type: 'task', would: `raise a ${a.priority ?? 'normal'} task for ${a.assignedTo ? `user ${a.assignedTo}` : a.assignedRole ?? 'nobody in particular'}: “${safe(a.title, rule.name)}”${a.dueInHours ? `, due in ${a.dueInHours} h` : ''}` };
+      case 'job': return { type: 'job', would: `queue the background job ${a.name} on the ${a.queue ?? 'default'} queue` };
+      case 'webhook': return { type: 'webhook', would: `POST this event to ${a.url}` };
+      case 'approval': return { type: 'approval', would: `ask for approval of a ${a.entityType}` };
+      case 'emit': return { type: 'emit', would: `emit ${a.eventType}, which is what everything listening for it reacts to` };
+      case 'document': return { type: 'document', would: `render the ${a.template} document` };
+      default: return { type: (a as { type: string }).type, would: 'nothing this version understands' };
     }
   }
 

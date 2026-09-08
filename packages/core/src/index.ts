@@ -21,6 +21,7 @@ export { HandlerRegistry, type SystemHandler } from './automation/handlers.js';
 export { RuleEngine, type RuleRow } from './automation/rules.js';
 export { Relay } from './automation/relay.js';
 export { registerPlatformJobs } from './automation/jobs.js';
+export { AutomationService, PREVIEW_HOURS } from './automation/console.js';
 export { createApp, type App, type CreateAppOptions } from './app.js';
 export { NumberingService } from './modules/numbering.js';
 export { AcademicService, type YearInput, type ClassInput, type SubjectInput, type SectionInput, type ClassSubjectInput, type PeriodInput, type CalendarEventInput } from './modules/academic.js';

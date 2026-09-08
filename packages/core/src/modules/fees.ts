@@ -17,9 +17,20 @@ export type Frequency = 'one_time' | 'monthly' | 'quarterly' | 'half_yearly' | '
 export interface StructureItemInput { feeHeadId: string; amount: number; frequency?: Frequency; dueDay?: number; applicableMonths?: number[] | null; lateFineRuleId?: string | null }
 export interface PaymentInput { studentId?: string | null; amount: number; method: 'cash' | 'bank_transfer' | 'cheque' | 'card' | 'bkash' | 'nagad' | 'rocket' | 'upay' | 'sslcommerz' | 'wallet' | 'adjustment' | 'other'; invoiceIds?: string[]; reference?: string | null; paidAt?: string; receivedBy?: string | null; bankAccountId?: string | null; gatewayId?: string | null; gatewayTxnId?: string | null; gatewayPayload?: unknown; cashSessionId?: string | null; notes?: string | null; clearedNow?: boolean; existingId?: string }
 
+/**
+ * The reminder ladder (F3). The last rung is deliberately not a message: a family that has ignored
+ * five texts is not going to read a sixth, and sending it is how a school teaches its guardians that
+ * its messages can be ignored. At +30 the ladder stops and hands the invoice to a person — see
+ * `CALL_STAGE`.
+ */
 const REMINDER_LADDER: { stage: string; offsetDays: number }[] = [
   { stage: 'due_in_3', offsetDays: -3 }, { stage: 'due_today', offsetDays: 0 }, { stage: 'overdue_3', offsetDays: 3 }, { stage: 'overdue_7', offsetDays: 7 }, { stage: 'overdue_15', offsetDays: 15 },
+  { stage: 'overdue_30', offsetDays: 30 },
 ];
+/** The rung that raises a call task for the office instead of texting the family again. */
+const CALL_STAGE = 'overdue_30';
+/** Early payment: the percentage that comes off when a school has never configured a scheme of its own. */
+const EARLY_PAYMENT_PCT = 2;
 
 /** How long the office waits for a cheque before somebody has to say what the bank did with it. */
 const CHEQUE_CLEARING_DAYS = 5;
@@ -312,8 +323,12 @@ export class FeesService {
       let left = p.amount; const allocations: { invoiceId: string; amount: number }[] = [];
       const named = p.invoiceIds?.length ? await t.query<Row>(`SELECT * FROM invoices WHERE school_id = ? AND id IN (${p.invoiceIds.map(() => '?').join(',')}) AND balance > 0 ORDER BY due_date`, [schoolId, ...p.invoiceIds]) : [];
       const others = p.studentId ? await t.query<Row>(`SELECT * FROM invoices WHERE school_id = ? AND student_id = ? AND balance > 0${p.invoiceIds?.length ? ` AND id NOT IN (${p.invoiceIds.map(() => '?').join(',')})` : ''} ORDER BY due_date, invoice_no`, p.invoiceIds?.length ? [schoolId, p.studentId, ...p.invoiceIds] : [schoolId, p.studentId]) : [];
+      // "Early payment 2% — auto-applied": the discount comes off before a taka is allocated, so the
+      // family's money goes further rather than the school quietly keeping the difference.
+      const paidOn = paidAt.slice(0, 10);
       for (const inv of [...named, ...others]) {
         if (left <= 0) break;
+        await this.applyEarlyPayment(schoolId, t, inv, paidOn, left);
         const take = round(Math.min(left, Number(inv.balance)));
         if (take <= 0) continue;
         await t.insert('payment_allocations', { id: ulid(), school_id: schoolId, payment_id: id, invoice_id: String(inv.id), amount: take });
@@ -333,6 +348,80 @@ export class FeesService {
     const r = tx ? await run(tx) : await this.db.transaction(run);
     if (p.studentId) await this.notifyPayment(schoolId, p.studentId, r.paymentNo, p.amount);
     return r;
+  }
+  /**
+   * The school's early-payment scheme. A school that has switched it off, renamed it or set its own
+   * percentage keeps that decision; only a school that has never had one at all gets the default,
+   * because the prototype promises the discount is applied without anybody configuring anything.
+   */
+  private async earlyPaymentScheme(schoolId: string, t: Db): Promise<Row | null> {
+    const rows = await t.query<Row>(`SELECT * FROM discount_schemes WHERE school_id = ? AND discount_kind = 'early_payment' ORDER BY name LIMIT 10`, [schoolId]);
+    if (rows.length) return rows.find(r => String(r.status) === 'active') ?? null;
+    // two payments taken at the same counter in the same second would both find nothing and both
+    // insert; the name is unique, so one of them loses. Losing must not fail the payment — it means
+    // the scheme is there, which is all this asked for — and on Postgres an expected failure has to
+    // sit in a savepoint or it takes the whole transaction with it.
+    const id = ulid();
+    const made = await t.attempt(async () => {
+      await t.insert('discount_schemes', { id, school_id: schoolId, name: 'Early payment', discount_kind: 'early_payment', value_type: 'percent', value: EARLY_PAYMENT_PCT, applies_to_heads: null, auto_rule: null, requires_approval: false, budget_cap: null, status: 'active' });
+      return true;
+    }).catch(() => false);
+    if (made) return t.findOne<Row>('discount_schemes', { id });
+    return t.findOne<Row>('discount_schemes', { school_id: schoolId, name: 'Early payment', status: 'active' });
+  }
+  /** Creates the scheme at provisioning so the console can show it before anybody has paid anything. */
+  async ensureEarlyPaymentDiscount(schoolId: string) {
+    return this.db.transaction(async t => (await this.earlyPaymentScheme(schoolId, t))?.id ?? null);
+  }
+  /**
+   * Money that arrives before the invoice falls due earns the discount, **once**: the adjustment line
+   * it writes is its own guard, so a second payment on the same invoice — or a relay that delivers
+   * `payment.received` twice — takes nothing more off.
+   *
+   * Two things it deliberately refuses. A part-paid invoice: the discount is for settling early, and
+   * once a payment has landed the invoice is no longer being settled early. And a payment that does
+   * not cover the discounted balance: otherwise a family pays Tk 1 the day before the due date and
+   * takes 2% off the whole term. A fine is never discounted either — a fine is what lateness cost,
+   * and it did not arrive early.
+   */
+  private async applyEarlyPayment(schoolId: string, t: Db, inv: Row, paidOn: string, available: number): Promise<number> {
+    const due = String(inv.due_date).slice(0, 10);
+    if (!(paidOn < due)) return 0;
+    if (Number(inv.paid_total) > 0) return 0;
+    if (await t.findOne('invoice_items', { invoice_id: String(inv.id), source_type: 'early_payment' })) return 0;
+    const scheme = await this.earlyPaymentScheme(schoolId, t);
+    if (!scheme) return 0;
+    const base = round(Number(inv.total) - Number(inv.fine_total ?? 0));
+    if (base <= 0) return 0;
+    const amount = round(String(scheme.value_type) === 'flat' ? Math.min(Number(scheme.value), base) : base * Number(scheme.value) / 100);
+    if (amount <= 0) return 0;
+    if (available < round(Number(inv.balance) - amount)) return 0;
+    const days = Math.round((Date.parse(due) - Date.parse(paidOn)) / 86400_000);
+    const reason = `${scheme.name} · ${String(scheme.value_type) === 'flat' ? `Tk ${Number(scheme.value)}` : `${Number(scheme.value)}%`} for paying ${days} day${days === 1 ? '' : 's'} before ${due}`;
+    await t.insert('invoice_items', { id: ulid(), school_id: schoolId, invoice_id: String(inv.id), fee_head_id: null, description: reason.slice(0, 200), quantity: 1, unit_amount: -amount, discount_amount: amount, discount_id: null, tax_amount: 0, amount: -amount, item_kind: 'adjustment', source_type: 'early_payment', source_id: String(scheme.id) });
+    const total = round(Number(inv.total) - amount);
+    const balance = round(total - Number(inv.paid_total));
+    await t.update('invoices', { discount_total: round(Number(inv.discount_total ?? 0) + amount), total, balance, updated_at: nowSql() }, { id: String(inv.id) });
+    inv.total = total; inv.balance = balance; inv.discount_total = round(Number(inv.discount_total ?? 0) + amount);
+    if (inv.student_id) await this.ledger(schoolId, String(inv.student_id), { entryType: 'adjustment', refType: 'invoice', refId: String(inv.id), credit: amount, description: reason.slice(0, 200) }, t);
+    // give the income back where the invoice credited it: Dr each head's income account pro rata, Cr receivable
+    const items = await t.query<Row>(`SELECT fee_head_id, amount FROM invoice_items WHERE invoice_id = ? AND item_kind = 'fee' AND amount > 0`, [String(inv.id)]);
+    const gross = round(items.reduce((a, i) => a + Number(i.amount), 0));
+    const lines: { accountId?: string; accountCode?: string; debit?: number; credit?: number; description?: string }[] = [];
+    if (gross > 0) {
+      const byAccount = new Map<string, number>();
+      let spread = 0;
+      for (let i = 0; i < items.length; i++) {
+        const share = i === items.length - 1 ? round(amount - spread) : round(amount * Number(items[i].amount) / gross);
+        spread = round(spread + share);
+        const acc = String((await this.accountForHead(schoolId, items[i].fee_head_id as string | null)).id);
+        byAccount.set(acc, round((byAccount.get(acc) ?? 0) + share));
+      }
+      for (const [accountId, debit] of byAccount) if (debit) lines.push({ accountId, debit });
+    } else lines.push({ accountId: String((await this.accountForHead(schoolId, null)).id), debit: amount });
+    lines.push({ accountCode: '1300', credit: amount, description: String(inv.invoice_no) });
+    await this.accounting.post(schoolId, { entryDate: paidOn, memo: `Early payment discount ${inv.invoice_no}`, sourceType: 'discount', sourceId: String(inv.id), lines }, t);
+    return amount;
   }
   /** A cheque sits pending: no allocation, no journal, nothing on the student's ledger yet. */
   private async recordCheque(schoolId: string, p: PaymentInput) {
@@ -773,24 +862,57 @@ export class FeesService {
    * recycle) still sends the right message instead of skipping the stage forever.
    */
   async runReminders(schoolId: string, today = nowSql().slice(0, 10)) {
+    // B5: a school does not chase money on Eid morning. The ladder is keyed on how many days an
+    // invoice is past its date, not on how many times this job has run, so holding for a holiday
+    // costs nothing — tomorrow's pass sends exactly the stage today's would have sent.
+    if (await this.academic.isHoliday(schoolId, today)) return { sent: 0, calls: 0, skipped: 'holiday' as string | null, reason: `${today} is a holiday, so nobody was chased for money` as string | null };
     const invoices = await this.db.query<Row>(`SELECT i.*, s.first_name, s.last_name FROM invoices i JOIN students s ON s.id = i.student_id
       WHERE i.school_id = ? AND i.balance > 0 AND i.status IN ('issued','partially_paid','overdue') AND i.due_date <= ? ORDER BY i.due_date LIMIT 1000`, [schoolId, new Date(Date.parse(today) + 3 * 86400_000).toISOString().slice(0, 10)]);
-    let sent = 0;
+    let sent = 0, calls = 0;
     for (const inv of invoices) {
       const daysPast = Math.floor((Date.parse(today) - Date.parse(String(inv.due_date))) / 86400_000);
       const reached = REMINDER_LADDER.filter(s => daysPast >= s.offsetDays);
       const stage = reached[reached.length - 1];
       if (!stage) continue;
-      if (await this.db.findOne('fee_reminders', { invoice_id: String(inv.id), stage: stage.stage, channel: 'sms' })) continue;
-      const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [String(inv.student_id)]);
-      for (const g of guardians) {
-        await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['sms', 'push', 'in_app'], eventKey: 'fees.reminder', data: { student: String(inv.first_name), amount: Number(inv.balance), due: String(inv.due_date), month: String(inv.billing_period).slice(0, 7) }, title: daysPast > 0 ? 'Fee overdue' : 'Fee due', body: `${inv.first_name}: Tk ${Number(inv.balance)} ${daysPast > 0 ? `overdue since ${inv.due_date}` : `due on ${inv.due_date}`}.`, entityType: 'fees.invoice', entityId: String(inv.id) });
+      const call = stage.stage === CALL_STAGE;
+      const channel = call ? 'call_task' : 'sms';
+      if (await this.db.findOne('fee_reminders', { invoice_id: String(inv.id), stage: stage.stage, channel })) continue;
+      const student = `${inv.first_name} ${inv.last_name ?? ''}`.trim();
+      if (call) {
+        // F3's last rung: a month overdue is a conversation, not a sixth text. Everything the caller
+        // needs is in the task — who, how much, since when and which number to ring — so the office
+        // never has to go and look the family up.
+        const guardian = (await this.db.query<Row>(`SELECT g.full_name, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? ORDER BY sg.is_primary DESC LIMIT 1`, [String(inv.student_id)]))[0];
+        const raised = await this.tasks.ensure({
+          schoolId, entityType: 'fees.invoice', entityId: String(inv.id), taskType: 'fees.call_guardian', assignedRole: 'accountant', priority: 'high',
+          title: `Ring ${guardian?.full_name ?? 'the guardian'} about ${student}: Tk ${Number(inv.balance)} unpaid for 30 days`,
+          description: `Invoice ${inv.invoice_no} (${String(inv.billing_period).slice(0, 7)}) fell due on ${inv.due_date} and Tk ${Number(inv.balance)} is still outstanding. Five reminders have gone to ${guardian?.phone ?? 'the number on file'} and none was answered. Ring the family rather than sending a sixth message.`,
+          dueAt: new Date(Date.now() + 48 * 3600_000), createdBy: 'system',
+        });
+        if (raised) calls++;
+      } else {
+        const guardians = await this.db.query<{ user_id: string | null; phone: string }>(`SELECT g.user_id, g.phone FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = ? AND sg.receives_notifications = TRUE`, [String(inv.student_id)]);
+        for (const g of guardians) {
+          await this.notifications.notify({ schoolId, userId: g.user_id, address: g.phone, channels: ['sms', 'push', 'in_app'], eventKey: 'fees.reminder', data: { student: String(inv.first_name), amount: Number(inv.balance), due: String(inv.due_date), month: String(inv.billing_period).slice(0, 7) }, title: daysPast > 0 ? 'Fee overdue' : 'Fee due', body: `${inv.first_name}: Tk ${Number(inv.balance)} ${daysPast > 0 ? `overdue since ${inv.due_date}` : `due on ${inv.due_date}`}.`, entityType: 'fees.invoice', entityId: String(inv.id) });
+        }
+        sent++;
       }
-      await this.db.insert('fee_reminders', { id: ulid(), school_id: schoolId, invoice_id: String(inv.id), stage: stage.stage, channel: 'sms', notification_id: null, sent_at: nowSql() });
+      await this.db.insert('fee_reminders', { id: ulid(), school_id: schoolId, invoice_id: String(inv.id), stage: stage.stage, channel, notification_id: null, sent_at: nowSql() });
       await this.db.update('invoices', { last_reminder_stage: stage.stage, last_reminder_at: nowSql() }, { id: String(inv.id) });
-      sent++;
     }
-    return { sent };
+    return { sent, calls, skipped: null as string | null, reason: null as string | null };
+  }
+  /** The ladder as the console shows it: every stage, when it fired and what it did. */
+  async reminderLadder(schoolId: string, limit = 200) {
+    const stages = await this.db.query<Row>(`SELECT stage, channel, COUNT(*) AS n, MAX(sent_at) AS last_sent FROM fee_reminders WHERE school_id = ? GROUP BY stage, channel`, [schoolId]);
+    const byStage = new Map(stages.map(s => [`${s.stage}:${s.channel}`, s]));
+    const ladder = REMINDER_LADDER.map(s => {
+      const channel = s.stage === CALL_STAGE ? 'call_task' : 'sms';
+      const row = byStage.get(`${s.stage}:${channel}`);
+      return { stage: s.stage, offsetDays: s.offsetDays, channel, sent: Number(row?.n ?? 0), lastSent: (row?.last_sent as string) ?? null };
+    });
+    const recent = await this.db.query<Row>(`SELECT r.*, i.invoice_no, i.balance, i.due_date, s.first_name, s.last_name FROM fee_reminders r JOIN invoices i ON i.id = r.invoice_id LEFT JOIN students s ON s.id = i.student_id WHERE r.school_id = ? ORDER BY r.sent_at DESC, r.id DESC LIMIT ${Math.min(500, limit)}`, [schoolId]);
+    return { ladder, recent };
   }
 
   /** F4: past the grace period an unpaid invoice becomes overdue and picks up the configured fine. */

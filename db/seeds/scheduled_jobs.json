@@ -237,7 +237,7 @@
   {
     "job_key": "welfare.behaviour_rules",
     "cron_expr": "0 2 * * *",
-    "rows": "N2"
+    "rows": "N2, N3"
   },
   {
     "job_key": "platform.kpi_snapshot",

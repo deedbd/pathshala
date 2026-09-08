@@ -9,6 +9,7 @@ import type { FileService } from '../files.js';
 import type { DocumentService } from './documents.js';
 import type { FeesService } from './fees.js';
 import type { TaskService } from '../tasks.js';
+import type { TimetableService } from './timetable.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
 export interface ExamInput { academicYearId?: string | null; termId?: string | null; examTypeId?: string | null; gradingScaleId?: string | null; name: string; startDate: string; endDate: string; classIds?: string[]; requireFeeClearance?: boolean; minAttendancePct?: number | null; rankScope?: 'section' | 'class' | 'both'; tieRule?: 'share_rank' | 'dense' | 'by_total' }
@@ -21,7 +22,7 @@ export interface MarkInput { studentId: string; theory?: number | null; practica
  * promotion. The engine is deterministic: recomputing an exam gives the same numbers.
  */
 export class AssessmentService {
-  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService, private tasks: TaskService, private fees?: FeesService) {}
+  constructor(private db: Db, private outbox: OutboxService, private notifications: NotificationService, private academic: AcademicService, private files: FileService, private adapters: Adapters, private documents: DocumentService, private tasks: TaskService, private fees?: FeesService, private timetable?: TimetableService) {}
 
   /**
    * Whether a task of this kind is already waiting on this thing. Every "the system has prepared
@@ -154,6 +155,145 @@ export class AssessmentService {
   }
   async seatPlan(schoolId: string, examId: string) {
     return this.db.query<Row>(`SELECT p.*, s.first_name, s.last_name, s.admission_no, s.current_roll_no, r.name AS room_name, c.name AS class_name FROM exam_seat_plans p JOIN students s ON s.id = p.student_id LEFT JOIN rooms r ON r.id = p.room_id LEFT JOIN classes c ON c.id = s.current_class_id WHERE p.school_id = ? AND p.exam_id = ? ORDER BY c.numeric_level, LENGTH(p.seat_no), p.seat_no`, [schoolId, examId]);
+  }
+
+
+  // ---------- invigilators ----------
+  /**
+   * The duty roster. The seat plan says where the children sit; until now nothing said who was
+   * standing at the front of the room, so a school printed its seat plan and then wrote the roster
+   * on a piece of paper.
+   *
+   * Three refusals, and they are the whole point of doing it in code rather than on paper:
+   * a teacher is never rostered into a hall during a period they are teaching in the published
+   * timetable (one class unattended, one hall unwatched); never into two rooms whose papers overlap
+   * in time; and a room nobody can be found for is **named**, with a task, rather than quietly left
+   * blank — an empty cell on a roster is discovered on the morning of the exam.
+   *
+   * Duties are spread by count, so the same three people do not sit through every paper.
+   */
+  async rosterInvigilators(schoolId: string, examId: string, opts: { perRoom?: number; staffIds?: string[]; replace?: boolean } = {}) {
+    const exam = await this.db.findOne<Row>('exams', { id: examId, school_id: schoolId });
+    if (!exam) throw notFound('exam');
+    const perRoom = Math.max(1, Math.min(4, opts.perRoom ?? 1));
+    const schedules = await this.schedules(schoolId, examId);
+    if (!schedules.length) return { sessions: 0, rooms: 0, assigned: 0, gaps: [] as { schedule: string; room: string; reason: string }[], notified: 0 };
+    // where each class actually sits, out of the seat plan the office has already built
+    const seats = await this.db.query<Row>(`SELECT DISTINCT p.room_id, s.current_class_id AS class_id, r.name AS room_name FROM exam_seat_plans p JOIN students s ON s.id = p.student_id JOIN rooms r ON r.id = p.room_id WHERE p.school_id = ? AND p.exam_id = ? AND p.room_id IS NOT NULL AND p.is_eligible = TRUE`, [schoolId, examId]);
+    if (!seats.length) throw new HttpError(409, 'build the seat plan first — the roster follows the rooms the children are sitting in', 'no_seat_plan');
+    const roomsOfClass = new Map<string, { id: string; name: string }[]>();
+    for (const s of seats) {
+      const list = roomsOfClass.get(String(s.class_id)) ?? [];
+      list.push({ id: String(s.room_id), name: String(s.room_name) });
+      roomsOfClass.set(String(s.class_id), list);
+    }
+    const candidates = await this.db.query<Row>(`SELECT id, user_id, first_name, last_name, phone FROM staff WHERE school_id = ? AND status IN ('active','probation') AND staff_category IN ('teaching','admin') ${opts.staffIds?.length ? `AND id IN (${opts.staffIds.map(() => '?').join(',')})` : ''} ORDER BY employee_no`, opts.staffIds?.length ? [schoolId, ...opts.staffIds] : [schoolId]);
+    if (!candidates.length) throw new HttpError(409, 'no staff on the roll to invigilate', 'no_staff');
+
+    if (opts.replace) await this.db.execute(`DELETE FROM exam_invigilators WHERE school_id = ? AND schedule_id IN (SELECT id FROM exam_schedules WHERE exam_id = ?)`, [schoolId, examId]);
+    const already = await this.db.query<Row>(`SELECT i.*, s.exam_date, s.start_time, s.end_time FROM exam_invigilators i JOIN exam_schedules s ON s.id = i.schedule_id WHERE i.school_id = ? AND s.exam_id = ?`, [schoolId, examId]);
+    const duties = new Map<string, number>();
+    for (const c of candidates) duties.set(String(c.id), 0);
+    /** One staff member cannot be in two rooms at once: the key is the sitting, not the paper. */
+    const busy = new Set<string>();
+    const sessionKey = (r: Row) => `${String(r.exam_date).slice(0, 10)} ${String(r.start_time ?? '').slice(0, 5)}`;
+    for (const a of already) {
+      duties.set(String(a.staff_id), (duties.get(String(a.staff_id)) ?? 0) + 1);
+      busy.add(`${sessionKey(a)}|${a.staff_id}`);
+    }
+    // the timetable, read once per date+time rather than once per room
+    const teachingCache = new Map<string, Map<string, string>>();
+    const teachingAt = async (date: string, from: unknown, to: unknown) => {
+      const key = `${date} ${String(from ?? '')} ${String(to ?? '')}`;
+      if (!teachingCache.has(key)) teachingCache.set(key, await this.timetable?.teachingBetween(schoolId, date, from as string | null, to as string | null) ?? new Map());
+      return teachingCache.get(key)!;
+    };
+
+    const gaps: { schedule: string; room: string; reason: string }[] = [];
+    const rows: Row[] = [];
+    const perStaff = new Map<string, { staff: Row; duties: { date: string; time: string; room: string; paper: string }[] }>();
+    let rooms = 0;
+    const sessions = new Set<string>();
+    for (const sc of schedules) {
+      const date = String(sc.exam_date).slice(0, 10);
+      const key = sessionKey(sc as Row);
+      sessions.add(key);
+      const teaching = await teachingAt(date, sc.start_time, sc.end_time);
+      for (const room of roomsOfClass.get(String(sc.class_id)) ?? []) {
+        rooms++;
+        const held = already.filter(a => String(a.schedule_id) === String(sc.id) && String(a.room_id) === room.id).length;
+        for (let n = held; n < perRoom; n++) {
+          const free = candidates
+            .filter(c => !busy.has(`${key}|${c.id}`) && !teaching.has(String(c.id)))
+            .sort((a, b) => (duties.get(String(a.id)) ?? 0) - (duties.get(String(b.id)) ?? 0));
+          const pick = free[0];
+          if (!pick) {
+            const teachingNow = candidates.filter(c => teaching.has(String(c.id))).length;
+            gaps.push({ schedule: `${sc.class_name} · ${sc.subject_name}`, room: room.name, reason: teachingNow ? `everybody free is already in another hall and ${teachingNow} are teaching at that time` : 'everybody free is already in another hall' });
+            break;
+          }
+          rows.push({ id: ulid(), school_id: schoolId, schedule_id: String(sc.id), room_id: room.id, staff_id: String(pick.id) });
+          busy.add(`${key}|${pick.id}`);
+          duties.set(String(pick.id), (duties.get(String(pick.id)) ?? 0) + 1);
+          const entry = perStaff.get(String(pick.id)) ?? { staff: pick, duties: [] };
+          entry.duties.push({ date, time: String(sc.start_time ?? '').slice(0, 5), room: room.name, paper: `${sc.class_name} · ${sc.subject_name}` });
+          perStaff.set(String(pick.id), entry);
+        }
+      }
+    }
+    if (rows.length) await this.db.insertMany('exam_invigilators', rows);
+
+    // tell each of them, once per exam: a roster nobody has been told about is a list, not a duty
+    let notified = 0;
+    for (const [staffId, e] of perStaff) {
+      const lines = e.duties.map(d => `${d.date} ${d.time || ''} · ${d.room} · ${d.paper}`.replace(/\s+/g, ' ')).join('\n');
+      const ids = await this.notifications.notifyOnce(24 * 30, {
+        schoolId, userId: (e.staff.user_id as string) ?? null, address: (e.staff.phone as string) ?? undefined, channels: ['push', 'in_app', 'sms'],
+        eventKey: 'assessment.invigilation', title: `Invigilation duty — ${exam.name}`,
+        body: `${e.duties.length} duty${e.duties.length === 1 ? '' : ' periods'} for ${exam.name}:\n${lines}`,
+        data: { exam: String(exam.name), duties: e.duties.length }, entityType: 'assessment.invigilation', entityId: `${examId}:${staffId}`,
+      });
+      if (ids.length) notified++;
+    }
+    if (gaps.length) {
+      await this.tasks.ensure({
+        schoolId, entityType: 'assessment.exam', entityId: examId, taskType: 'assessment.invigilator_gap', assignedRole: 'admin', priority: 'high',
+        title: `${gaps.length} exam room${gaps.length === 1 ? '' : 's'} with nobody to invigilate — ${exam.name}`,
+        description: gaps.map(g => `${g.room} · ${g.schedule}: ${g.reason}`).join('\n').slice(0, 2000),
+        dueAt: exam.start_date ? String(exam.start_date).slice(0, 10) + ' 07:00:00' : null,
+      });
+    }
+    return { sessions: sessions.size, rooms, assigned: rows.length, gaps, notified };
+  }
+
+  /** One duty, put there by a person. The same three refusals apply — a roster edited by hand is still a roster. */
+  async assignInvigilator(schoolId: string, scheduleId: string, roomId: string, staffId: string) {
+    const sc = (await this.db.query<Row>(`SELECT s.*, sub.name AS subject_name, c.name AS class_name FROM exam_schedules s JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id WHERE s.id = ? AND s.school_id = ?`, [scheduleId, schoolId]))[0];
+    if (!sc) throw notFound('exam schedule');
+    const staff = await this.db.findOne<Row>('staff', { id: staffId, school_id: schoolId });
+    if (!staff) throw notFound('staff');
+    // the teaching clash is checked first on purpose: a teacher already on this room and also due in
+    // front of a class must be told about the class, not about the duplicate row
+    const date = String(sc.exam_date).slice(0, 10);
+    const teaching = await this.timetable?.teachingBetween(schoolId, date, sc.start_time as string | null, sc.end_time as string | null);
+    const clash = teaching?.get(staffId);
+    if (clash) throw new HttpError(409, `${staff.first_name} is teaching ${clash} at that time`, 'teaching_clash');
+    if (await this.db.findOne('exam_invigilators', { schedule_id: scheduleId, room_id: roomId, staff_id: staffId })) throw new HttpError(409, 'already on that room for this paper', 'duplicate');
+    const overlap = (await this.db.query<Row>(`SELECT r.name AS room_name FROM exam_invigilators i JOIN exam_schedules s ON s.id = i.schedule_id LEFT JOIN rooms r ON r.id = i.room_id WHERE i.school_id = ? AND i.staff_id = ? AND s.exam_date = ? AND (s.start_time IS NULL OR ? IS NULL OR (s.start_time < ? AND s.end_time > ?)) AND i.room_id <> ?`, [schoolId, staffId, date, sc.start_time ?? null, sc.end_time ?? '23:59', sc.start_time ?? '00:00', roomId]))[0];
+    if (overlap) throw new HttpError(409, `${staff.first_name} is already invigilating ${overlap.room_name} at that time`, 'duty_clash');
+    const id = ulid();
+    await this.db.insert('exam_invigilators', { id, school_id: schoolId, schedule_id: scheduleId, room_id: roomId, staff_id: staffId });
+    const room = await this.db.findOne<Row>('rooms', { id: roomId });
+    await this.notifications.notifyOnce(24 * 30, { schoolId, userId: (staff.user_id as string) ?? null, address: (staff.phone as string) ?? undefined, channels: ['push', 'in_app', 'sms'], eventKey: 'assessment.invigilation', title: 'Invigilation duty', body: `${date} ${String(sc.start_time ?? '').slice(0, 5)} · ${room?.name ?? 'room'} · ${sc.class_name} ${sc.subject_name}.`, entityType: 'assessment.invigilation', entityId: `${sc.exam_id}:${staffId}` });
+    return { id };
+  }
+  async removeInvigilator(schoolId: string, id: string) { return this.db.delete('exam_invigilators', { id, school_id: schoolId }); }
+  /** The roster as the hall sees it: paper, room, who, and when. */
+  async invigilators(schoolId: string, examId: string) {
+    return this.db.query<Row>(`SELECT i.id, i.schedule_id, i.room_id, i.staff_id, s.exam_date, s.start_time, s.end_time, r.name AS room_name, sub.name AS subject_name, c.name AS class_name, st.first_name, st.last_name, st.employee_no
+      FROM exam_invigilators i JOIN exam_schedules s ON s.id = i.schedule_id LEFT JOIN rooms r ON r.id = i.room_id
+      JOIN class_subjects cs ON cs.id = s.class_subject_id JOIN subjects sub ON sub.id = cs.subject_id JOIN classes c ON c.id = cs.class_id JOIN staff st ON st.id = i.staff_id
+      WHERE i.school_id = ? AND s.exam_id = ? ORDER BY s.exam_date, s.start_time, r.name, st.employee_no`, [schoolId, examId]);
   }
 
   /** The exam's own eligibility rules, read once and answered per student. */
