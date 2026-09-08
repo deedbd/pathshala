@@ -6,7 +6,7 @@ import { ctxPath, requireTenantUser, useTenantPath } from '~/tenant';
 export async function loader({ context, request }: Route.LoaderArgs) {
   // The portal renders the school in the URL: a guardian holding another school's session is sent to
   // this school's sign-in, never shown the other school's children.
-  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  if (!context.user) throw redirect(`${ctxPath(context, '/portal/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
   const u = requireTenantUser(context, context.user, request);
   const [school, children, notices] = await Promise.all([context.app.db.findOne<{ name: string; name_bn: string | null }>('schools', { id: u.school_id }), context.app.portal.children(u.school_id, u.id), context.app.cms.publicNotices(u.school_id, 10)]);
   return { locale: (u.locale as Locale) || context.locale, user: { name: u.display_name, type: u.user_type }, school, children, notices, isGuardian: u.user_type === 'guardian' };

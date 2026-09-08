@@ -45,8 +45,15 @@ declare global { namespace Express { interface Request { ps: RequestState } } }
  * other `/api/*` path belongs to the school the address resolved to.
  */
 const TENANT_FREE_API = /^\/api\/(auth|install|public|v1)(\/|$)/;
-/** The vendor's own half of the platform. It exists only where no school owns the address. */
-const VENDOR_ONLY = /^\/(owner|x)(\/|$)/;
+/**
+ * The vendor's own half of the platform. It exists only where no school owns the address.
+ *
+ * `/x/<door>` is deliberately *not* here any more: the segment is now shared. At the installation's
+ * own root it is the vendor's door, and on a school's own domain it is that school's own sign-in —
+ * the web layer decides by whether a tenant owns the address, and a door that is not that school's
+ * is a 404 from the page itself. `/owner` stays the vendor's alone.
+ */
+const VENDOR_ONLY = /^\/owner(\/|$)/;
 
 export async function createServer(app: App = createApp()) {
   const { config, log } = app;
@@ -89,9 +96,10 @@ export async function createServer(app: App = createApp()) {
    *
    * Two rules, and both answer 404 rather than 403, because a refusal that explains itself is a map.
    *
-   *  1. **The vendor's console is only where no school owns the address.** `/owner`, `/x/<door>` and
-   *     `/api/owner` exist at the root of the installation and nowhere else — on a school's own
-   *     domain, or under its slug, they are simply not there.
+   *  1. **The vendor's console is only where no school owns the address.** `/owner` and `/api/owner`
+   *     exist at the root of the installation and nowhere else — on a school's own domain, or under
+   *     its slug, they are simply not there. `/x/<door>` is the one shape both halves use: the
+   *     vendor's door at the root, a school's own sign-in at a school's address.
    *  2. **A session for one school sees nothing of another's.** Signing in to school A and then
    *     opening school B's address must not read B's register — the session is A's, and B's API says
    *     there is nothing here. The web layer renders B's sign-in page instead, which is the answer a

@@ -9,6 +9,7 @@ export { OwnerAccessService, ownerDeviceCookie, readOwnerDeviceCookie, randomDev
 export {
   TenantService, RESERVED_SLUGS, DOMAIN_WATCH_KEY, ensureSchoolSlugs, claimSlug, slugifySchoolName,
   transliterateBangla, normalizeSlug, normalizeDomain, normalizeHost, firstSegment, createInstallationId,
+  DOOR_ALPHABET, DOOR_LENGTH, randomDoor, isDoorShaped, doorMatches, ensureSchoolDoors, claimDoor,
   type TenantSource, type TenantSchool, type ResolvedTenant, type RequestTenant, type DomainCheck, type DnsInstruction, type WebAddress,
 } from './tenant.js';
 export { FileService, type StoreFileInput } from './files.js';

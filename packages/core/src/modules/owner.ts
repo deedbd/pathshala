@@ -408,15 +408,22 @@ export class OwnerService {
       after: { name, code, provisionedBy: 'owner console' },
     });
 
+    // the school is told where its own sign-in lives, in writing, the moment it exists. The address
+    // is the only thing it cannot work out for itself — and the password is deliberately not in it.
+    const invitation = await this.sendSignInLink(user, created.schoolId, { reason: 'provisioned' })
+      .catch(e => ({ sent: false, to: null as string | null, reason: (e as Error).message.slice(0, 200) }));
+
     return {
       schoolId: created.schoolId, code, name,
       adminUserId: created.userId, adminName: String(input.adminName ?? '').trim(),
       adminEmail: (input.adminEmail || null) as string | null, adminPhone: String(input.adminPhone ?? '').trim(),
       /** Shown once. Nothing stores it in the clear, so it cannot be read back from anywhere. */
       password, passwordGenerated: generated,
-      /** The school's own address, not the installation's: /<slug>/login from the moment it exists. */
+      /** The school's own sign-in door: /<slug>/x/<door>, which is the only way into its console. */
       url: await this.loginUrl(created.schoolId),
       slug: (await this.tenant.school(created.schoolId).catch(() => null))?.slug ?? null,
+      /** Whether the address actually went out by email, and to whom. */
+      invitation,
       subscription,
     };
   }
@@ -517,11 +524,85 @@ export class OwnerService {
     return { ...(await this.tenant.webAddress(id)), alias };
   }
 
-  /** The address to read out to a school's administrator: their own domain, or /<slug>/login. */
+  /**
+   * The address to read out to a school's administrator: its own door and nothing else.
+   *
+   * There is no `/login` on this installation any more — a school's console sign-in is served only
+   * at `<the school's address>/x/<door>`, and every other spelling is a 404. A school with no door
+   * yet (a row written before the column existed and not yet repaired at boot) gets its plain
+   * address back rather than a link that would not work.
+   */
   private async loginUrl(schoolId: string) {
     const school = await this.tenant.school(schoolId).catch(() => null);
-    const base = school ? this.tenant.urlFor(school) : this.config.appUrl.replace(/\/$/, '');
-    return `${base.replace(/\/$/, '')}/login`;
+    if (school) return this.tenant.doorUrlFor(school) ?? this.tenant.urlFor(school);
+    return this.config.appUrl.replace(/\/$/, '');
+  }
+
+  // ---------------------------------------------------------------- the school's own door
+  /**
+   * Emails a school the address of its own sign-in page.
+   *
+   * The address goes to the school's registered address (`schools.email`), and to the administrator
+   * who was created with it where the school has none — that is the one address on record that is
+   * certain to belong to somebody who is allowed in. It is a template, in the school's own language,
+   * because everything this platform says to a person is; and it never carries the password, which
+   * travels by another route entirely so that one intercepted mailbox opens nothing.
+   */
+  async sendSignInLink(user: OwnerUser, id: string, opts: { reason?: string } = {}) {
+    const { founderId } = await this.requireOwner(user);
+    const school = await this.db.findOne<Row>('schools', { id });
+    if (!school) throw notFound('school');
+    const url = await this.loginUrl(id);
+    const tenant = await this.tenant.school(id);
+
+    // the school's registered address first, then the administrator's: whoever is on record
+    const admin = await this.db.query<Row>(
+      `SELECT u.email, u.phone, u.username, u.display_name FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+        WHERE u.school_id = ? AND r.slug IN ('super_admin','admin') AND u.is_active = TRUE AND u.deleted_at IS NULL
+        ORDER BY u.created_at ASC, u.id ASC LIMIT 1`, [id]);
+    const to = String(school.email ?? '').trim() || String(admin[0]?.email ?? '').trim();
+    // the identifier is what the person actually types into the form, which is their email or phone
+    const identifier = String(admin[0]?.email ?? '').trim() || String(admin[0]?.phone ?? '').trim() || String(admin[0]?.username ?? '').trim();
+    if (!to) return { sent: false, to: null as string | null, url, reason: 'this school has no email address on record, and neither has its administrator' };
+
+    const ids = await this.notifications.notify({
+      schoolId: id, address: to, channels: ['email'], eventKey: 'owner.school_ready',
+      entityType: 'owner.school', entityId: id,
+      // an address somebody is waiting for is not held back until seven in the morning
+      respectQuietHours: false,
+      locale: (String(school.locale ?? 'bn') === 'en' ? 'en' : 'bn'),
+      data: { url, identifier, portalUrl: `${this.tenant.urlFor(tenant)}/portal`, school: String(school.name ?? '') },
+    });
+
+    // the trail says the address was sent and to whom; the door itself is never written into a log
+    await this.audit.log({ schoolId: founderId, actorUserId: user.id, action: 'send_sign_in_link', entityType: 'owner.school', entityId: id, after: { to, reason: opts.reason ?? 'resent', sent: ids.length > 0 } });
+    await this.audit.log({ schoolId: id, actorUserId: user.id, action: 'send_sign_in_link', entityType: 'owner.school', entityId: id, after: { to, by: 'owner console' } });
+    return { sent: ids.length > 0, to, url, notificationIds: ids };
+  }
+
+  /**
+   * A new door, and the old address dead from the next request.
+   *
+   * This is what an address that has leaked costs: one click, and the school is emailed the new one
+   * in the same breath — a rotation nobody is told about is a school locked out of its own console.
+   * Nobody is signed out: the door was never the session.
+   */
+  async rotateDoor(user: OwnerUser, id: string) {
+    const { founderId } = await this.requireOwner(user);
+    const before = await this.tenant.school(id);
+    await this.tenant.rotateDoor(id);
+    await this.audit.log({
+      schoolId: founderId, actorUserId: user.id, action: 'rotate_door', entityType: 'owner.school', entityId: id,
+      before: { hadDoor: !!before.loginDoor }, after: { rotated: true },
+    });
+    await this.audit.log({
+      schoolId: id, actorUserId: user.id, action: 'rotate_door', entityType: 'owner.school', entityId: id,
+      after: { rotated: true, by: 'owner console' },
+    });
+    const email = await this.sendSignInLink(user, id, { reason: 'rotated' }).catch(e => ({ sent: false, to: null as string | null, reason: (e as Error).message.slice(0, 200) }));
+    // the same shape the console already renders, so the section repaints with the new address
+    return { ...(await this.tenant.webAddress(id)), email };
   }
 
   // ---------------------------------------------------------------- plan

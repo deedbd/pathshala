@@ -60,7 +60,7 @@ export class CmsService {
       { type: 'stats' }, { type: 'notices', title: 'Notices', titleBn: 'নোটিশ', limit: 5 }, { type: 'admission_cta', title: 'Admission open', titleBn: 'ভর্তি চলছে', body: 'Fill the form and we will call you back.', bodyBn: 'ফর্ম পূরণ করুন, আমরা আপনাকে ফোন করব।' }, { type: 'contact' },
     ] });
     await this.savePage(schoolId, { title: 'Admission', slug: 'admission', locale: 'bn', status: 'published', blocks: [{ type: 'admission_cta', title: 'Admission enquiry', titleBn: 'ভর্তির খোঁজ', body: 'Tell us about the student; our admissions desk will contact you within a day.', bodyBn: 'শিক্ষার্থীর তথ্য দিন, ভর্তি ডেস্ক ২৪ ঘণ্টার মধ্যে যোগাযোগ করবে।' }] });
-    await this.setMenu(schoolId, 'main', [{ label: 'Home', labelBn: 'হোম', href: '/site' }, { label: 'Notices', labelBn: 'নোটিশ', href: '/site#notices' }, { label: 'Admission', labelBn: 'ভর্তি', href: '/site/admission' }, { label: 'Sign in', labelBn: 'সাইন ইন', href: '/login' }]);
+    await this.setMenu(schoolId, 'main', [{ label: 'Home', labelBn: 'হোম', href: '/site' }, { label: 'Notices', labelBn: 'নোটিশ', href: '/site#notices' }, { label: 'Admission', labelBn: 'ভর্তি', href: '/site/admission' }, { label: 'Sign in', labelBn: 'সাইন ইন', href: '/portal/login' }]);
     return true;
   }
 

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { redirect, useRouteLoaderData } from 'react-router';
+import { useRouteLoaderData } from 'react-router';
 
 /**
  * Which school this request belongs to, as the server worked it out from the host and the path.
@@ -25,13 +25,16 @@ export function sessionMatchesTenant(context: TenantContext, user: { school_id: 
 /**
  * A session for another school is not a session here.
  *
- * Arriving at one school's address holding another school's session shows that school's sign-in
- * form, never the school one happens to be signed in to: the console is the one place where getting
- * this wrong would put a stranger's roll call on the screen under this school's name.
+ * Arriving at one school's address holding another school's session gets a 404, never the school one
+ * happens to be signed in to: the console is the one place where getting this wrong would put a
+ * stranger's roll call on the screen under this school's name. There is no sign-in page to be sent
+ * to either — this school's is behind a door only this school knows.
+ *
+ * `request` is kept in the signature because every caller passes it and a future answer may want it.
  */
-export function requireTenantUser<T extends { school_id: string }>(context: TenantContext, user: T, request: Request): T {
+export function requireTenantUser<T extends { school_id: string }>(context: TenantContext, user: T, _request?: Request): T {
   if (sessionMatchesTenant(context, user)) return user;
-  throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  throw new Response('Not found', { status: 404 });
 }
 
 /**

@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { redirect, useLoaderData, useRevalidator, useSearchParams } from 'react-router';
+import { useLoaderData, useRevalidator, useSearchParams } from 'react-router';
 import type { Route } from './+types/teach';
 import { Banner, Button, Chip, api, formatDate, t, type Locale } from '@pathshala/ui';
-import { ctxPath, requireTenantUser, useTenantPath } from '~/tenant';
+import { requireTenantUser, useTenantPath } from '~/tenant';
 
 type Status = 'present' | 'absent' | 'late' | 'excused';
 
 /** Teacher PWA v0: today's periods, one-tap attendance, homework, and substitutions assigned to me. */
 export async function loader({ context, request }: Route.LoaderArgs) {
-  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  // a teacher is staff, so this follows the console's rule and not the portal's: no session, no page
+  if (!context.user) throw new Response('Not found', { status: 404 });
   const u = requireTenantUser(context, context.user, request); const url = new URL(request.url);
   const date = url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10);
   const staff = await context.app.db.findOne<{ id: string; first_name: string }>('staff', { school_id: u.school_id, user_id: u.id });

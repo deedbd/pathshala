@@ -79,7 +79,7 @@ its own proxied record.
    8. Create the first school + admin from the one form the owner fills (school name, phone, OTP)
    9. Self-test: write file, send test SMS/email (if keys given later), run scheduler tick, queue a PDF
   10. Write OWNER_DOOR into .env (a random path) and show it once — the Pathshala team's own
-      console lives behind it and nowhere else; a school's /login never signs an owner in
+      console lives behind it and nowhere else; a school's own door never signs an owner in
   11. Mark installer_state = done; delete install.php; show the dashboard
 ```
 Every step writes to `installer_state`; re-opening `/install` resumes from the failed step.
@@ -90,6 +90,25 @@ but with it unset the vendor console is closed rather than open, and `/owner` an
 404 to anyone who has not come through the door, so a school's site carries no trace of it.
 `OWNER_IPS` narrows who may reach the door at all. `scripts/update.mjs` never overwrites `.env`, so
 an update keeps the door the owner already has.
+
+**Every school has a door of its own too.** `schools.login_door` is twelve characters of the same
+alphabet, written when the school is provisioned and back-filled at boot for any school that has
+none. A school's console sign-in is served only at `https://pathshala.deedbd.com/<slug>/x/<door>` —
+or `https://school.edu.bd/x/<door>` where the school brought its own domain — and it is emailed to
+the school (`owner.school_ready`, bn and en) the moment the school is created. **There is no
+`/login` on this installation any more**: `/login`, `/<slug>/login` and a wrong door are all 404s,
+five wrong tries from one address close a school's door for fifteen minutes, and the page is
+noindex and linked from nowhere. The door is not the security boundary — the password, the second
+factor, the session and the roles still are — it only keeps a school's sign-in form off the list of
+addresses a stranger can find and hammer. The owner console shows the address with a copy button,
+resends it, and replaces it in one click (which kills the old address at once and emails the new
+one).
+
+The **guardian and student portal stays at the plain address** — `/<slug>/portal`, with its own
+sign-in at `/<slug>/portal/login`. An address printed on a card and sent home to five hundred
+families is not a secret by the end of the first week, and a guardian who cannot sign in is a school
+that stops using the software. That page refuses staff and admin accounts outright, which is what
+stops it being a way around the console's door.
 
 ---
 

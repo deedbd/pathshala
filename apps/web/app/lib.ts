@@ -1,5 +1,5 @@
-import { redirect, type AppLoadContext } from 'react-router';
-import { ctxPath, requireTenantUser } from './tenant';
+import type { AppLoadContext } from 'react-router';
+import { requireTenantUser } from './tenant';
 
 export const SESSION_COOKIE = 'ps_session';
 
@@ -11,14 +11,16 @@ export const clearSessionCookie = `${SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age
 /**
   * The signed-in user of the school whose address this page is being served at.
   *
-  * Two things send the browser to a sign-in form, and both land on *this* school's: no session at
-  * all, and a session belonging to another school on the installation. The second is the one that
-  * matters — every console loader goes through here, so a stranger's console can never be drawn
-  * under a school's own address. The sign-in redirect keeps the prefix, and `next` is the pathname
-  * as it was asked for, which already carries it.
+  * Two things get nothing from a console page, and both get the same answer — a 404:
+  *  - **no session at all.** There is nowhere to send the browser any more. The sign-in form lives
+  *    behind an address the school was emailed, and redirecting to it here would hand that address
+  *    to the first stranger who typed `/‹slug›/fees` — which is exactly the thing the door exists to
+  *    prevent. So the page is simply not there, as `/owner` already is for everyone but the vendor.
+  *  - **a session belonging to another school.** Handled in `requireTenantUser`, the same way: one
+  *    school's console is never drawn under another school's address.
   */
 export function requireUser(context: AppLoadContext, request: Request) {
-  if (!context.user) throw redirect(`${ctxPath(context, '/login')}?next=${encodeURIComponent(new URL(request.url).pathname)}`);
+  if (!context.user) throw new Response('Not found', { status: 404 });
   return requireTenantUser(context, context.user, request);
 }
 

@@ -93,6 +93,15 @@ export interface OwnerSchoolWeb {
   domain: OwnerDomainStatus | null;
   instructions: OwnerDnsInstruction[];
   cpanel: OwnerCpanel;
+  /**
+   * The school's own sign-in address. `doorUrl` is the whole thing, ready to copy; both are null on
+   * a server that does not carry the door yet, and the section says so rather than showing a link
+   * that would 404.
+   */
+  loginDoor?: string | null;
+  doorUrl?: string | null;
+  /** Present on a rotate: whether the new address actually reached the school, and at what address. */
+  email?: { sent: boolean; to: string | null; reason?: string } | null;
 }
 export interface OwnerWebInput { slug?: string; customDomain?: string | null }
 
@@ -114,6 +123,10 @@ export interface OwnerApi {
   addAdmin(id: string, input: Row): Promise<{ email: string; password: string }>;
   /** `customDomain: null` removes the domain. Answers the same shape `web()` does. */
   setWeb(id: string, input: OwnerWebInput): Promise<OwnerSchoolWeb>;
+  /** Emails the school its sign-in address again. */
+  sendSignInLink(id: string): Promise<{ sent: boolean; to: string | null; url: string }>;
+  /** Replaces the door — the old address dies at once — and emails the new one. */
+  rotateDoor(id: string): Promise<OwnerSchoolWeb>;
 }
 
 /**

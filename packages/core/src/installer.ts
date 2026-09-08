@@ -1,8 +1,7 @@
 import fs from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Db, Row } from '@pathshala/db';
-import { json, migrate, nowSql, seed, ulid } from '@pathshala/db';
+import { json, migrate, nowSql, seed, seedNotificationTemplates, ulid } from '@pathshala/db';
 import type { Adapters, Logger } from '@pathshala/adapters';
 import { WebPush } from '@pathshala/adapters';
 import type { InstallSchoolInput } from '@pathshala/schemas';
@@ -15,7 +14,7 @@ import type { NotificationService } from './notifications.js';
 import type { Relay } from './automation/relay.js';
 import { runWithContext, systemContext } from './context.js';
 import { slugify } from './util.js';
-import { ensureSchoolSlugs } from './tenant.js';
+import { ensureSchoolDoors, ensureSchoolSlugs, randomDoor } from './tenant.js';
 
 export const INSTALL_STEPS = ['schema', 'seeds', 'school', 'selftest', 'done'] as const;
 export type InstallStep = typeof INSTALL_STEPS[number];
@@ -45,18 +44,26 @@ export class InstallerService {
    * Reconciles every school on this installation against the automation catalogue the build ships.
    * `syncCatalogue` is the rule; this is the pass over the schools, run once at boot.
    */
-  async ensureAutomationCatalogue(): Promise<{ schools: number; jobs: number; rules: number; slugs: number }> {
-    const added = { schools: 0, jobs: 0, rules: 0, slugs: 0 };
+  async ensureAutomationCatalogue(): Promise<{ schools: number; jobs: number; rules: number; slugs: number; doors: number; templates: number }> {
+    const added = { schools: 0, jobs: 0, rules: 0, slugs: 0, doors: 0, templates: 0 };
     if (!(await this.hasSchema())) return added;
     // a school installed before `schools.slug` existed has no web address of its own, and nobody is
     // going to type one in for it: it is repaired here, for the same reason the catalogue is
     const web = await ensureSchoolSlugs(this.db).catch(e => { this.deps.log.error('school slugs', e); return { schools: 0, slugs: [] as Array<{ schoolId: string; slug: string }> }; });
     added.slugs = web.slugs.length;
     if (web.slugs.length) this.deps.log.info(`web addresses: ${web.slugs.map(s => `/${s.slug}`).join(', ')}`);
+    // …and the same for its sign-in door: a school with none has no way in at all, because there is
+    // no generic /login to fall back on. The value is never logged — it is the address itself.
+    const doors = await ensureSchoolDoors(this.db).catch(e => { this.deps.log.error('school doors', e); return { schools: 0, doors: [] as Array<{ schoolId: string; door: string }> }; });
+    added.doors = doors.doors.length;
+    if (doors.doors.length) this.deps.log.info(`sign-in doors written for ${doors.doors.length} school(s)`);
     const schools = await this.db.query<{ id: string }>(`SELECT id FROM schools WHERE status <> 'closed' ORDER BY created_at, id`);
     for (const school of schools) {
       const r = await syncCatalogue(this.db, this.config.dbDir, String(school.id));
       added.jobs += r.jobs.length; added.rules += r.rules.length;
+      // a template added by an update reaches a school already in the field only here: seeds run
+      // once, when the school is created, and nothing re-runs them
+      added.templates += await seedNotificationTemplates(this.db, String(school.id)).catch(e => { this.deps.log.error('notification templates', e); return 0; });
       if (r.jobs.length || r.rules.length) added.schools++;
     }
     if (added.jobs || added.rules) {
@@ -149,6 +156,8 @@ export class InstallerService {
       // its own web address, straight away: a school provisioned this afternoon must be reachable at
       // /<slug> before the next boot, because that is the link the owner reads out on the telephone
       await ensureSchoolSlugs(this.db, schoolId).catch(e => this.deps.log.error('school slug', e));
+      // and its own sign-in door, which is the link the owner console emails a minute from now
+      await ensureSchoolDoors(this.db, schoolId).catch(e => this.deps.log.error('school door', e));
       await seed(this.db, { dbDir: this.config.dbDir, schoolId, log: m => this.deps.log.info(`seed: ${m}`) });
       const userId = await runWithContext(systemContext(schoolId), () => this.deps.auth.createUser({ schoolId, userType: 'admin', displayName: input.adminName, phone: input.adminPhone, email: input.adminEmail || null, password: input.adminPassword, locale: input.locale, roles: ['super_admin'] }));
       if (this.deps.afterSchool) await runWithContext(systemContext(schoolId, { userId }), () => this.deps.afterSchool!(schoolId, input));
@@ -205,7 +214,7 @@ export class InstallerService {
     // here — the installer shows it once, and after that it is only in the file on the server.
     if (!this.config.ownerDoor) {
       try {
-        const door = randomDoor();
+        const door = randomDoor(16);
         writeDotenv(path.join(this.config.rootDir, '.env'), { OWNER_DOOR: door });
         this.config.env.OWNER_DOOR = door;
         (this.config as { ownerDoor: string | null }).ownerDoor = door;
@@ -229,9 +238,3 @@ export class InstallerService {
   private ownerDoorJustWritten: string | null = null;
 }
 
-/** A door nobody can guess and a person can still read down a telephone. */
-function randomDoor(): string {
-  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';               // no l/1, no o/0
-  const bytes = randomBytes(16);
-  return Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
-}

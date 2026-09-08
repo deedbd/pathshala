@@ -97,15 +97,22 @@ describe('the owner console: one vendor, many client schools', () => {
   test('the vendor signs in at its own door, and nowhere else', async () => {
     const DOOR = '/x/test-door-9x7k2p';
 
-    // a school's own login page never signs the vendor in, and does not admit the account exists
-    const refused = await postForm('/login', { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
-    assert.equal(refused.status, 200, 'the school login answers with its own page, not a redirect');
+    // there is no general sign-in page any more: a school signs in at its own door, and /login is
+    // a 404 wherever it is typed
+    const clientRow = await app.db.findOne('schools', { id: client.schoolId });
+    const schoolDoor = `/${clientRow.slug}/x/${clientRow.login_door}`;
+    assert.equal((await page('/login')).status, 404, 'the generic sign-in page is gone');
+    assert.equal((await page(`/${clientRow.slug}/login`)).status, 404, 'and so is a school\'s');
+
+    // a school's own door never signs the vendor in, and does not admit the account exists
+    const refused = await postForm(schoolDoor, { intent: 'password', identifier: 'owner@vendor.test', password: 'owner-pass-1', next: '/dashboard' });
+    assert.equal(refused.status, 200, 'the school door answers with its own page, not a redirect');
     assert.equal(refused.setCookie.some(c => c.startsWith('ps_session=') && !c.includes('Max-Age=0')), false, 'no session was handed out');
-    assert.match(refused.text, /login\.failed|match/i, 'and the answer is the one a wrong password gets');
-    // the same page still works for a school's own head teacher
-    const school = await postForm('/login', { intent: 'password', identifier: 'head@shapla.test', password: 'shapla-pass-1', next: '/dashboard' });
+    assert.match(refused.text, /login\.failed|match|ভুল/i, 'and the answer is the one a wrong password gets');
+    // the same door works for that school's own head teacher
+    const school = await postForm(schoolDoor, { intent: 'password', identifier: 'head@shapla.test', password: 'shapla-pass-1', next: `/${clientRow.slug}/dashboard` });
     assert.equal(school.status, 302);
-    assert.ok(school.setCookie.some(c => c.startsWith('ps_session=')), 'a school signs in exactly as before');
+    assert.ok(school.setCookie.some(c => c.startsWith('ps_session=')), 'a school signs in at its own address');
 
     // a wrong path is a 404 like any other address on the site
     assert.equal((await page('/x/not-the-door')).status, 404);
