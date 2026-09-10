@@ -142,14 +142,17 @@ export class NotificationService {
    * fortnight. The `notifications` rows are the record of what was actually sent, so they are the
    * honest place to ask. Housekeeping keeps 90 days of them, which bounds every window below.
    */
-  async sentSince(schoolId: string, eventKey: string, entityId: string | null, since: string | Date, userId?: string | null): Promise<boolean> {
+  async sentSince(schoolId: string, eventKey: string, entityId: string | null, since: string | Date, userId?: string | null, address?: string | null): Promise<boolean> {
     const from = typeof since === 'string' ? since : nowSql(since);
     const where = ['school_id = ?', 'event_key = ?', entityId == null ? 'entity_id IS NULL' : 'entity_id = ?', 'created_at >= ?'];
     const params: unknown[] = entityId == null ? [schoolId, eventKey, from] : [schoolId, eventKey, entityId, from];
     // a message to one person is repeated only to that person: twenty staff who have not read a
     // policy are twenty messages about the same policy, and the first of them must not silence the
     // other nineteen. The entity stays the thing itself, which is what the console reads it by.
+    // A recipient with no login counts the same way, by the number the message went to — otherwise a
+    // school whose teachers hold no accounts tells the first invigilator and nobody else.
     if (userId) { where.splice(3, 0, 'recipient_user_id = ?'); params.splice(3, 0, userId); }
+    else if (address) { where.splice(3, 0, 'recipient_address = ?'); params.splice(3, 0, address); }
     const rows = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM notifications WHERE ${where.join(' AND ')}`, params);
     return Number(rows[0]?.n ?? 0) > 0;
   }
@@ -162,7 +165,7 @@ export class NotificationService {
   /** The same rule for one person: an offer expiring is worth one SMS, not one a day. */
   async notifyOnce(withinHours: number, input: NotifyInput): Promise<string[]> {
     const since = nowSql(new Date(Date.now() - withinHours * 3600_000));
-    if (await this.sentSince(input.schoolId, input.eventKey, input.entityId ?? null, since, input.userId ?? null)) return [];
+    if (await this.sentSince(input.schoolId, input.eventKey, input.entityId ?? null, since, input.userId ?? null, input.address ?? null)) return [];
     return this.notify(input);
   }
 
