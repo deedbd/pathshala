@@ -16,7 +16,17 @@ export function mountPhase7(api: Router, app: App, wrap: Wrap, requirePerm: (req
 
   // ---------- library ----------
   api.get('/library/books', wrap(async req => { const u = requirePerm(req, 'library.view'); return app.library.books(u.school_id, { q: q(req, 'q'), categoryId: q(req, 'categoryId') }); }));
-  api.post('/library/books', wrap(async req => { const u = requirePerm(req, 'library.create'); const b = z.object({ isbn: z.string().max(20).optional().nullable(), title: z.string().min(1).max(255), authors: z.array(z.string().max(120)).optional(), publisher: z.string().max(160).optional().nullable(), categoryId: z.string().optional().nullable(), price: money.optional().nullable(), pages: z.coerce.number().int().optional().nullable(), copies: z.coerce.number().int().min(0).max(500).optional() }).parse(req.body); return app.library.addBook(u.school_id, b); }));
+  api.post('/library/books', wrap(async req => { const u = requirePerm(req, 'library.create'); const b = z.object({ isbn: z.string().max(20).optional().nullable(), title: z.string().min(1).max(255), authors: z.array(z.string().max(120)).optional(), publisher: z.string().max(160).optional().nullable(), categoryId: z.string().optional().nullable(), price: money.optional().nullable(), pages: z.coerce.number().int().optional().nullable(), copies: z.coerce.number().int().min(0).max(500).optional(), rack: z.string().max(20).optional().nullable(), shelf: z.string().max(20).optional().nullable() }).parse(req.body); return app.library.addBook(u.school_id, b); }));
+  api.get('/library/books/:id/copies', wrap(async req => { const u = requirePerm(req, 'library.view'); return app.library.copies(u.school_id, req.params.id as string); }));
+  // where a book is kept is a fact the desk corrects constantly, so it is one small write of its own:
+  // a copy by accession number, or every copy of a title when a whole shelf has moved
+  api.post('/library/shelve', wrap(async req => {
+    const u = requirePerm(req, 'library.edit');
+    const b = z.object({ copyId: z.string().optional(), accessionNo: z.string().max(30).optional(), bookId: z.string().optional(), rack: z.string().max(20).nullable().optional(), shelf: z.string().max(20).nullable().optional() }).parse(req.body);
+    const r = await app.library.shelve(u.school_id, b);
+    await app.audit.log({ action: 'update', entityType: 'library.copy', entityId: b.copyId ?? b.accessionNo ?? b.bookId ?? '', after: r });
+    return r;
+  }));
   api.post('/library/books/import', wrap(async req => { const u = requirePerm(req, 'library.create'); const b = z.object({ rows: z.array(z.object({ title: z.string().min(1).max(255), isbn: z.string().max(20).optional().nullable(), authors: z.array(z.string().max(120)).optional(), price: money.optional().nullable(), copies: z.coerce.number().int().min(0).max(500).optional() })).max(2000) }).parse(req.body); return app.library.importBooks(u.school_id, b.rows); }));
   api.get('/library/members', wrap(async req => { const u = requirePerm(req, 'library.view'); return app.library.members(u.school_id); }));
   api.post('/library/members', wrap(async req => { const u = requirePerm(req, 'library.create'); const b = z.object({ memberType: z.enum(['student', 'staff', 'guardian']), studentId: z.string().optional().nullable(), staffId: z.string().optional().nullable(), maxBooks: z.coerce.number().int().min(1).max(20).optional(), loanDays: z.coerce.number().int().min(1).max(120).optional(), finePerDay: money.optional() }).parse(req.body); return { id: await app.library.enrolMember(u.school_id, b) }; }));

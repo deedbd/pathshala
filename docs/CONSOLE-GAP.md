@@ -361,3 +361,24 @@ Checked against the owning service, not assumed.
     theme and language toggles, breadcrumbs, and the grouped sidebar with count badges.
 
 Nothing was committed or pushed; this file is the only change.
+
+## Closed since this audit
+
+This section is appended as items are built, so the table above stays the record of what the audit
+found rather than being quietly rewritten.
+
+- **The shell, the dashboard, and the console build-out** — item 10 and item 7, plus the pages listed
+  in items 1–9: shipped in the prototype-parity wave (top bar with search, year chip, live clock,
+  bell, theme and language toggles; the eight KPIs and both charts).
+- **The invigilator roster** (rows 53 and 283) — `AssessmentService.rosterInvigilators` builds it,
+  refuses a teacher who is teaching that period, and the room it cannot staff raises a task naming
+  the room. It now runs inside `exams.pre_exam_prep`, so an exam nobody touched is staffed a week
+  out rather than waiting for somebody to press the button.
+- **Where a book is kept** — `library_book_copies.rack`/`shelf` were written null for ever. The
+  catalogue column, the add-a-book form and `POST /api/library/shelve` (one copy by accession, or
+  every copy of a title) now carry the shelfmark.
+- **Reissue a lost ID card** — `POST /api/documents/id-cards/:id/reissue` existed with nothing to
+  press; the card list has the button.
+- **Preview a document template** — `POST /api/documents/templates/preview` renders the draft in the
+  editor with sample values, through the same page furniture a real certificate gets. Nothing is
+  recorded: no document number is taken and no `issued_documents` row is written.

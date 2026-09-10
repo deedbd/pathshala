@@ -177,9 +177,17 @@ describe('the academic modules run themselves', () => {
     const events = await app.db.query(`SELECT * FROM outbox_events WHERE school_id = ? AND event_type = 'exam.scheduled'`, [schoolId]);
     assert.equal(events.length, 1, 'the routine and the calendar hang off this event');
 
+    // the halls are staffed by the same pass: an exam nobody touched must not reach the morning with
+    // nobody standing in it, and a room it could not staff leaves the task that names the room
+    assert.ok(first.duties >= 1, `invigilators were rostered by the job: ${JSON.stringify(first)}`);
+    const roster = await app.assessment.invigilators(schoolId, examId);
+    assert.equal(roster.length, first.duties, 'the duties the job reported are the rows in the roster');
+
     const second = await job('assessment', 'exams.pre_exam_prep', { onDate: today });
     assert.equal(second.prepared, 0, 'the exam is scheduled now; it is not prepared again');
     assert.equal(second.cards, 0);
+    assert.equal(second.duties, 0, 'and nobody is rostered twice');
+    assert.equal((await app.assessment.invigilators(schoolId, examId)).length, roster.length);
     assert.equal((await app.assessment.seatPlan(schoolId, examId)).length, N, 'no duplicate seats');
   });
 

@@ -8,7 +8,7 @@ import type { NumberingService } from './numbering.js';
 import { round } from './accounting.js';
 import { HttpError, badRequest, notFound } from '../context.js';
 
-export interface BookInput { isbn?: string | null; title: string; subtitle?: string | null; authors?: string[]; publisher?: string | null; edition?: string | null; publishedYear?: number | null; language?: string; categoryId?: string | null; subjectId?: string | null; classId?: string | null; pages?: number | null; price?: number | null; copies?: number }
+export interface BookInput { isbn?: string | null; title: string; subtitle?: string | null; authors?: string[]; publisher?: string | null; edition?: string | null; publishedYear?: number | null; language?: string; categoryId?: string | null; subjectId?: string | null; classId?: string | null; pages?: number | null; price?: number | null; copies?: number; rack?: string | null; shelf?: string | null }
 
 /**
  * Library: catalogue with physical copies, members with their own limits, issue and return with a
@@ -31,7 +31,13 @@ export class LibraryService {
     const where = ['b.school_id = ?']; const params: unknown[] = [schoolId];
     if (f.q) { where.push('(b.title LIKE ? OR b.isbn LIKE ?)'); params.push(`%${f.q}%`, `%${f.q}%`); }
     if (f.categoryId) { where.push('b.category_id = ?'); params.push(f.categoryId); }
-    return this.db.query<Row>(`SELECT b.*, c.name AS category_name FROM library_books b LEFT JOIN library_categories c ON c.id = b.category_id WHERE ${where.join(' AND ')} ORDER BY b.title LIMIT 500`, params);
+    // where the book physically is, which is the one thing a person standing in the room needs and
+    // the catalogue never carried: the shelfmark of its first shelved copy, blank while nobody has
+    // said where the copies live.
+    return this.db.query<Row>(`SELECT b.*, c.name AS category_name,
+        (SELECT cp.rack FROM library_book_copies cp WHERE cp.book_id = b.id AND cp.rack IS NOT NULL ORDER BY cp.accession_no LIMIT 1) AS rack,
+        (SELECT cp.shelf FROM library_book_copies cp WHERE cp.book_id = b.id AND cp.shelf IS NOT NULL ORDER BY cp.accession_no LIMIT 1) AS shelf
+      FROM library_books b LEFT JOIN library_categories c ON c.id = b.category_id WHERE ${where.join(' AND ')} ORDER BY b.title LIMIT 500`, params);
   }
   /** Adds the title and its copies; accession numbers run in one school-wide series. */
   async addBook(schoolId: string, b: BookInput) {
@@ -43,16 +49,16 @@ export class LibraryService {
         edition: b.edition ?? null, published_year: b.publishedYear ?? null, language: b.language ?? 'bn', category_id: b.categoryId ?? null, subject_id: b.subjectId ?? null, class_id: b.classId ?? null,
         pages: b.pages ?? null, price: b.price ?? null, cover_file_id: null, ebook_file_id: null, description: null, total_copies: copies, available_copies: copies,
       });
-      for (let i = 0; i < copies; i++) await this.addCopy(schoolId, id, tx);
+      for (let i = 0; i < copies; i++) await this.addCopy(schoolId, id, tx, { rack: b.rack ?? null, shelf: b.shelf ?? null });
     });
     return { id, copies };
   }
-  private async addCopy(schoolId: string, bookId: string, tx: Db) {
+  private async addCopy(schoolId: string, bookId: string, tx: Db, at: { rack?: string | null; shelf?: string | null } = {}) {
     // the number comes from the sequence, not from a count: a count taken on another connection
     // cannot see the copies this very transaction is inserting
     const accession = await this.numbering.next(schoolId, 'accession_no', { prefix: 'ACC-', padding: 6 }, tx);
     const id = ulid();
-    await tx.insert('library_book_copies', { id, school_id: schoolId, book_id: bookId, accession_no: accession, barcode: accession, rack: null, shelf: null, condition_note: 'good', status: 'available', acquired_on: nowSql().slice(0, 10), source: 'purchase' });
+    await tx.insert('library_book_copies', { id, school_id: schoolId, book_id: bookId, accession_no: accession, barcode: accession, rack: at.rack?.trim() || null, shelf: at.shelf?.trim() || null, condition_note: 'good', status: 'available', acquired_on: nowSql().slice(0, 10), source: 'purchase' });
     return id;
   }
   /** Bulk catalogue import: one row per title with a copy count. */
@@ -62,6 +68,26 @@ export class LibraryService {
     return { books, copies };
   }
   async copies(schoolId: string, bookId: string) { return this.db.findMany<Row>('library_book_copies', { school_id: schoolId, book_id: bookId }, { orderBy: 'accession_no ASC' }); }
+  /**
+   * Where a copy lives. One copy by accession number, or every copy of a title at once — a school
+   * that has just moved its shelves renumbers a whole title in one go, and doing that copy by copy
+   * from a paper list is how half of them end up unfindable.
+   */
+  async shelve(schoolId: string, at: { copyId?: string; accessionNo?: string; bookId?: string; rack?: string | null; shelf?: string | null }) {
+    const set: Row = {};
+    if ('rack' in at) set.rack = at.rack?.trim() || null;
+    if ('shelf' in at) set.shelf = at.shelf?.trim() || null;
+    if (!Object.keys(set).length) throw badRequest('a rack or a shelf to put it on');
+    set.updated_at = nowSql();
+    const where: Row = { school_id: schoolId };
+    if (at.copyId) where.id = at.copyId;
+    else if (at.accessionNo) where.accession_no = at.accessionNo.trim();
+    else if (at.bookId) where.book_id = at.bookId;
+    else throw badRequest('which copy, or which title');
+    const moved = await this.db.update('library_book_copies', set, where);
+    if (!moved) throw notFound('library copy');
+    return { moved, rack: (set.rack as string) ?? null, shelf: (set.shelf as string) ?? null };
+  }
 
   // ---------- members ----------
   async members(schoolId: string) {

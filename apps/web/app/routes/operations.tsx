@@ -71,6 +71,7 @@ export default function Operations() {
   const d = useLoaderData<typeof loader>(); const rv = useRevalidator(); const [sp, setSp] = useSearchParams();
   const tr = (k: Parameters<typeof t>[0]) => t(k, d.locale);
   const [tab, setTab] = useState<'library' | 'transport' | 'hostel' | 'inventory' | 'documents' | 'frontoffice' | 'ivr'>('library');
+  const [shelve, setShelve] = useState<null | { id: string; title: string; rack: string; shelf: string }>(null);
   const [drawer, setDrawer] = useState<null | 'book' | 'issue' | 'reserve' | 'member' | 'route' | 'vehicle' | 'hostel' | 'allocate' | 'menu' | 'item' | 'movement' | 'receive' | 'visitor' | 'complaint' | 'gatePass' | 'call' | 'post' | 'docRequest' | 'idCards' | 'template'>(null);
   const [err, setErr] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [receivePo, setReceivePo] = useState<{ po: { id: string; po_no: string }; lines: { id: string; item_id: string; name: string; unit: string; quantity: number; received_qty: number }[] } | null>(null);
@@ -146,6 +147,11 @@ export default function Operations() {
           { key: 'language', label: tr('ops.language'), render: r => <Chip>{String(r.language ?? 'bn')}</Chip> },
           { key: 'total_copies', label: tr('ops.copies'), className: 'num' },
           { key: 'available_copies', label: tr('ops.available'), className: 'num', render: r => Number(r.available_copies) ? String(Number(r.available_copies)) : <Chip status="failed">0</Chip> },
+          // a catalogue that cannot say which rack the book is on sends somebody walking the room
+          { key: 'rack', label: tr('ops.shelfmark'), render: r => (r.rack || r.shelf)
+            ? <span className="num">{[r.rack, r.shelf].filter(Boolean).join(' · ')}</span>
+            : <span style={{ color: 'var(--muted)' }}>{tr('ops.notShelved')}</span> },
+          { key: 'id', label: '', render: r => <Button size="sm" variant="secondary" onClick={() => { setShelve({ id: String(r.id), title: String(r.title), rack: (r.rack as string) ?? '', shelf: (r.shelf as string) ?? '' }); }}>{tr('ops.shelve')}</Button> },
         ]} />
 
         <h2 className="mt-6 text-lg">{tr('ops.members')}</h2>
@@ -451,7 +457,14 @@ export default function Operations() {
           { key: 'rfid_tag', label: 'RFID', render: r => <span className="num">{String(r.rfid_tag ?? '—')}</span> },
           { key: 'valid_to', label: tr('ops.validTo'), render: r => formatDate(String(r.valid_to).slice(0, 10), d.locale) },
           { key: 'status', label: tr('common.status'), render: r => <Chip status={String(r.status) === 'active' ? 'active' : String(r.status) === 'lost' ? 'failed' : 'pending'}>{String(r.status).replace(/_/g, ' ')}</Chip> },
-          { key: 'file_id', label: '', render: r => r.file_id ? <Button size="sm" variant="secondary" onClick={() => openFile(r.file_id)}>{tr('common.download')}</Button> : null },
+          { key: 'file_id', label: '', render: r => <div className="flex gap-1">
+            {r.file_id ? <Button size="sm" variant="secondary" onClick={() => openFile(r.file_id)}>{tr('common.download')}</Button> : null}
+            {/* a card is lost on a Tuesday and the child needs one on the Wednesday: the endpoint has
+                always been there, and until now the only way to reach it was to write the request */}
+            {['active', 'pending_print'].includes(String(r.status))
+              ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => { const x = await api<{ cardNo: string }>(`/api/documents/id-cards/${r.id}/reissue`, { method: 'POST', json: { reason: 'lost' } }); setMsg(`${tr('ops.reissued')} ${x.cardNo}`); })}>{tr('ops.reissue')}</Button>
+              : null}
+          </div> },
         ]} /></div>
 
         <h2 className="mt-6 text-lg">{tr('ops.printJobs')}</h2>
@@ -566,11 +579,29 @@ export default function Operations() {
         ]} /></div>
       </div>}
 
+      <Drawer open={!!shelve} onClose={() => setShelve(null)} title={shelve?.title ?? tr('ops.shelve')}>
+        <form className="grid gap-3" onSubmit={e => {
+          e.preventDefault();
+          const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>;
+          const bookId = shelve?.id;
+          setShelve(null);
+          run(async () => { await api('/api/library/shelve', { method: 'POST', json: { bookId, rack: f.rack || null, shelf: f.shelf || null } }); setMsg(tr('ops.shelved')); });
+        }}>
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>{tr('ops.shelveHint')}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={tr('ops.rack')}><Input name="rack" defaultValue={shelve?.rack ?? ''} maxLength={20} className="num" /></Field>
+            <Field label={tr('ops.shelf')}><Input name="shelf" defaultValue={shelve?.shelf ?? ''} maxLength={20} className="num" /></Field>
+          </div>
+          <Button disabled={busy}>{tr('common.save')}</Button>
+        </form>
+      </Drawer>
+
       <Drawer open={drawer === 'book'} onClose={() => setDrawer(null)} title={tr('ops.newBook')}>
-        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/library/books', { method: 'POST', json: { title: f.title, isbn: f.isbn || null, authors: f.authors ? f.authors.split(',').map(x => x.trim()) : [], price: Number(f.price || 0), copies: Number(f.copies || 1) } })); }}>
+        <form className="grid gap-3" onSubmit={e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>; run(() => api('/api/library/books', { method: 'POST', json: { title: f.title, isbn: f.isbn || null, authors: f.authors ? f.authors.split(',').map(x => x.trim()) : [], price: Number(f.price || 0), copies: Number(f.copies || 1), rack: f.rack || null, shelf: f.shelf || null } })); }}>
           <Field label={tr('ops.book')}><Input name="title" required /></Field>
           <Field label={tr('ops.authors')} hint={tr('ops.authorsHint')}><Input name="authors" /></Field>
           <div className="grid grid-cols-3 gap-3"><Field label="ISBN"><Input name="isbn" className="num" /></Field><Field label={tr('ops.price')}><Input name="price" type="number" className="num" /></Field><Field label={tr('ops.copies')}><Input name="copies" type="number" className="num" defaultValue="1" /></Field></div>
+          <div className="grid grid-cols-2 gap-3"><Field label={tr('ops.rack')}><Input name="rack" maxLength={20} className="num" /></Field><Field label={tr('ops.shelf')}><Input name="shelf" maxLength={20} className="num" /></Field></div>
           <Button disabled={busy}>{tr('common.save')}</Button>
         </form>
       </Drawer>
@@ -720,7 +751,19 @@ export default function Operations() {
             <Field label={tr('ops.orientation')}><Select name="orientation" defaultValue={template.orientation} options={[{ value: 'portrait', label: 'Portrait' }, { value: 'landscape', label: 'Landscape' }]} /></Field>
           </div>
           <Field label={tr('ops.template')} hint={tr('ops.templateHint')}><textarea name="body" className="input" rows={14} defaultValue={template.html_template} maxLength={50_000} required /></Field>
-          <Button disabled={busy}>{tr('common.save')}</Button>
+          <div className="flex gap-2">
+            <Button disabled={busy}>{tr('common.save')}</Button>
+            {/* the draft in the box, not the version on file: a preview of what was saved last week
+                does not tell you whether the line you just typed fits on the page */}
+            <Button type="button" variant="secondary" disabled={busy} onClick={e => {
+              const form = (e.currentTarget as HTMLButtonElement).form;
+              const f = form ? Object.fromEntries(new FormData(form).entries()) as Record<string, string> : {};
+              run(async () => {
+                const x = await api<{ fileId: string }>('/api/documents/templates/preview', { method: 'POST', json: { docType: template.doc_type, name: template.name, body: f.body, pageSize: f.pageSize, orientation: f.orientation } });
+                await openFile(x.fileId);
+              });
+            }}>{tr('ops.previewTemplate')}</Button>
+          </div>
         </form>}
       </Drawer>
 

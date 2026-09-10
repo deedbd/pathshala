@@ -73,6 +73,38 @@ export class DocumentService {
     return id;
   }
 
+  /**
+   * The template as it will print, before anybody's name is on it.
+   *
+   * A certificate is written once and issued for years, and the first time its author sees the page
+   * is the day a parent is waiting at the counter for it. This renders the same PDF `issue()` would —
+   * same header, same verification block — with every `{{placeholder}}` filled by an obvious sample,
+   * so a line that runs off the page or a variable spelled wrong is caught while it is still a draft.
+   * Nothing is recorded: no document number is taken from the sequence and no `issued_documents` row
+   * is written; the file is a preview and says so on its face.
+   */
+  async previewTemplate(schoolId: string, t: { templateId?: string; docType?: string; name?: string; body?: string; pageSize?: string; orientation?: 'portrait' | 'landscape' }) {
+    const saved = t.templateId ? await this.db.findOne<Row>('document_templates', { id: t.templateId, school_id: schoolId }) : null;
+    if (t.templateId && !saved) throw notFound('document template');
+    const body = t.body ?? String(saved?.html_template ?? '');
+    if (!body.trim()) throw badRequest('a template with nothing in it has nothing to preview');
+    const docType = t.docType ?? String(saved?.doc_type ?? 'document');
+    const name = t.name ?? String(saved?.name ?? docType);
+    // whatever the body asks for, answered: a sample for the fields every document uses, and the
+    // placeholder's own name for anything else, so an unfilled variable is visible rather than blank
+    const samples: Record<string, string> = {
+      name: 'Rahima Khatun', admission_no: 'ADM-00042', employee_no: 'EMP-00007', class: 'Class 6', year: '2026',
+      date_of_birth: '2013-04-11', admission_date: '2019-01-05', leaving_date: nowSql().slice(0, 10), join_date: '2019-01-05',
+      leave_date: nowSql().slice(0, 10), designation: 'Assistant Teacher', conduct: 'satisfactory', result: 'promoted', reason: 'guardian request',
+    };
+    const data: Record<string, string> = {};
+    for (const [, key] of body.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)) data[key] = samples[key] ?? `⟨${key}⟩`;
+    const school = await this.db.findOne<Row>('schools', { id: schoolId });
+    const pdf = await this.adapters.pdf.render(this.doc(school, `${name} — preview`, fill(body, data), 'PREVIEW', 'PREVIEW', data));
+    const f = await this.files.store({ schoolId, data: pdf, fileName: `${docType}-preview.pdf`, mimeType: 'application/pdf', purpose: 'document.preview', entityType: 'documents.template', entityId: t.templateId ?? docType });
+    return { fileId: f.id, docType, name, variables: Object.keys(data) };
+  }
+
   // ---------- requests ----------
   /**
    * N5: what stops this document being issued today. Returns every reason at once so the requester

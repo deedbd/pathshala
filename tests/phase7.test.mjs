@@ -115,6 +115,29 @@ describe('phase 7', () => {
     assert.ok(hold.expires_at, 'and it is held for them');
   });
 
+  test('the catalogue says which rack the book is on, and a whole title moves at once', async () => {
+    // a copy row has always had a rack and a shelf and nothing ever wrote to them, so the catalogue
+    // could not answer the one question somebody standing in the room actually has
+    const shelved = await api('/library/books', { title: 'Padma Nadir Majhi', authors: ['Manik Bandopadhyay'], price: 220, copies: 2, rack: 'R-3', shelf: 'B' });
+    const copies = await app.library.copies(schoolId, shelved.id);
+    assert.equal(copies.length, 2);
+    assert.ok(copies.every(c => String(c.rack) === 'R-3' && String(c.shelf) === 'B'), 'both copies were put where the form said');
+    const listed = (await api('/library/books?q=Padma', undefined, 'GET')).find(b => String(b.id) === shelved.id);
+    assert.equal(String(listed.rack), 'R-3', 'and the catalogue prints it');
+    assert.equal(String(listed.shelf), 'B');
+
+    // the shelves are rearranged: one call moves every copy of the title
+    const moved = await api('/library/shelve', { bookId: shelved.id, rack: 'R-9', shelf: 'A' });
+    assert.equal(moved.moved, 2);
+    assert.ok((await app.library.copies(schoolId, shelved.id)).every(c => String(c.rack) === 'R-9'));
+    // and one copy alone can be moved by the number written on it
+    const one = await api('/library/shelve', { accessionNo: String(copies[0].accession_no), rack: 'R-1', shelf: 'C' });
+    assert.equal(one.moved, 1);
+    const after = await app.library.copies(schoolId, shelved.id);
+    assert.equal(after.filter(c => String(c.rack) === 'R-1').length, 1, 'only the copy that was named moved');
+    assert.equal(after.filter(c => String(c.rack) === 'R-9').length, 1);
+  });
+
   test('renewing a loan moves the due date, and is refused once somebody is waiting for the title', async () => {
     const b = await api('/library/books', { title: 'Ekattorer Dinguli', authors: ['Jahanara Imam'], price: 300, copies: 1 });
     const copy = (await app.library.copies(schoolId, b.id))[0];

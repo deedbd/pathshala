@@ -323,6 +323,28 @@ describe('phase 6', () => {
     assert.equal(buf.subarray(0, 4).toString(), '%PDF', 'and it really is the PDF');
   });
 
+  test('a template is seen before it is used, and a lost card is replaced from the register', async () => {
+    // the preview renders the draft in the editor, not the version on file: what it answers is
+    // "does the line I just typed fit on the page", and it must cost nothing to ask
+    const before = await app.db.count('issued_documents', { school_id: schoolId });
+    const preview = await api('/documents/templates/preview', { docType: 'testimonial', name: 'Testimonial', body: 'This is to certify that {{name}} of {{class}} bore a {{conduct}} character.\nSigned, {{unheard_of_field}}' });
+    assert.ok(preview.fileId, 'a preview is a file the office can open');
+    assert.deepEqual(preview.variables.sort(), ['class', 'conduct', 'name', 'unheard_of_field']);
+    assert.equal(await app.db.count('issued_documents', { school_id: schoolId }), before, 'nothing was issued to make it');
+    const purl = new URL((await api(`/files/${preview.fileId}/url`)).url);
+    const pbuf = Buffer.from(await (await fetch(`${baseUrl}${purl.pathname}${purl.search}`)).arrayBuffer());
+    assert.equal(pbuf.subarray(0, 4).toString(), '%PDF');
+    await assert.rejects(() => api('/documents/templates/preview', { docType: 'testimonial', body: '   ' }), /nothing to preview|400/);
+
+    // a card lost on a Tuesday: the old one stops working and the replacement carries a new number
+    const card = (await api('/documents/id-cards')).find(c => String(c.status) === 'active');
+    assert.ok(card, 'there is a card to lose');
+    const again = await api(`/documents/id-cards/${card.id}/reissue`, { reason: 'lost' });
+    assert.ok(again.cardNo && again.cardNo !== String(card.card_no), `a new number: ${again.cardNo}`);
+    const old = await app.db.findOne('id_cards', { id: card.id });
+    assert.equal(String(old.status), 'lost', 'and the card that went missing is marked so');
+  });
+
   test('a guardian sees their own child’s documents and nobody else’s', async () => {
     const g = (await app.db.query(`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id = g.id WHERE sg.student_id = ?`, [enrolledStudentId]))[0];
     const session = await app.auth.createSession(await app.db.findOne('users', { id: g.user_id }));

@@ -79,6 +79,12 @@ export function mountPhase6(api: Router, app: App, wrap: Wrap, requirePerm: (req
   // ---------- documents ----------
   api.get('/documents/templates', wrap(async req => { const u = requirePerm(req, 'documents.view'); return app.documents.templates(u.school_id); }));
   api.post('/documents/templates', wrap(async req => { const u = requirePerm(req, 'documents.create'); const b = z.object({ docType: z.string().max(40), name: z.string().min(1).max(120), body: z.string().min(1).max(50_000), variables: z.array(z.string().max(40)).optional(), pageSize: z.string().max(20).optional(), orientation: z.enum(['portrait', 'landscape']).optional(), isDefault: z.coerce.boolean().optional() }).parse(req.body); return { id: await app.documents.saveTemplate(u.school_id, b as never) }; }));
+  // the page as it will print, with sample names in it: nothing is issued and no number is taken
+  api.post('/documents/templates/preview', wrap(async req => {
+    const u = requirePerm(req, 'documents.create');
+    const b = z.object({ templateId: z.string().optional(), docType: z.string().max(40).optional(), name: z.string().max(120).optional(), body: z.string().max(50_000).optional(), pageSize: z.string().max(20).optional(), orientation: z.enum(['portrait', 'landscape']).optional() }).parse(req.body ?? {});
+    return app.documents.previewTemplate(u.school_id, b);
+  }));
   api.get('/documents/requests', wrap(async req => { const u = requirePerm(req, 'documents.view'); return app.documents.requests(u.school_id, { status: q(req, 'status'), studentId: q(req, 'studentId') }); }));
   api.post('/documents/requests', wrap(async req => { const u = requirePerm(req, 'documents.create'); const b = z.object({ docType: z.string().max(40), personType: z.enum(['student', 'staff', 'alumni']), studentId: z.string().optional().nullable(), staffId: z.string().optional().nullable(), reason: z.string().max(255).optional().nullable() }).parse(req.body); return app.documents.request(u.school_id, { ...b, requestedBy: u.id }); }));
   api.post('/documents/requests/:id/issue', wrap(async req => { const u = requirePerm(req, 'documents.approve'); const b = z.object({ extra: z.record(z.string(), z.string().max(500)).optional() }).parse(req.body ?? {}); const r = await app.documents.fulfil(u.school_id, req.params.id as string, b.extra); await app.audit.log({ action: 'issue', entityType: 'documents.issued', entityId: r.id, after: { documentNo: r.documentNo } }); return r; }));
