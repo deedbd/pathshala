@@ -281,7 +281,10 @@ export class AssessmentService {
         schoolId, userId: (e.staff.user_id as string) ?? null, address: (e.staff.phone as string) ?? undefined, channels: ['push', 'in_app', 'sms'],
         eventKey: 'assessment.invigilation', title: `Invigilation duty — ${exam.name}`,
         body: `${e.duties.length} duty${e.duties.length === 1 ? '' : ' periods'} for ${exam.name}:\n${lines}`,
-        data: { exam: String(exam.name), duties: e.duties.length }, entityType: 'assessment.invigilation', entityId: `${examId}:${staffId}`,
+        // the entity is the exam, and the id column is a ULID: a composite key fits on SQLite and is
+        // "value too long for type character(26)" on the other two. The person is told apart by the
+        // recipient, which is what `notifyOnce` already dedupes on.
+        data: { exam: String(exam.name), duties: e.duties.length }, entityType: 'assessment.invigilation', entityId: examId,
       });
       if (ids.length) notified++;
     }
@@ -309,12 +312,18 @@ export class AssessmentService {
     const clash = teaching?.get(staffId);
     if (clash) throw new HttpError(409, `${staff.first_name} is teaching ${clash} at that time`, 'teaching_clash');
     if (await this.db.findOne('exam_invigilators', { schedule_id: scheduleId, room_id: roomId, staff_id: staffId })) throw new HttpError(409, 'already on that room for this paper', 'duplicate');
-    const overlap = (await this.db.query<Row>(`SELECT r.name AS room_name FROM exam_invigilators i JOIN exam_schedules s ON s.id = i.schedule_id LEFT JOIN rooms r ON r.id = i.room_id WHERE i.school_id = ? AND i.staff_id = ? AND s.exam_date = ? AND (s.start_time IS NULL OR ? IS NULL OR (s.start_time < ? AND s.end_time > ?)) AND i.room_id <> ?`, [schoolId, staffId, date, sc.start_time ?? null, sc.end_time ?? '23:59', sc.start_time ?? '00:00', roomId]))[0];
+    // a paper with no time on it clashes with every other paper that day; one with a time clashes only
+    // where the sittings overlap. The two are different SQL, not one query with a parameter that might
+    // be null — Postgres cannot type a bare `? IS NULL` and refuses to prepare the statement at all.
+    const timed = sc.start_time != null;
+    const overlap = (await this.db.query<Row>(`SELECT r.name AS room_name FROM exam_invigilators i JOIN exam_schedules s ON s.id = i.schedule_id LEFT JOIN rooms r ON r.id = i.room_id
+      WHERE i.school_id = ? AND i.staff_id = ? AND s.exam_date = ? AND i.room_id <> ?${timed ? ' AND (s.start_time IS NULL OR (s.start_time < ? AND s.end_time > ?))' : ''}`,
+      timed ? [schoolId, staffId, date, roomId, sc.end_time ?? '23:59', sc.start_time] : [schoolId, staffId, date, roomId]))[0];
     if (overlap) throw new HttpError(409, `${staff.first_name} is already invigilating ${overlap.room_name} at that time`, 'duty_clash');
     const id = ulid();
     await this.db.insert('exam_invigilators', { id, school_id: schoolId, schedule_id: scheduleId, room_id: roomId, staff_id: staffId });
     const room = await this.db.findOne<Row>('rooms', { id: roomId });
-    await this.notifications.notifyOnce(24 * 30, { schoolId, userId: (staff.user_id as string) ?? null, address: (staff.phone as string) ?? undefined, channels: ['push', 'in_app', 'sms'], eventKey: 'assessment.invigilation', title: 'Invigilation duty', body: `${date} ${String(sc.start_time ?? '').slice(0, 5)} · ${room?.name ?? 'room'} · ${sc.class_name} ${sc.subject_name}.`, entityType: 'assessment.invigilation', entityId: `${sc.exam_id}:${staffId}` });
+    await this.notifications.notifyOnce(24 * 30, { schoolId, userId: (staff.user_id as string) ?? null, address: (staff.phone as string) ?? undefined, channels: ['push', 'in_app', 'sms'], eventKey: 'assessment.invigilation', title: 'Invigilation duty', body: `${date} ${String(sc.start_time ?? '').slice(0, 5)} · ${room?.name ?? 'room'} · ${sc.class_name} ${sc.subject_name}.`, entityType: 'assessment.invigilation', entityId: String(sc.exam_id) });
     return { id };
   }
   async removeInvigilator(schoolId: string, id: string) { return this.db.delete('exam_invigilators', { id, school_id: schoolId }); }
@@ -1293,19 +1302,25 @@ export class AssessmentService {
       'exams.pre_exam_prep': async ({ schoolId, payload }) => {
         const today = String((payload as { onDate?: string }).onDate ?? nowSql()).slice(0, 10);
         const soon = addDays(today, 7);
-        let prepared = 0, refreshed = 0, cards = 0;
+        let prepared = 0, refreshed = 0, cards = 0, duties = 0;
         for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'draft' AND start_date <= ? AND start_date >= ?`, [schoolId, soon, today])) {
           const r = await this.buildSeatPlan(schoolId, String(e.id));
           await this.outbox.emitNow({ type: 'exam.scheduled', schoolId, aggregateType: 'assessment.exam', aggregateId: String(e.id), payload: { examId: String(e.id), seated: r.seated, ineligible: r.ineligible } });
           const c = await this.issueAdmitCards(schoolId, String(e.id));
           if (c.queued) cards++;
+          // and the halls get their invigilators in the same pass: the roster takes no judgement, it
+          // is undone by removing a row, and a hall it cannot staff raises the task naming the room.
+          // Leaving it to the button is how an exam reaches the morning with nobody standing in it —
+          // and a roster that throws must not cost the rest of the pass its work.
+          const inv = await this.rosterInvigilators(schoolId, String(e.id)).catch(() => null);
+          duties += inv?.assigned ?? 0;
           prepared++;
         }
         for (const e of await this.db.query<Row>(`SELECT * FROM exams WHERE school_id = ? AND status = 'scheduled' AND start_date >= ? AND start_date <= ?`, [schoolId, today, addDays(today, 1)])) {
           const r = await this.refreshSeatPlan(schoolId, String(e.id));
           if (r.added || r.cleared) { refreshed += r.added + r.cleared; const c = await this.issueAdmitCards(schoolId, String(e.id)); if (c.queued) cards++; }
         }
-        return { prepared, refreshed, cards };
+        return { prepared, refreshed, cards, duties };
       },
       /**
        * D3. Before the deadline the subject teachers are chased. At the deadline the papers that are
