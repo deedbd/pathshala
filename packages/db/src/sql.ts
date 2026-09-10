@@ -1,4 +1,5 @@
 import type { Db, Engine, FindOptions, Row, Value } from './types.js';
+import { isJsonColumn } from './schema/json-columns.js';
 
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 export function ident(name: string, engine: Engine): string {
@@ -42,6 +43,23 @@ export function bind(v: Value, engine: Engine): unknown {
   return v;
 }
 
+/**
+ * What a JSON column is given, as JSON.
+ *
+ * MySQL and Postgres parse a `json` column on the way in and refuse anything that is not a document:
+ * a campus address typed as `Road 7` is a 500 on both and passes silently on SQLite, which stores the
+ * column as text. So every value bound to a JSON column is encoded here — except a string that is
+ * already JSON, because most writers stringify their own objects and settings values, and encoding
+ * those twice would store `"\"bn\""` where `"bn"` belongs.
+ */
+export function jsonValue(v: Value): unknown {
+  if (v == null) return null;
+  if (v instanceof Date) return JSON.stringify(nowSql(v));
+  if (typeof v === 'object') return JSON.stringify(v);
+  if (typeof v === 'string') { try { JSON.parse(v); return v; } catch { return JSON.stringify(v); } }
+  return JSON.stringify(v);   // a bare number or boolean is valid JSON on its own
+}
+
 /** Rewrite `?` placeholders to `$1..$n` for postgres. Skips `?` inside quoted strings. */
 export function toPgPlaceholders(sql: string): string {
   let n = 0; let out = ''; let quote: string | null = null;
@@ -81,10 +99,12 @@ function orderClause(orderBy: string | undefined, engine: Engine): string {
 /** Builds the generic CRUD helpers on top of query/execute so each engine only implements the primitives. */
 export function crud(engine: Engine, query: Db['query'], execute: Db['execute']) {
   const q = (n: string) => ident(n, engine);
+  // a column the schema calls `json` carries a document on every engine, whatever the caller passed
+  const val = (table: string, column: string, v: Value) => (isJsonColumn(table, column) ? jsonValue(v) : bind(v, engine));
   return {
     async insert(table: string, row: Row) {
       const keys = Object.keys(row);
-      await execute(`INSERT INTO ${q(table)} (${keys.map(q).join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`, keys.map(k => bind(row[k], engine)));
+      await execute(`INSERT INTO ${q(table)} (${keys.map(q).join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`, keys.map(k => val(table, k, row[k])));
     },
     async insertMany(table: string, rows: Row[]) {
       if (!rows.length) return;
@@ -93,13 +113,13 @@ export function crud(engine: Engine, query: Db['query'], execute: Db['execute'])
       for (let i = 0; i < rows.length; i += chunk) {
         const slice = rows.slice(i, i + chunk);
         const values = slice.map(() => `(${keys.map(() => '?').join(', ')})`).join(', ');
-        await execute(`INSERT INTO ${q(table)} (${keys.map(q).join(', ')}) VALUES ${values}`, slice.flatMap(r => keys.map(k => bind(r[k], engine))));
+        await execute(`INSERT INTO ${q(table)} (${keys.map(q).join(', ')}) VALUES ${values}`, slice.flatMap(r => keys.map(k => val(table, k, r[k]))));
       }
     },
     async update(table: string, set: Row, where: Row) {
       const keys = Object.keys(set); if (!keys.length) return 0;
       const w = whereClause(where, engine);
-      const r = await execute(`UPDATE ${q(table)} SET ${keys.map(k => `${q(k)} = ?`).join(', ')}${w.sql}`, [...keys.map(k => bind(set[k], engine)), ...w.params]);
+      const r = await execute(`UPDATE ${q(table)} SET ${keys.map(k => `${q(k)} = ?`).join(', ')}${w.sql}`, [...keys.map(k => val(table, k, set[k])), ...w.params]);
       return r.affectedRows;
     },
     async delete(table: string, where: Row) {

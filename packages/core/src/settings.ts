@@ -158,7 +158,7 @@ export class SettingsService {
     return {
       id: String(s.id), code: String(s.code), name: String(s.name), nameBn: (s.name_bn as string) ?? null,
       institutionType: String(s.institution_type), board: (s.board as string) ?? null, eiin: (s.eiin as string) ?? null, mpoCode: (s.mpo_code as string) ?? null,
-      address: (s.address as string) ?? null, phone: (s.phone as string) ?? null, email: (s.email as string) ?? null, website: (s.website as string) ?? null,
+      address: json<string>(s.address), phone: (s.phone as string) ?? null, email: (s.email as string) ?? null, website: (s.website as string) ?? null,
       timezone: String(s.timezone), currency: String(s.currency), locale: String(s.locale), theme: json(s.theme), status: String(s.status),
     };
   }

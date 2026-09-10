@@ -238,7 +238,7 @@ export class AcademicService {
     const counts = await this.db.query<{ campus_id: string | null; n: number }>(
       `SELECT campus_id, COUNT(*) AS n FROM sections WHERE school_id = ? GROUP BY campus_id`, [schoolId]);
     return rows.map(r => ({
-      id: String(r.id), name: String(r.name), code: String(r.code), address: (r.address as string) ?? null, phone: (r.phone as string) ?? null,
+      id: String(r.id), name: String(r.name), code: String(r.code), address: json<string>(r.address), phone: (r.phone as string) ?? null,
       isMain: !!Number(r.is_main), status: String(r.status),
       sectionCount: Number(counts.find(c => String(c.campus_id) === String(r.id))?.n ?? 0),
     }));
