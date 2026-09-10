@@ -294,6 +294,24 @@ describe('settings: the school looking at its own rules', () => {
     assert.equal(t[0].after_data.eiin, '108234');
   });
 
+  test('a school can look up its own sign-in address after the email is lost', async () => {
+    // the door is emailed once and there is no /login to fall back on, so an administrator must be
+    // able to read where their own school lives — the vendor console is not theirs to ask
+    const web = await api('/school/web');
+    assert.ok(web.slug, 'the school has a slug');
+    assert.ok(String(web.doorUrl).includes(`/x/`), `the door is a real address: ${web.doorUrl}`);
+    assert.ok(String(web.doorUrl).includes(String(web.loginDoor)), 'and it carries this school’s own door');
+    assert.equal(web.url.endsWith(web.slug), true, 'the school’s public address is its slug');
+
+    // reading it is an administrator's business, not any staff account's
+    const teacher = await app.db.query(`SELECT u.id FROM users u WHERE u.school_id = ? AND u.user_type = 'staff' LIMIT 1`, [sid]);
+    if (teacher[0]) {
+      const session = await app.auth.createSession(await app.db.findOne('users', { id: String(teacher[0].id) }));
+      const r = await fetch(`${baseUrl}/api/school/web`, { headers: { cookie: `ps_session=${session.token}` } });
+      assert.equal([401, 403].includes(r.status), true, `a staff account is refused, not answered: ${r.status}`);
+    }
+  });
+
   // ---------------- the audit log itself ----------------
   test('the audit log is readable, filterable and paged', async () => {
     const all = await api('/audit?pageSize=5');

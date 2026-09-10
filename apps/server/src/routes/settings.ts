@@ -217,6 +217,20 @@ export function mountSettings(api: Router, app: App, wrap: Wrap, requirePerm: (r
     return { updated: r.updated, profile: r.profile };
   }));
 
+  /**
+   * The school's own address, read by the school itself.
+   *
+   * The sign-in door is emailed once, when the school is created, and a head teacher who loses that
+   * message has nowhere to look it up: there is no `/login` to fall back on, and the vendor console
+   * belongs to Pathshala, not to them. So an administrator signed in to this school may read where
+   * this school lives — its slug, its custom domain if it has one, and its own door. Setting any of
+   * it stays with the vendor; this is the reading half.
+   */
+  api.get('/school/web', wrap(async req => {
+    const u = read(req, 'platform.settings');
+    return app.tenant.webAddress(u.school_id);
+  }));
+
   api.post('/school/campuses', wrap(async req => {
     const u = write(req);
     const b = z.object({ name: z.string().trim().min(2).max(120), code: z.string().trim().min(2).max(12), address: z.string().trim().max(400).nullable().optional(), phone: z.string().trim().max(30).nullable().optional(), isMain: z.coerce.boolean().optional() }).parse(req.body);
