@@ -216,7 +216,10 @@ describe('phase 2', () => {
     await app.relay.run();
     const types = await api('/leave/types');
     const casual = types.find(t => t.code === 'CL');
-    const tomorrow = new Date(Date.now() + 86400_000).toISOString().slice(0, 10);
+    // leave is excused on working days only, so the day this asks for must be one: run the suite on a
+    // Thursday and "tomorrow" is the school's weekly off, with no register to mark and no class to cover
+    let tomorrow = new Date(Date.now() + 86400_000).toISOString().slice(0, 10);
+    for (let n = 1; n <= 8 && await app.academic.isHoliday(schoolId, tomorrow); n++) tomorrow = new Date(Date.now() + (n + 1) * 86400_000).toISOString().slice(0, 10);
     const applied = await api('/leave', { applicantType: 'staff', leaveTypeId: casual.id, fromDate: tomorrow, toDate: tomorrow, reason: 'Family matter' }, 'POST', { cookie: teacherCookie });
     assert.equal(applied.days, 1);
     assert.equal(applied.status, 'approved', 'no workflow configured → auto-approved');

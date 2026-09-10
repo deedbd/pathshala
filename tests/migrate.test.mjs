@@ -72,8 +72,12 @@ describe('schema reconcile', () => {
     await db.script(engine === 'mysql' ? `ALTER TABLE ${q('audit_logs')} DROP INDEX ${q('ix_audit_logs_school_id_created_at')}` : `DROP INDEX ${q('ix_audit_logs_school_id_created_at')}`);
     // 5. a table whose column type has moved: everything else about it is missing too
     const idType = engine === 'sqlite' ? 'TEXT' : 'CHAR(26)';
+    // an older release built this table with the same generated SQL, so it carries the same charset:
+    // MySQL refuses a foreign key between two CHAR columns that collate differently, and a stub left
+    // on the server's own default would be testing that refusal rather than the reconciler
+    const opts = engine === 'mysql' ? ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci' : '';
     await db.execute(`DROP TABLE ${q('kpi_daily')}`);
-    await db.script(`CREATE TABLE ${q('kpi_daily')} (${q('id')} ${idType} NOT NULL, ${q('students_active')} VARCHAR(20), PRIMARY KEY (${q('id')}))`);
+    await db.script(`CREATE TABLE ${q('kpi_daily')} (${q('id')} ${idType} NOT NULL, ${q('students_active')} VARCHAR(20), PRIMARY KEY (${q('id')}))${opts}`);
     await app.stop();
 
     const next = await boot();

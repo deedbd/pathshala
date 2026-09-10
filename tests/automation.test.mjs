@@ -117,8 +117,11 @@ describe('automation console and the rules the prototype promised', () => {
 
   test('…and the next working day sends exactly the stage the holiday would have sent', async () => {
     const inv = (await app.db.query(`SELECT * FROM invoices WHERE school_id = ? AND student_id = ?`, [schoolId, students[1].id]))[0];
-    const working = DAY(1);
-    assert.equal(await app.academic.isHoliday(schoolId, working), false, 'the day after the holiday is a working day');
+    // the day after the holiday is not necessarily a working day: run this suite on a Thursday and the
+    // next day is the school's weekly off, which is exactly what the ladder is supposed to hold for
+    let working = DAY(1);
+    for (let n = 1; n <= 8 && await app.academic.isHoliday(schoolId, working); n++) working = DAY(1 + n);
+    assert.equal(await app.academic.isHoliday(schoolId, working), false, 'a working day was found after the holiday');
     const r = await app.fees.runReminders(schoolId, working);
     await drain();
     assert.equal(r.skipped, null);

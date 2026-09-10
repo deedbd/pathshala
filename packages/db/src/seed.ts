@@ -210,10 +210,13 @@ export const NOTIFICATION_TEMPLATES: [string, string, string, string | null, str
 export async function seedNotificationTemplates(db: Db, schoolId: string): Promise<number> {
   let n = 0;
   for (const [event_key, channel, locale, subject, body] of NOTIFICATION_TEMPLATES) {
-    if (await db.findOne('notification_templates', { school_id: schoolId, event_key, channel, locale })) continue;
     const vars = [...body.matchAll(/{{(\w+)}}/g)].map(m => m[1]);
-    await db.insert('notification_templates', { id: ulid(), school_id: schoolId, event_key, channel, locale, subject, body, variables: vars, is_active: true });
-    n++;
+    // the boot pass that tops up an installed school's catalogue writes these too, so a school being
+    // provisioned at that moment can lose the race on the unique key — and losing it means the row is
+    // there, which is all the seed wanted
+    if (await insertIfAbsent(db, 'notification_templates',
+      { id: ulid(), school_id: schoolId, event_key, channel, locale, subject, body, variables: vars, is_active: true },
+      { school_id: schoolId, event_key, channel, locale })) n++;
   }
   return n;
 }
